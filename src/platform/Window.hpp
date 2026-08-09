@@ -49,6 +49,11 @@ public:
     /// True for exactly one frame after the framebuffer changed size.
     bool consumeResizeEvent();
 
+    /// Internal to the platform module: the underlying GLFWwindow*, type-erased
+    /// so this header stays free of GLFW. Only Input uses it. Anything outside
+    /// `platform` that reaches for this is a layering mistake.
+    void* nativeHandle() const;
+
 private:
     struct Impl;
     Impl* m_impl = nullptr;

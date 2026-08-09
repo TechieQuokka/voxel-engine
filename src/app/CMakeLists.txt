@@ -7,6 +7,9 @@ target_link_libraries(minecraft PRIVATE
   mc_core
   mc_platform
   mc_rhi
+  mc_world
+  mc_mesh
+  mc_render
 )
 
 mc_set_warnings(minecraft)

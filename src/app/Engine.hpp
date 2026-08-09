@@ -1,10 +1,12 @@
 #pragma once
 
 #include "core/Types.hpp"
+#include "platform/Input.hpp"
 #include "platform/Window.hpp"
+#include "render/Camera.hpp"
+#include "render/ChunkRenderer.hpp"
 #include "rhi/Device.hpp"
-#include "rhi/Shader.hpp"
-#include "rhi/VertexArray.hpp"
+#include "world/Section.hpp"
 
 #include <memory>
 #include <optional>
@@ -14,9 +16,8 @@ namespace mc {
 
 /// Owns the window, the graphics device, and the frame loop.
 ///
-/// Phase 0 draws a single triangle to prove the toolchain, context creation,
-/// and shader pipeline all work end to end. The rendering here moves into
-/// `mc_render` in Phase 1.
+/// Phase 1 renders a single meshed section with a free-flying camera. World
+/// streaming and multi-chunk rendering arrive in Phase 3.
 class Engine {
 public:
     struct Options {
@@ -36,6 +37,8 @@ public:
     void run();
 
 private:
+    void buildTestSection();
+    void updateCamera(f64 deltaTime);
     void renderFrame();
     void captureAndExit();
 
@@ -43,13 +46,16 @@ private:
 
     std::unique_ptr<Window> m_window;
     std::unique_ptr<rhi::Device> m_device;
+    std::unique_ptr<Input> m_input;
 
-    rhi::Shader m_triangleShader;
-
-    // Deferred: constructing a VAO issues a GL call, so it cannot be a direct
-    // member -- members are initialized before the constructor body has had a
+    // Deferred: these issue GL calls on construction, so they cannot be direct
+    // members -- members are initialized before the constructor body has had a
     // chance to create the device and load the GL entry points.
-    std::optional<rhi::VertexArray> m_emptyVao;
+    std::optional<ChunkRenderer> m_chunkRenderer;
+
+    Section m_section;
+    Camera m_camera;
+    f32 m_moveSpeed = 12.0f;
 
     f64 m_lastFrameTime = 0.0;
     f64 m_fpsAccumulator = 0.0;

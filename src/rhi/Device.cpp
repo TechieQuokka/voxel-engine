@@ -83,6 +83,13 @@ Device::Device(GlProcLoader loader) {
 
     logInfo("OpenGL {}.{} | {} | {}", m_versionMajor, m_versionMinor, m_renderer, m_vendor);
 
+    // Reversed-Z setup, applied once for the lifetime of the context: clip
+    // space depth in [0, 1] instead of [-1, 1], cleared to 0, compared with
+    // GREATER. Without this, depth precision at a 1024-block render distance is
+    // not sufficient to avoid z-fighting. See Camera::setPerspective.
+    glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
+    glClearDepth(0.0);
+
     GLint contextFlags = 0;
     glGetIntegerv(GL_CONTEXT_FLAGS, &contextFlags);
     if ((static_cast<GLuint>(contextFlags) & GLuint{GL_CONTEXT_FLAG_DEBUG_BIT}) != 0) {
@@ -105,6 +112,25 @@ void Device::setViewport(int x, int y, int width, int height) {
 void Device::clear(f32 r, f32 g, f32 b, f32 a) {
     glClearColor(r, g, b, a);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+
+void Device::setDepthTest(bool enabled) {
+    if (enabled) {
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_GREATER); // Reversed-Z: larger depth means nearer.
+    } else {
+        glDisable(GL_DEPTH_TEST);
+    }
+}
+
+void Device::setBackfaceCulling(bool enabled) {
+    if (enabled) {
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+        glFrontFace(GL_CCW);
+    } else {
+        glDisable(GL_CULL_FACE);
+    }
 }
 
 void Device::drawTriangles(u32 vertexCount, u32 first) {

@@ -1,4 +1,5 @@
 add_library(mc_rhi STATIC
+  Buffer.cpp
   Device.cpp
   Shader.cpp
   VertexArray.cpp

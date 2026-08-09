@@ -410,12 +410,12 @@ minecraft/
 │   │
 │   ├── platform/
 │   │   ├── Window.hpp/.cpp    # only file that knows GLFW
-│   │   ├── Input.hpp/.cpp
+│   │   ├── Input.hpp/.cpp     # polled keyboard/mouse snapshot
 │   │   └── Clock.hpp          # steady_clock wrapper
 │   │
 │   ├── rhi/
-│   │   ├── Device.hpp/.cpp      # GL loading, extension query, debug callback
-│   │   ├── Buffer.hpp/.cpp      # persistent mapped, triple buffered
+│   │   ├── Device.hpp/.cpp      # GL loading, debug callback, reversed-Z setup
+│   │   ├── Buffer.hpp/.cpp      # immutable storage now, persistent mapped in Phase 3
 │   │   ├── Shader.hpp/.cpp      # graphics + compute
 │   │   ├── Texture.hpp/.cpp     # 2D_ARRAY, 3D
 │   │   ├── VertexArray.hpp/.cpp # empty VAO required by core profile
@@ -424,8 +424,8 @@ minecraft/
 │   ├── world/
 │   │   ├── Coords.hpp         # BlockPos / SectionPos / ChunkPos conversions
 │   │   ├── BlockRegistry.hpp/.cpp
-│   │   ├── Palette.hpp/.cpp
-│   │   ├── Section.hpp/.cpp   # 32^3, uniform optimization
+│   │   ├── Palette.hpp/.cpp   # palette + bit-packed indices
+│   │   ├── Section.hpp        # 32^3, uniform optimization
 │   │   ├── Chunk.hpp/.cpp     # column of 12 sections
 │   │   └── World.hpp/.cpp     # chunk map, streaming
 │   │
@@ -437,9 +437,10 @@ minecraft/
 │   │
 │   ├── mesh/
 │   │   ├── Quad.hpp                # 64-bit packed format
+│   │   ├── ChunkMesh.hpp           # a flat vector of quads
+│   │   ├── CulledMesher.hpp/.cpp   # reference mesher; oracle for Phase 2
 │   │   ├── BinaryGreedyMesher.hpp/.cpp
-│   │   ├── Downsample.hpp/.cpp     # LOD mode filter
-│   │   └── ChunkMesh.hpp/.cpp
+│   │   └── Downsample.hpp/.cpp     # LOD mode filter
 │   │
 │   ├── render/
 │   │   ├── Camera.hpp/.cpp
@@ -614,7 +615,7 @@ deliberate.
 | Phase | Content | Exit criterion |
 |---|---|---|
 | 0 **(done)** | CMake skeleton, GLFW + glad window, triangle | Builds, window opens |
-| 1 | Palette-compressed sections, naive culled meshing, camera | One chunk renders |
+| 1 **(done)** | Palette-compressed sections, naive culled meshing, camera | One chunk renders |
 | 2 | Binary greedy meshing, texture array | Measured quad count reduction |
 | 3 | Job system, streaming, frustum culling | Render distance 16, stable frame time |
 | 4 | FastNoise2 terrain generation | Infinite terrain traversal |
@@ -652,6 +653,49 @@ comparison in later phases.
 
 PPM rather than PNG so that no image library is needed; captures are debugging
 artefacts where size does not matter.
+
+### 7.2 Phase 1 result
+
+One 32^3 section renders, meshed and drawn from packed quads, with a free-flying
+camera. 60 FPS (vsync-locked), zero warnings, 41 test cases passing.
+
+Measured on the test section (rolling surface, four block types):
+
+| | |
+|---|---|
+| Quads emitted | 4,842 of 196,608 possible faces (**2.5%**) |
+| Mesh size on GPU | 37 KiB |
+| Section storage | 4 bits/voxel, 5-entry palette, 16,400 bytes |
+
+The storage number is the design working as intended: 32,768 voxels that would
+be 65,536 bytes as raw BlockIds occupy 16,400 — and an untouched section costs
+essentially nothing at all.
+
+**Reversed-Z was adopted here rather than deferred.** The projection is infinite
+with near and far swapped, `glClipControl` set to `ZERO_TO_ONE`, depth cleared
+to 0 and tested with `GREATER`. Floating-point precision is densest near zero,
+and reversing Z puts that density where distant geometry lands. There is no far
+plane at all, which removes far-plane tuning from the render distance problem
+entirely. Retrofitting this later would have touched the projection, the depth
+state, and every shader that writes depth.
+
+**No vertex buffer exists anywhere in the renderer.** Quads live in an SSBO and
+`chunk.vert` expands each into six vertices from `gl_VertexID`, using a
+per-face tangent basis chosen so that `cross(U, V)` equals the face normal —
+which is what makes back-face culling correct without per-quad winding data.
+
+Two things worth recording:
+
+- **`packed` is a reserved keyword in GLSL.** It fails with a syntax error that
+  points at the assignment, not at the name.
+- The palette test caught a real defect: `fill()` released the index array but
+  left the palette vector's grown capacity in place. Harmless in isolation, but
+  at ~38,600 sections it is megabytes retained for nothing.
+
+Deferred deliberately: neighbour-aware boundary culling (needs the World, Phase
+3) and block textures (Phase 2). `meshSectionCulled` is kept after Phase 2
+replaces it — binary greedy meshing must produce the same visible surface, so
+the naive mesher becomes the oracle to diff against.
 
 ---
 

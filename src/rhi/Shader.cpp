@@ -152,6 +152,27 @@ void Shader::bind() const {
     glUseProgram(m_handle);
 }
 
+void Shader::setUniform(const char* name, const mat4& value) const {
+    glProgramUniformMatrix4fv(m_handle, uniformLocation(name), 1, GL_FALSE, &value[0][0]);
+}
+
+void Shader::setUniform(const char* name, const vec3& value) const {
+    glProgramUniform3fv(m_handle, uniformLocation(name), 1, &value[0]);
+}
+
+void Shader::setUniform(const char* name, i32 value) const {
+    glProgramUniform1i(m_handle, uniformLocation(name), value);
+}
+
+void Shader::setUniform(const char* name, f32 value) const {
+    glProgramUniform1f(m_handle, uniformLocation(name), value);
+}
+
+void Shader::setUniform(const char* name, std::span<const vec4> values) const {
+    glProgramUniform4fv(m_handle, uniformLocation(name),
+                        static_cast<GLsizei>(values.size()), &values[0][0]);
+}
+
 i32 Shader::uniformLocation(const char* name) const {
     return glGetUniformLocation(m_handle, name);
 }

@@ -31,6 +31,11 @@ public:
     void setViewport(int x, int y, int width, int height);
     void clear(f32 r, f32 g, f32 b, f32 a);
 
+    void setDepthTest(bool enabled);
+    /// Back faces are culled when enabled; quad winding is defined by the
+    /// tangent basis in chunk.vert.
+    void setBackfaceCulling(bool enabled);
+
     /// Attribute-less draw. Vertices are generated in the shader from
     /// gl_VertexID; a VertexArray must be bound.
     void drawTriangles(u32 vertexCount, u32 first = 0);

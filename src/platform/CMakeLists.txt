@@ -1,4 +1,5 @@
 add_library(mc_platform STATIC
+  Input.cpp
   Window.cpp
 )
 

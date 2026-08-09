@@ -1,8 +1,10 @@
 #pragma once
 
+#include "core/Math.hpp"
 #include "core/Types.hpp"
 
 #include <filesystem>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -39,6 +41,12 @@ public:
 
     u32 handle() const noexcept { return m_handle; }
     bool valid() const noexcept { return m_handle != 0; }
+
+    void setUniform(const char* name, const mat4& value) const;
+    void setUniform(const char* name, const vec3& value) const;
+    void setUniform(const char* name, i32 value) const;
+    void setUniform(const char* name, f32 value) const;
+    void setUniform(const char* name, std::span<const vec4> values) const;
 
     /// Returns -1 if the name is not an active uniform.
     ///

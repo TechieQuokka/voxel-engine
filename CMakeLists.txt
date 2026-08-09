@@ -97,12 +97,14 @@ endif()
 # target_link_libraries and therefore enforced at link time rather than merely
 # documented. See docs/DESIGN.md section 5.
 #
-# Modules not listed here (world, worldgen, mesh, render) are introduced in
-# their respective phases.
+# Modules not listed here (worldgen) are introduced in their respective phases.
 # ---------------------------------------------------------------------------
 add_subdirectory(src/core)
 add_subdirectory(src/platform)
 add_subdirectory(src/rhi)
+add_subdirectory(src/world)
+add_subdirectory(src/mesh)
+add_subdirectory(src/render)
 add_subdirectory(src/app)
 
 if(MC_BUILD_TESTS)

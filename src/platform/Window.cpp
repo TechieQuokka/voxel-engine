@@ -114,6 +114,10 @@ void Window::setVsync(bool enabled) {
     glfwSwapInterval(enabled ? 1 : 0);
 }
 
+void* Window::nativeHandle() const {
+    return m_impl->handle;
+}
+
 bool Window::consumeResizeEvent() {
     const bool resized = m_resized;
     m_resized = false;
