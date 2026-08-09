@@ -3,11 +3,9 @@
 #include "core/Log.hpp"
 #include "core/Paths.hpp"
 #include "core/Profile.hpp"
-#include "world/BlockRegistry.hpp"
 
 #include <cstddef>
 #include <span>
-#include <vector>
 
 namespace mc {
 namespace {
@@ -24,25 +22,8 @@ constexpr u32 kVerticesPerQuad = 6;
 ChunkRenderer::ChunkRenderer() {
     m_shader = rhi::Shader::fromFiles(assetPath("shaders/chunk.vert"),
                                       assetPath("shaders/chunk.frag"));
-    uploadBlockColors();
-}
-
-void ChunkRenderer::uploadBlockColors() {
-    // Sourced from BlockRegistry so the shader never becomes a second place
-    // where block appearance is defined. Replaced by the texture array in
-    // Phase 2.
-    const BlockRegistry& blocks = BlockRegistry::instance();
-
-    std::vector<vec4> colors(kMaxDebugColors, vec4(1.0f, 0.0f, 1.0f, 1.0f));
-    for (usize i = 0; i < blocks.size() && i < kMaxDebugColors; ++i) {
-        const u32 argb = blocks.all()[i].debugColor;
-        colors[i] = vec4(static_cast<f32>((argb >> 16) & 0xFFu) / 255.0f,
-                         static_cast<f32>((argb >> 8) & 0xFFu) / 255.0f,
-                         static_cast<f32>(argb & 0xFFu) / 255.0f,
-                         static_cast<f32>((argb >> 24) & 0xFFu) / 255.0f);
-    }
-
-    m_shader.setUniform("u_blockColors", std::span<const vec4>(colors));
+    m_textures.emplace();
+    m_shader.setUniform("u_blockTextures", static_cast<i32>(kTextureUnit));
 }
 
 void ChunkRenderer::upload(const ChunkMesh& mesh) {
@@ -72,7 +53,9 @@ void ChunkRenderer::draw(rhi::Device& device, const Camera& camera, const vec3& 
     m_shader.setUniform("u_viewProjection", camera.viewProjectionMatrix());
     m_shader.setUniform("u_sectionOrigin", sectionOrigin);
     m_shader.setUniform("u_cameraPosition", camera.position());
+    m_shader.setUniform("u_aoStrength", m_aoStrength);
 
+    m_textures->bind(kTextureUnit);
     m_quadBuffer->bindBase(rhi::BufferTarget::Storage, kQuadBufferBinding);
     m_vao.bind();
 

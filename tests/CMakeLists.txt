@@ -8,6 +8,7 @@ add_executable(mc_tests
   test_coords.cpp
   test_palette.cpp
   test_mesher.cpp
+  test_greedy_mesher.cpp
 )
 
 target_link_libraries(mc_tests PRIVATE

@@ -1,4 +1,5 @@
 add_library(mc_render STATIC
+  BlockTextures.cpp
   Camera.cpp
   ChunkRenderer.cpp
 )

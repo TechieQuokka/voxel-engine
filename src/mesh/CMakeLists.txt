@@ -1,4 +1,5 @@
 add_library(mc_mesh STATIC
+  BinaryGreedyMesher.cpp
   CulledMesher.cpp
 )
 

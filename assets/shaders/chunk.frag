@@ -1,21 +1,21 @@
 #version 460 core
 
-// Placeholder shading until the texture array lands in Phase 2. Colours come
-// from BlockRegistry so this shader never becomes a second source of truth for
-// block appearance.
-
 in vec3 v_normal;
 in vec3 v_worldPos;
-flat in uint v_material;
+in vec2 v_uv;
+in float v_ao;
+flat in uint v_layer;
+
+layout(binding = 0) uniform sampler2DArray u_blockTextures;
 
 uniform vec3 u_cameraPosition;
-uniform vec4 u_blockColors[16];
+uniform float u_aoStrength;
 
 out vec4 o_fragColor;
 
 // Fixed per-face brightness rather than a real light. This is what makes voxel
-// geometry readable without textures: identical colours on adjacent faces would
-// otherwise merge into a flat silhouette.
+// geometry readable: identical shading on adjacent faces would otherwise merge
+// into a flat silhouette.
 float faceShading(vec3 normal) {
     if (normal.y > 0.5)  return 1.00;   // top
     if (normal.y < -0.5) return 0.55;   // bottom
@@ -24,8 +24,12 @@ float faceShading(vec3 normal) {
 }
 
 void main() {
-    vec4 baseColor = u_blockColors[v_material & 0xFu];
-    vec3 shaded = baseColor.rgb * faceShading(v_normal);
+    vec4 albedo = texture(u_blockTextures, vec3(v_uv, float(v_layer)));
+
+    // v_ao is 1 for fully open corners and 0 for fully occluded ones.
+    float ao = mix(1.0, v_ao, u_aoStrength);
+
+    vec3 shaded = albedo.rgb * faceShading(v_normal) * ao;
 
     // Cheap distance darkening so depth reads correctly without a fog system.
     float distance = length(v_worldPos - u_cameraPosition);

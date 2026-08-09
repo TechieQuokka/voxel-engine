@@ -16,6 +16,23 @@ inline constexpr i32 kWorldMaxY = 320;
 inline constexpr i32 kWorldHeight = kWorldMaxY - kWorldMinY;   // 384
 inline constexpr i32 kSectionsPerColumn = kWorldHeight / kSectionSize; // 12
 
+/// Direction of a block face.
+///
+/// Lives here rather than in `mesh` because a face direction is a property of
+/// the world grid, not of any particular meshing strategy -- and `world` must
+/// not depend on `mesh`. The order is mirrored by the tangent tables in
+/// chunk.vert and must not be changed independently of them.
+enum class Face : u32 {
+    NegX = 0,
+    PosX = 1,
+    NegY = 2,
+    PosY = 3,
+    NegZ = 4,
+    PosZ = 5,
+};
+
+inline constexpr u32 kFaceCount = 6;
+
 /// Absolute block position in the world.
 struct BlockPos {
     i32 x = 0;

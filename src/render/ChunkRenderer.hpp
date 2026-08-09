@@ -3,6 +3,7 @@
 #include "core/Math.hpp"
 #include "core/Types.hpp"
 #include "mesh/ChunkMesh.hpp"
+#include "render/BlockTextures.hpp"
 #include "render/Camera.hpp"
 #include "rhi/Buffer.hpp"
 #include "rhi/Device.hpp"
@@ -15,10 +16,11 @@ namespace mc {
 
 /// Draws packed quads.
 ///
-/// Phase 1 renders exactly one section from a single static buffer. The upload
-/// path becomes persistent-mapped and the draw becomes indirect in Phase 3 and
-/// 5; what stays fixed is that no vertex buffer is ever involved -- quads are
-/// read from an SSBO and expanded in the vertex shader.
+/// Phase 2 renders one section from a single static buffer, textured from an
+/// array texture. The upload path becomes persistent-mapped and the draw
+/// becomes indirect in Phases 3 and 5; what stays fixed is that no vertex
+/// buffer is ever involved -- quads are read from an SSBO and expanded in the
+/// vertex shader.
 class ChunkRenderer {
 public:
     ChunkRenderer();
@@ -29,18 +31,23 @@ public:
     /// `sectionOrigin` is the section's world-space corner in blocks.
     void draw(rhi::Device& device, const Camera& camera, const vec3& sectionOrigin);
 
+    /// 0 disables ambient occlusion shading without remeshing. Useful for
+    /// judging what AO actually contributes visually against what it costs in
+    /// merge ratio.
+    void setAoStrength(f32 strength) { m_aoStrength = strength; }
+    f32 aoStrength() const noexcept { return m_aoStrength; }
+
     usize quadCount() const noexcept { return m_quadCount; }
 
 private:
-    /// Matches the u_blockColors array size in chunk.frag.
-    static constexpr usize kMaxDebugColors = 16;
-
-    void uploadBlockColors();
+    static constexpr u32 kTextureUnit = 0;
 
     rhi::Shader m_shader;
     rhi::VertexArray m_vao;
+    std::optional<BlockTextures> m_textures;
     std::optional<rhi::Buffer> m_quadBuffer;
     usize m_quadCount = 0;
+    f32 m_aoStrength = 1.0f;
 };
 
 } // namespace mc

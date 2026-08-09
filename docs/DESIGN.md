@@ -189,6 +189,11 @@ are numerous and AO is enabled, versus 60%+ under favourable conditions. This
 is why Minecraft itself does not use greedy meshing. Do not assume the
 optimistic number.
 
+**Measured in Phase 2 (see 7.3): on heightmap terrain the cost is 13.5
+percentage points, not a collapse.** The warning above stands as the reason to
+measure, but the pessimistic figure did not materialize here. Re-check once
+caves and overhangs exist.
+
 Mitigations, all three applied together:
 
 - **Use `GL_TEXTURE_2D_ARRAY` instead of a texture atlas.** No bleeding, no
@@ -616,7 +621,7 @@ deliberate.
 |---|---|---|
 | 0 **(done)** | CMake skeleton, GLFW + glad window, triangle | Builds, window opens |
 | 1 **(done)** | Palette-compressed sections, naive culled meshing, camera | One chunk renders |
-| 2 | Binary greedy meshing, texture array | Measured quad count reduction |
+| 2 **(done)** | Binary greedy meshing, texture array | Measured quad count reduction |
 | 3 | Job system, streaming, frustum culling | Render distance 16, stable frame time |
 | 4 | FastNoise2 terrain generation | Infinite terrain traversal |
 | 5 | Indirect draw + GPU culling | Draw calls < 5 |
@@ -697,6 +702,80 @@ Deferred deliberately: neighbour-aware boundary culling (needs the World, Phase
 replaces it — binary greedy meshing must produce the same visible surface, so
 the naive mesher becomes the oracle to diff against.
 
+### 7.3 Phase 2 result
+
+Binary greedy meshing and the block texture array. Measured on the same test
+section, release build with LTO, mean of 200 runs:
+
+| Strategy | Quads | Reduction | Mesh time |
+|---|---|---|---|
+| Culled (reference) | 4,842 | — | 343.1 us |
+| **Greedy + AO-aware merge** | **2,083** | **57.0%** | **184.4 us** |
+| Greedy, AO ignored | 1,428 | 70.5% | 182.1 us |
+
+#### The AO question, answered
+
+Section 3.6 warned that AO-aware merging could collapse the benefit to ~15%,
+citing published measurements, and flagged this as the most fragile assumption
+in the design. **On this terrain it does not.** AO-aware merging keeps 57% of
+the reduction against 70.5% when AO is ignored — a real cost, but nothing like
+the collapse that was feared.
+
+**Decision: keep AO-aware merging for near chunks.** Losing 13.5 percentage
+points of merging to keep correct ambient occlusion is a good trade at close
+range, where AO is what makes voxel geometry read as solid. Distant LOD levels
+still turn it off, where the extra merging is free because AO is not
+perceptible there.
+
+This number is specific to smooth heightmap terrain with few materials. It
+should be re-measured once real worldgen produces caves and overhangs (Phase 4),
+where AO varies far more per face.
+
+#### Greedy meshing had to be made fast twice
+
+The first implementation produced the right quad counts but was **1.5x slower
+than the reference mesher** (517 us vs 343 us). The bitwise face culling was
+correct, but the merge step then walked all 6 x 32 x 32 x 32 = 196,608 plane
+cells to find the ~4,800 that actually held a face — discarding exactly the
+advantage the masks were built to provide.
+
+Rewriting the scatter to iterate only set bits (`countr_zero` over each mask
+word, clearing with `bits &= bits - 1`) and to skip empty planes brought it to
+184 us: **1.86x faster than the reference mesher**, on top of producing 57%
+fewer quads.
+
+The lesson generalizes: building the bitmask is not the optimization. Never
+touching the empty cells is.
+
+#### Texture array
+
+`GL_TEXTURE_2D_ARRAY` with `GL_REPEAT`, 16x16 RGBA8 layers, mipmapped with
+anisotropic filtering and nearest magnification. The array is what makes merged
+quads work at all: `chunk.vert` emits UVs running 0..width and 0..height so a
+merged quad tiles its texture once per block. An atlas cannot do that — its
+tiles need padding against bleeding, and padding forbids wrapping.
+
+The `material` field of a Quad therefore holds a **texture layer, not a
+BlockId**. Grass is the case that forces this: one block type, three layers
+(top, side, bottom).
+
+Textures are **generated procedurally** rather than loaded from files. This
+settles one of the open questions from section 8: it keeps binary assets out of
+the repository, the output is deterministic, and it avoids an image-loading
+dependency entirely. Swapping in authored PNGs later changes only how the pixel
+buffer is filled.
+
+#### Layering fix
+
+`Face` moved from `mesh/Quad.hpp` to `world/Coords.hpp`. `BlockRegistry` needs
+it to answer `textureLayer(block, face)`, and `world` including a `mesh` header
+would have inverted the dependency. A face direction is a property of the world
+grid, not of any particular meshing strategy.
+
+Verification: the equivalence tests assert that greedy and reference meshing
+cover the *same cells*, not merely the same total area — an area-only check
+would pass if a quad were displaced with a compensating error elsewhere.
+
 ---
 
 ## 8. Open Questions
@@ -704,11 +783,14 @@ the naive mesher becomes the oracle to diff against.
 Filled in with recommended defaults above, but expected to need revisiting once
 implementation makes contact with reality:
 
-- **Actual benefit of AO-aware merging** — measure in Phase 2 and decide then.
-  If the gain is negligible, drop greedy meshing for near chunks entirely.
+- ~~**Actual benefit of AO-aware merging**~~ — **resolved in Phase 2** (see
+  7.3). AO-aware merging costs 13.5 percentage points of reduction, not the
+  feared collapse to ~15%. Kept for near chunks; still disabled for LOD levels.
+  Re-measure once caves and overhangs exist (Phase 4).
+- ~~**Block texture source**~~ — **resolved in Phase 2**: generated
+  procedurally, no binary assets in the repository.
 - **Occlusion culling method** — HZB, visibility graph, or both. Decided by
   profiling in Phase 8.
-- **Block texture source** — hand-authored or procedurally generated.
 - **World persistence** — disk format, and whether persistence is in scope at
   all, is still undecided.
 

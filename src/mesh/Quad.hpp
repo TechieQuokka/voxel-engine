@@ -2,21 +2,9 @@
 
 #include "core/Assert.hpp"
 #include "core/Types.hpp"
+#include "world/Coords.hpp" // Face
 
 namespace mc {
-
-/// Face direction. The order matches the axis/sign decomposition used by the
-/// mesher and is mirrored in the shader, so it must not be reordered.
-enum class Face : u32 {
-    NegX = 0,
-    PosX = 1,
-    NegY = 2,
-    PosY = 3,
-    NegZ = 4,
-    PosZ = 5,
-};
-
-inline constexpr u32 kFaceCount = 6;
 
 /// One merged face, packed into 64 bits (DESIGN.md 3.7).
 ///

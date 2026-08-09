@@ -3,10 +3,12 @@
 #include "core/Log.hpp"
 #include "core/Paths.hpp"
 #include "core/Profile.hpp"
+#include "mesh/BinaryGreedyMesher.hpp"
 #include "mesh/CulledMesher.hpp"
 #include "platform/Clock.hpp"
 #include "world/BlockRegistry.hpp"
 
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <format>
@@ -69,14 +71,9 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
 
     buildTestSection();
 
-    ChunkMesh mesh;
-    meshSectionCulled(m_section, mesh);
+    ChunkMesh mesh = reportMeshingComparison();
     m_chunkRenderer->upload(mesh);
 
-    const usize faceCount = static_cast<usize>(kSectionVolume) * 6;
-    logInfo("Section meshed: {} quads (of {} possible faces, {:.1f}% emitted)",
-            mesh.quadCount(), faceCount,
-            100.0 * static_cast<f64>(mesh.quadCount()) / static_cast<f64>(faceCount));
     logInfo("Section storage: {} bits/voxel, palette {} entries, {} bytes",
             m_section.storage().bitsPerIndex(),
             m_section.storage().paletteSize(),
@@ -131,6 +128,71 @@ void Engine::buildTestSection() {
         m_section.set(16, y, 17, kSandBlock);
         m_section.set(17, y, 17, kSandBlock);
     }
+}
+
+ChunkMesh Engine::reportMeshingComparison() {
+    // The Phase 2 exit criterion is a measured quad-count reduction, and the
+    // open design question is what AO-aware merging actually costs. Both are
+    // answered here rather than assumed.
+    constexpr int kTimingRuns = 200;
+
+    struct Variant {
+        const char* name;
+        ChunkMesh mesh;
+        f64 microseconds = 0.0;
+    };
+
+    ChunkMesh culled;
+    meshSectionCulled(m_section, culled);
+
+    std::array<Variant, 2> variants{{
+        {"greedy + AO-aware merge", {}, 0.0},
+        {"greedy, AO ignored", {}, 0.0},
+    }};
+
+    const std::array<GreedyMeshOptions, 2> configs{{
+        {.emitBoundaryFaces = true, .ambientOcclusion = true, .aoAwareMerging = true},
+        {.emitBoundaryFaces = true, .ambientOcclusion = true, .aoAwareMerging = false},
+    }};
+
+    Clock clock;
+
+    const f64 culledStart = clock.elapsed();
+    for (int i = 0; i < kTimingRuns; ++i) {
+        ChunkMesh scratch;
+        meshSectionCulled(m_section, scratch);
+    }
+    const f64 culledMicros =
+        (clock.elapsed() - culledStart) * 1e6 / static_cast<f64>(kTimingRuns);
+
+    for (usize i = 0; i < variants.size(); ++i) {
+        meshSectionGreedy(m_section, variants[i].mesh, configs[i]);
+
+        const f64 start = clock.elapsed();
+        for (int run = 0; run < kTimingRuns; ++run) {
+            ChunkMesh scratch;
+            meshSectionGreedy(m_section, scratch, configs[i]);
+        }
+        variants[i].microseconds =
+            (clock.elapsed() - start) * 1e6 / static_cast<f64>(kTimingRuns);
+    }
+
+    const auto baseline = static_cast<f64>(culled.quadCount());
+
+    logInfo("--- meshing comparison (32^3 test section) ---");
+    logInfo("{:<24} {:>8} {:>10} {:>12}", "strategy", "quads", "reduction", "time");
+    logInfo("{:<24} {:>8} {:>10} {:>10.1f}us", "culled (reference)",
+            culled.quadCount(), "-", culledMicros);
+
+    for (const Variant& variant : variants) {
+        const f64 reduction =
+            100.0 * (1.0 - static_cast<f64>(variant.mesh.quadCount()) / baseline);
+        logInfo("{:<24} {:>8} {:>9.1f}% {:>10.1f}us",
+                variant.name, variant.mesh.quadCount(), reduction, variant.microseconds);
+    }
+    logInfo("----------------------------------------------");
+
+    return std::move(variants[0].mesh);
 }
 
 void Engine::updateCamera(f64 deltaTime) {

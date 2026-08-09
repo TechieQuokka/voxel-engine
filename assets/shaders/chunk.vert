@@ -19,11 +19,14 @@ uniform vec3 u_cameraPosition;
 
 out vec3 v_normal;
 out vec3 v_worldPos;
-flat out uint v_material;
+out vec2 v_uv;
+out float v_ao;
+flat out uint v_layer;
 
 // Tangent basis per face, chosen so that cross(U, V) equals the face normal.
 // That makes every quad wind counter-clockwise when seen from outside, which is
-// what lets back-face culling work. Order matches the Face enum.
+// what lets back-face culling work. Order matches the Face enum in
+// world/Coords.hpp and the kPlans table in BinaryGreedyMesher.cpp.
 const vec3 kNormals[6] = vec3[6](
     vec3(-1.0,  0.0,  0.0),   // NegX
     vec3( 1.0,  0.0,  0.0),   // PosX
@@ -57,6 +60,10 @@ const vec2 kCorners[6] = vec2[6](
     vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0)
 );
 
+// Which packed AO corner each of the six vertices reads. Must match the corner
+// order in computeAo() in BinaryGreedyMesher.cpp.
+const uint kCornerIds[6] = uint[6](0u, 1u, 2u, 0u, 2u, 3u);
+
 void main() {
     uint quadIndex = uint(gl_VertexID) / 6u;
     uint cornerIndex = uint(gl_VertexID) % 6u;
@@ -77,12 +84,21 @@ void main() {
     // the low word and bit 32 is the bottom of the high word.
     uint face = ((lo >> 30) & 0x3u) | ((hi & 0x1u) << 2);
 
-    v_material = (hi >> 9) & 0xFFFFu;
+    uint aoBits = (hi >> 1) & 0xFFu;
+    v_layer = (hi >> 9) & 0xFFFFu;
 
     vec2 corner = kCorners[cornerIndex];
     vec3 localPos = origin
                   + kTangentU[face] * (corner.x * width)
                   + kTangentV[face] * (corner.y * height);
+
+    // UVs run 0..width and 0..height so a merged quad tiles its texture once
+    // per block. This is only possible because block textures live in an array
+    // with GL_REPEAT rather than in an atlas.
+    v_uv = vec2(corner.x * width, corner.y * height);
+
+    uint ao = (aoBits >> (2u * kCornerIds[cornerIndex])) & 0x3u;
+    v_ao = float(ao) / 3.0;
 
     v_worldPos = u_sectionOrigin + localPos;
     v_normal = kNormals[face];

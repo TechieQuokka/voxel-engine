@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Types.hpp"
+#include "mesh/ChunkMesh.hpp"
 #include "platform/Input.hpp"
 #include "platform/Window.hpp"
 #include "render/Camera.hpp"
@@ -38,6 +39,9 @@ public:
 
 private:
     void buildTestSection();
+    /// Meshes the test section with each strategy, logs the comparison, and
+    /// returns the mesh to actually render.
+    ChunkMesh reportMeshingComparison();
     void updateCamera(f64 deltaTime);
     void renderFrame();
     void captureAndExit();
