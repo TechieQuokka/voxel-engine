@@ -1,0 +1,78 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CPM_SOURCE_CACHE": "${sourceDir}/.cache/cpm"
+      }
+    },
+
+    {
+      "name": "debug",
+      "inherits": "base",
+      "displayName": "Debug",
+      "description": "-O0 -g, assertions on",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "MC_BUILD_TESTS": "ON"
+      }
+    },
+
+    {
+      "name": "asan",
+      "inherits": "debug",
+      "displayName": "Debug + AddressSanitizer",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+
+    {
+      "name": "release",
+      "inherits": "base",
+      "displayName": "Release",
+      "description": "-O3 with LTO, assertions off",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
+        "CMAKE_AR": "/usr/bin/gcc-ar",
+        "CMAKE_RANLIB": "/usr/bin/gcc-ranlib",
+        "CMAKE_NM": "/usr/bin/gcc-nm",
+        "MC_BUILD_TESTS": "OFF"
+      }
+    },
+
+    {
+      "name": "release-tracy",
+      "inherits": "release",
+      "displayName": "Release + Tracy",
+      "description": "Release build with Tracy profiler instrumentation",
+      "cacheVariables": {
+        "MC_ENABLE_TRACY": "ON"
+      }
+    }
+  ],
+
+  "buildPresets": [
+    { "name": "debug",         "configurePreset": "debug",         "jobs": 0 },
+    { "name": "asan",          "configurePreset": "asan",          "jobs": 0 },
+    { "name": "release",       "configurePreset": "release",       "jobs": 0 },
+    { "name": "release-tracy", "configurePreset": "release-tracy", "jobs": 0 }
+  ],
+
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

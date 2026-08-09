@@ -1,0 +1,21 @@
+# Build output
+build/
+out/
+cmake-build-*/
+
+# CPM dependency cache (when CPM_SOURCE_CACHE points inside the tree)
+.cache/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local, machine-specific presets
+CMakeUserPresets.json
+
+# Compiled artifacts
+*.o
+*.a
+*.so
