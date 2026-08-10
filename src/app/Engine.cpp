@@ -31,13 +31,16 @@ constexpr f32 kFovYDegrees = 70.0f;
 /// a near plane this close without z-fighting far away.
 constexpr f32 kNearPlane = 0.05f;
 
-/// Per-frame streaming budgets, for the single-threaded path.
+/// How much work the main thread hands to the pool per frame.
 ///
-/// Generation is ~0.40 ms per column and meshing ~0.12 ms per section, so these are
-/// roughly 6 ms and 4 ms of work -- enough to fill a distance-16 region in about a
-/// second, and too much to hold 60 FPS while doing it. That is the honest state of
-/// 3d: the budgets exist so the frame loop stays responsive, and 3f removes the
-/// need for them by moving both onto the worker pool.
+/// These bound *submission*, not execution -- the pool does the work, and the frame
+/// loop never waits for it. They exist because submitting is not free: each meshing
+/// job gathers a neighbourhood and pins nine columns, so an unbounded submit on the
+/// frame a region reloads would put thousands of those in one frame.
+///
+/// Measured at distance 24, flying at 40 blocks/s, these keep the loaded set complete
+/// -- nothing left generating at the end of a 20-second run -- so they are not the
+/// limiting factor and there is no reason to raise them.
 constexpr usize kColumnsPerFrame = 16;
 constexpr usize kSectionsPerFrame = 32;
 
@@ -700,40 +703,83 @@ void Engine::stepFrame(f64 deltaTime) {
     m_frameForUpload.store(m_frame, std::memory_order_relaxed);
 }
 
+void Engine::followGround() {
+    const vec3& position = m_camera.position();
+    const i32 blockX = static_cast<i32>(std::floor(position.x));
+    const i32 blockZ = static_cast<i32>(std::floor(position.z));
+
+    // Read the world that is already loaded rather than asking the generator. A
+    // surfaceHeight() call evaluates a whole column of density, and doing that once a
+    // frame would put terrain generation inside the thing being measured.
+    for (i32 y = kWorldMaxY - 1; y >= kWorldMinY; --y) {
+        if (m_world->blockAt(BlockPos{blockX, y, blockZ}) != kAirBlock) {
+            m_camera.setPosition({position.x,
+                                  static_cast<f32>(y) + kBenchEyeHeight,
+                                  position.z});
+            return;
+        }
+    }
+    // Nothing solid below -- the column has not streamed in yet. Hold the current
+    // height rather than dropping into the void.
+}
+
 void Engine::runBenchmark() {
     m_window->setVsync(false);
 
-    // Fly forward at a steady rate, so columns cross the region boundary and the
-    // streaming path is part of what gets measured.
+    /// Roughly a sprinting player. Fast enough that columns cross the region boundary
+    /// continuously, so streaming is part of what gets measured.
     constexpr f32 kFlySpeed = 40.0f;
-    constexpr f64 kFixedStep = 1.0 / 60.0;
+    /// A frame longer than this is a stall, not a step; do not let the camera lurch.
+    constexpr f64 kMaxStep = 0.1;
 
     std::vector<f64> frameMs;
-    frameMs.reserve(m_options.benchFrames);
+    frameMs.reserve(4096);
+
+    const vec3 start = m_camera.position();
 
     Clock clock;
     f64 previous = clock.elapsed();
 
-    for (u32 frame = 0; frame < m_options.benchFrames && !m_window->shouldClose(); ++frame) {
+    while (clock.elapsed() < m_options.benchSeconds && !m_window->shouldClose()) {
+        // Standard delta time: `step` is how long the *previous* frame took, and it is
+        // both what the camera advances by and what gets recorded. Reading the clock
+        // at the top while updating `previous` at the bottom measures the gap between
+        // iterations instead of the frame -- which is nearly zero, and left the camera
+        // moving 11 blocks in 20 seconds instead of 800.
+        const f64 now = clock.elapsed();
+        const f64 step = std::min(now - previous, kMaxStep);
+        previous = now;
+
         m_window->pollEvents();
 
-        // A fixed step rather than the measured one, so the camera follows the same
-        // path regardless of how fast the machine runs it and two runs are
-        // comparable.
-        m_camera.move(m_camera.forward() * kFlySpeed * static_cast<f32>(kFixedStep));
+        // Horizontally, then follow the ground.
+        //
+        // Flying along the view direction was wrong and quietly invalidated every
+        // number this produced: the spawn pitch is -0.18, so 2,000 blocks of travel
+        // sank the camera 358 blocks and out through the bottom of the world, and the
+        // later frames measured an underground view with almost nothing in it.
+        vec3 forward = m_camera.forward();
+        forward.y = 0.0f;
+        if (math::dot(forward, forward) > 0.0f) {
+            m_camera.move(math::normalize(forward) * kFlySpeed * static_cast<f32>(step));
+        }
+        followGround();
 
-        stepFrame(kFixedStep);
+        stepFrame(step);
         m_window->swapBuffers();
 
-        const f64 now = clock.elapsed();
-        frameMs.push_back((now - previous) * 1000.0);
-        previous = now;
+        frameMs.push_back(step * 1000.0);
     }
 
-    if (frameMs.empty()) {
+    const f32 travelled = math::length(m_camera.position() - start);
+
+    if (frameMs.size() < 2) {
         logWarn("Benchmark produced no frames");
         return;
     }
+    // The first sample is the gap before the loop started, not a frame. Dropping it
+    // is why `min` is a real number rather than 0.00.
+    frameMs.erase(frameMs.begin());
 
     std::vector<f64> sorted = frameMs;
     std::sort(sorted.begin(), sorted.end());
@@ -749,14 +795,32 @@ void Engine::runBenchmark() {
     };
 
     const f64 mean = total / static_cast<f64>(frameMs.size());
-    logInfo("--- {} frames, vsync off, render distance {} ---",
-            frameMs.size(), m_options.renderDistance);
+    logInfo("--- {:.0f} s, {} frames, vsync off, render distance {} ---",
+            m_options.benchSeconds, frameMs.size(), m_options.renderDistance);
+    logInfo("camera flew {:.0f} blocks ({:.0f} columns) at {} blocks/s",
+            travelled, travelled / static_cast<f32>(kSectionSize), 40);
     logInfo("mean {:.2f} ms ({:.0f} FPS) | median {:.2f} | p99 {:.2f} | min {:.2f} | max {:.2f}",
             mean, 1000.0 / mean, percentile(0.5), percentile(0.99), sorted.front(), sorted.back());
 
     const ChunkRenderer::Stats& stats = m_chunkRenderer->stats();
     logInfo("last frame: {} sections drawn, {} quads, {} columns + {} sections culled",
             stats.sectionsDrawn, stats.quadsDrawn, stats.columnsCulled, stats.sectionsCulled);
+    const vec3& end = m_camera.position();
+    const World::HeldCounts held = m_world->heldCounts(cameraColumn());
+    const auto expected = static_cast<usize>(2 * m_options.renderDistance + 1);
+    logInfo("camera ended at {:.0f},{:.0f},{:.0f} (column {},{})",
+            end.x, end.y, end.z, cameraColumn().x, cameraColumn().z);
+    logInfo("columns loaded {} (region wants {}), outside region {}, pinned {}, generating {}",
+            m_world->loadedChunkCount(), expected * expected,
+            held.outsideRegion, held.pinned, held.generating);
+
+    // A backlog here means the camera outran streaming, and the frame times above
+    // describe a world with holes in it rather than the one a player would see.
+    if (held.generating > expected) {
+        logWarn("streaming did not keep up: {} columns still generating -- the frame "
+                "times above are measuring an incomplete world",
+                held.generating);
+    }
     logInfo("arena: {} MiB of {} used across {} sections",
             m_meshStore->usedBytes() / (1024 * 1024),
             m_meshStore->capacityBytes() / (1024 * 1024),
@@ -772,7 +836,7 @@ void Engine::run() {
         return;
     }
 
-    if (m_options.benchFrames > 0) {
+    if (m_options.benchSeconds > 0.0) {
         runBenchmark();
         return;
     }

@@ -73,6 +73,16 @@ public:
     usize loadedChunkCount() const noexcept { return m_chunks.size(); }
     usize memoryUsage() const;
 
+    /// Columns held past their welcome, by reason. Both should sit near zero in a
+    /// steady state; a number that only grows is a leaked pin or a lost job, and the
+    /// symptom is a loaded set larger than the render distance asks for.
+    struct HeldCounts {
+        usize pinned = 0;
+        usize generating = 0;
+        usize outsideRegion = 0;
+    };
+    HeldCounts heldCounts(ChunkPos center) const;
+
     /// Visits every loaded column. Used by the streaming scheduler and, in 3d, by
     /// the renderer.
     template <typename F>

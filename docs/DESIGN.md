@@ -856,8 +856,12 @@ exactly — 4,842 → 2,083 quads AO-aware (57.0%), 1,428 AO-ignoring (70.5%).
 
 ### 7.5 Phase 3 result
 
-**Exit criterion met.** Render distance 16 holds a p99 frame time of 2.08 ms — eight
-times under a 60 FPS budget — and distance 24 still holds 1.76 ms.
+**Exit criterion met.** Render distance 16 holds a p99 frame time of 0.85 ms — twenty
+times under a 60 FPS budget — and distance 24 holds 2.14 ms.
+
+> **The numbers in this section were re-measured after Phase 4a.** The benchmark that
+> produced the original ones was broken in two ways, both found by running a longer
+> flight and noticing that the last frame drew nothing. See 7.7.
 
 Phase 3 was built in sub-steps, each verifiable on its own. The job system was wired
 in **last**, deliberately: getting streaming correct single-threaded first meant a
@@ -1055,10 +1059,10 @@ the camera flying at 40 blocks/s:
 Against 3d/3e at distance 16, p99 went from 29.7 ms to 2.08 ms and warm-up from 0.86 s
 to 0.24 s. Two things in that table are worth more than the headline:
 
-- **p99 does not grow with render distance** — it falls slightly, because per-frame
-  streaming work becomes a smaller share of a longer frame. That is what "stable frame
-  time" was supposed to mean, and it is the actual exit criterion rather than the
-  average.
+- **Nothing is left generating at the end of any run.** That is the claim "streaming
+  keeps up" reduces to, and it is now checked rather than assumed — the benchmark warns
+  when the backlog exceeds one region's worth, because frame times measured against a
+  world with holes in it mean nothing.
 - **Two fifths of all meshed sections produce zero quads.** They sit entirely inside
   rock, every face hidden by a neighbour, so they are meshed once and stored nowhere.
   This number only exists because 3c made boundary culling real; before it, every one
@@ -1137,16 +1141,57 @@ Measured, release + LTO, 6 workers, FastNoise2 dispatching to AVX2:
 | …placeholder generator, for comparison | 0.06 s | 0.24 s |
 | Sections meshed | 1,156 | 4,967 |
 | …holding geometry | 565 | 2,458 |
-| Frame p99 | 1.52 ms | 2.65 ms |
-| Arena used | 1 MiB | 9 MiB |
+| …fully enclosed, empty | 591 | 2,509 |
+| Frame p99 | 0.55 ms | 0.85 ms |
+| Arena used | 2 MiB | 10 MiB |
 
 Real terrain costs about 3.5x the placeholder to generate and still streams inside the
-frame budget — p99 went from 2.22 to 1.52 ms at distance 8 and 2.08 to 2.65 ms at 16,
-which is noise around the same number rather than a regression. Note that the
+frame budget, with nothing left generating after 20 seconds of flight. Note that the
 fully-enclosed section count has already fallen as a share (2,509 of 4,967 versus
 1,532 of 3,812) because ridged terrain has more surface per column; caves in 4b will
 push it down further, and the arena sizing in `meshArenaBytesFor` should be rechecked
 then.
+
+### 7.7 The benchmark was measuring the wrong thing
+
+Worth its own section, because every frame-time number in 7.5 and 7.6 came from it and
+because the failure was silent in exactly the way a bad instrument usually is.
+
+The symptom appeared only on a longer run: after 3,000 frames at distance 8 the report
+said `0 sections drawn, 0 quads`, and the loaded set had grown to 357 columns where the
+region asks for 289, with 162 of them still generating. Two independent bugs.
+
+**The camera flew along its view direction.** The spawn pitch is -0.18, so 2,000 blocks
+of travel sank it 358 blocks and out through the bottom of the world. Every run had been
+measuring an increasingly underground view. Fixed by moving along the horizontal
+projection of forward and following the terrain height, read from already-loaded chunks
+rather than from the generator — calling `surfaceHeight` per frame would have put terrain
+generation inside the thing being measured.
+
+**The camera advanced by a fixed 1/60 s step while frames ran as fast as they could.** At
+5,000 FPS that is 83x real speed: 20 seconds of simulated motion in 0.4 s of wall time.
+Streaming could not possibly keep up, so the world had holes and the visible set emptied.
+This biases the two halves of the measurement in *opposite* directions — streaming
+submission far heavier than reality, rendering far lighter — which makes the result
+uninterpretable rather than merely wrong. The benchmark is now duration-based
+(`--bench-seconds`) and advances the camera by measured delta time, so 40 blocks/s means
+40 blocks per real second.
+
+Correcting it moved distance-16 p99 from 2.08 ms to 0.81 ms, and the numbers are now
+attached to a full visible set (716 sections, 260,000 quads) rather than a sparse one.
+
+Three lessons, all recorded in HANDOFF.md:
+
+- **A benchmark needs its own sanity check.** The run now reports how far the camera
+  actually travelled and how many columns are still generating, and warns when the
+  backlog exceeds a region. Both would have caught this immediately.
+- **Delta time is easy to get wrong in a way that still runs.** Reading the clock at the
+  top of the loop while updating `previous` at the bottom measures the gap *between*
+  iterations, not the frame — nearly zero. The first attempt at the fix did exactly this
+  and moved the camera 11 blocks in 20 seconds.
+- **A measurement that flatters you deserves more suspicion than one that does not.**
+  The p99 improved when the instrument was fixed, but it improved for a checkable
+  reason.
 
 ---
 

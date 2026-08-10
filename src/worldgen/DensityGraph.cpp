@@ -215,8 +215,10 @@ void DensityGraph::fillColumn(ChunkPos pos, Climate& climate, DensityField& dens
     const i32 originX = pos.x * kSectionSize / DensityField::kCellWidth;
     const i32 originZ = pos.z * kSectionSize / DensityField::kCellWidth;
 
+    // The grid steps by one cell, so the frequency is scaled by the cell width to
+    // stay expressed in cycles per *block*. Only the width appears: the Y cell is
+    // twice as tall, and DomainAxisScale on Y already accounts for that anisotropy.
     constexpr f32 kCellW = static_cast<f32>(DensityField::kCellWidth);
-    constexpr f32 kCellH = static_cast<f32>(DensityField::kCellHeight);
 
     // 2D climate: 9 x 9 = 81 samples per column.
     {
@@ -252,9 +254,6 @@ void DensityGraph::fillColumn(ChunkPos pos, Climate& climate, DensityField& dens
             DensityField::kGridX, DensityField::kGridY, DensityField::kGridZ,
             freq::kDensity3D * kCellW,
             static_cast<int>(m_impl->seed) + 4231);
-        // Note the single frequency: the Y cell is twice the width, and the
-        // DomainAxisScale on Y already accounts for the anisotropy.
-        (void)kCellH;
     }
 
     // Combine into the final density, on the grid.

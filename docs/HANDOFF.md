@@ -32,8 +32,10 @@ a remote.**
 
 What runs today: **FastNoise2 terrain** — continents, erosion, ridged peaks and
 valleys, a 3D warp for overhangs, and a surface pass that grasses the top of every
-solid run. It streams infinitely, holds a **p99 frame time of 2.65 ms at render
-distance 16**, and draws the whole visible set with **one** `glMultiDrawArrays`.
+solid run. It streams infinitely, holds a **p99 frame time of 0.85 ms at render
+distance 16** (2.14 ms at distance 24), and draws the whole visible set with **one**
+`glMultiDrawArrays`. Verified interactively: 31 seconds of flying, vsync-locked 60 FPS
+throughout, no dropped frames and no GL messages.
 Generation and meshing run on a 6-worker pool, uploads on their own thread, and the
 main thread only ever submits.
 
@@ -72,10 +74,13 @@ TSAN_OPTIONS="suppressions=$PWD/tsan.supp report_mutex_bugs=0" \
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
 convert /tmp/shot.ppm /tmp/shot.png     # ImageMagick is installed
 
-# Frame-time distribution: vsync off, no cursor capture, camera flies forward.
-# The spawn height is taken from the terrain, so this is safe on any seed.
-# The only way to measure the exit criterion -- vsync makes every frame read 16.7 ms.
-./build/release/src/app/minecraft --render-distance 16 --bench-frames 900
+# Frame-time distribution: vsync off, no cursor capture, camera flies for N REAL
+# seconds at 40 blocks/s and follows the terrain. Vsync would make every frame read
+# 16.7 ms, so the benchmark turns it off.
+#
+# Read the "camera flew" and "columns loaded / generating" lines before trusting the
+# frame times -- see the note in section 5 about this benchmark lying twice.
+./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 
 # Re-run the mesher comparison (off by default; it meshes a few hundred times)
 ./build/release/src/app/minecraft --mesh-benchmark
@@ -215,6 +220,18 @@ Learned the hard way; all of them cost real time.
   angle is not. See DESIGN.md 7.6 for the target numbers.
 - **The camera spawn is derived from the surface height.** A constant is wrong the
   moment the shaper changes, and starting inside a hill does not look like a spawn bug.
+- **This benchmark has lied twice; check its sanity lines before its results.** It
+  reports how far the camera actually flew and how many columns are still generating,
+  and warns when the backlog exceeds one region. Both checks exist because of real
+  failures: the camera once flew along its view direction and sank out of the bottom of
+  the world, and it once advanced by a fixed 1/60 step while frames ran at 5,000 FPS —
+  83x real speed, so streaming could never keep up and the visible set emptied. That
+  second one biases streaming and rendering in *opposite* directions, which makes the
+  result uninterpretable rather than merely pessimistic. DESIGN.md 7.7 has the details.
+- **Delta time is easy to get wrong in a way that still runs.** Reading the clock at the
+  top of a loop while updating `previous` at the bottom measures the gap *between*
+  iterations, not the frame. The first attempt at fixing the above did exactly that and
+  moved the camera 11 blocks in 20 seconds.
 - CMake needs `LANGUAGES C CXX`; GLFW and glad are C.
 - Ninja is not installed; presets use Unix Makefiles.
 

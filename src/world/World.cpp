@@ -128,6 +128,22 @@ SectionNeighbourhood World::neighbourhood(SectionPos center) const {
     return result;
 }
 
+World::HeldCounts World::heldCounts(ChunkPos center) const {
+    HeldCounts counts;
+    for (const auto& [pos, chunk] : m_chunks) {
+        if (chunk->pinned()) {
+            ++counts.pinned;
+        }
+        if (chunk->state() == ChunkState::Generating) {
+            ++counts.generating;
+        }
+        if (!isInRegion(pos, center)) {
+            ++counts.outsideRegion;
+        }
+    }
+    return counts;
+}
+
 usize World::memoryUsage() const {
     usize total = 0;
     for (const auto& [pos, chunk] : m_chunks) {

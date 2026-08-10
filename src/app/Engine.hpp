@@ -48,14 +48,21 @@ public:
         /// took, instead of filling in over several seconds. For measurement.
         bool warmUp = false;
 
-        /// Runs this many frames with vsync off and no cursor capture, then reports
-        /// the frame-time distribution and exits.
+        /// Flies the camera for this many **real** seconds with vsync off and no
+        /// cursor capture, then reports the frame-time distribution and exits.
         ///
-        /// Phase 3's exit criterion is a claim about frame time, and vsync makes
-        /// that unmeasurable -- every frame reads as 16.7 ms whatever the real cost.
-        /// The camera flies forward during the run so streaming is measured too; a
-        /// static camera would report the frame time of a world that never changes.
-        u32 benchFrames = 0;
+        /// Vsync makes a frame-time criterion unmeasurable -- every frame reads as
+        /// 16.7 ms whatever it cost -- so the benchmark turns it off.
+        ///
+        /// Wall-clock seconds, and the camera advances by *measured* delta time, for
+        /// a reason that invalidated an earlier version of this. Advancing by a fixed
+        /// 1/60 step while rendering at 4,000 FPS moved the camera at 66x real speed:
+        /// streaming could not keep up, 162 of 289 columns sat unfinished, and the
+        /// visible set emptied out. That biases the two halves of the measurement in
+        /// opposite directions -- streaming submission too heavy, rendering too light
+        /// -- and the result means nothing. Tying motion to real time costs
+        /// reproducibility of the exact path and buys a number that describes a player.
+        f64 benchSeconds = 0.0;
     };
 
     /// No default argument: a nested struct's default member initializers are
@@ -139,6 +146,11 @@ private:
     void captureAndExit();
     void reportStats(f64 fps, f64 frameMs);
     void runBenchmark();
+    /// Keeps the benchmark camera a fixed distance above the terrain below it.
+    void followGround();
+
+    /// Eye height above ground for the benchmark flight.
+    static constexpr f32 kBenchEyeHeight = 14.0f;
     /// One iteration of the frame loop, minus windowing and input.
     void stepFrame(f64 deltaTime);
 

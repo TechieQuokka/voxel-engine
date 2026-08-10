@@ -30,8 +30,8 @@ int main(int argc, char** argv) {
             options.meshBenchmark = true;
         } else if (arg == "--warm-up") {
             options.warmUp = true;
-        } else if (arg == "--bench-frames" && i + 1 < args.size()) {
-            options.benchFrames = static_cast<mc::u32>(std::max(0, std::atoi(args[++i])));
+        } else if (arg == "--bench-seconds" && i + 1 < args.size()) {
+            options.benchSeconds = std::atof(args[++i]);
             options.warmUp = true; // Measure the steady state, not the fill.
         } else if (arg == "--render-distance" && i + 1 < args.size()) {
             options.renderDistance = std::atoi(args[++i]);
@@ -42,7 +42,7 @@ int main(int argc, char** argv) {
         } else {
             mc::logError("Unknown argument: {}", arg);
             mc::logError("Usage: minecraft [--capture <path.ppm>] [--mesh-benchmark]"
-                         " [--render-distance N] [--warm-up] [--bench-frames N]");
+                         " [--render-distance N] [--warm-up] [--bench-seconds S]");
             return EXIT_FAILURE;
         }
     }
