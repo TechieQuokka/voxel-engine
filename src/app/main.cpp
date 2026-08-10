@@ -1,5 +1,7 @@
 #include "app/Engine.hpp"
 #include "core/Log.hpp"
+#include "worldgen/Generator.hpp"
+#include "worldgen/TerrainProbe.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -21,10 +23,19 @@ int main(int argc, char** argv) {
 
     mc::Engine::Options options;
 
+    // Handled before the engine exists, because it needs neither a window nor GL --
+    // it generates terrain and counts it.
+    bool probe = false;
+    mc::ProbeOptions probeOptions;
+
     const std::span<char*> args(argv, static_cast<std::size_t>(argc));
     for (std::size_t i = 1; i < args.size(); ++i) {
         const std::string_view arg(args[i]);
-        if (arg == "--capture" && i + 1 < args.size()) {
+        if (arg == "--probe") {
+            probe = true;
+        } else if (arg == "--probe-columns" && i + 1 < args.size()) {
+            probeOptions.columns = std::atoi(args[++i]);
+        } else if (arg == "--capture" && i + 1 < args.size()) {
             options.capturePath = args[++i];
         } else if (arg == "--mesh-benchmark") {
             options.meshBenchmark = true;
@@ -42,12 +53,19 @@ int main(int argc, char** argv) {
         } else {
             mc::logError("Unknown argument: {}", arg);
             mc::logError("Usage: minecraft [--capture <path.ppm>] [--mesh-benchmark]"
-                         " [--render-distance N] [--warm-up] [--bench-seconds S]");
+                         " [--render-distance N] [--warm-up] [--bench-seconds S]"
+                         " [--probe [--probe-columns N]]");
             return EXIT_FAILURE;
         }
     }
 
     try {
+        if (probe) {
+            const mc::Generator generator;
+            mc::runTerrainProbe(generator, probeOptions);
+            return EXIT_SUCCESS;
+        }
+
         mc::Engine engine(std::move(options));
         engine.run();
     } catch (const std::exception& error) {

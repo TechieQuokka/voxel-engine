@@ -62,6 +62,13 @@ public:
     static constexpr i32 kCaveMinY = kWorldMinY + 5;
     static constexpr i32 kCaveMaxY = 120;
 
+    /// At or below this the density field is forced solid, so the world has a floor.
+    ///
+    /// Public because `Generator` needs it too: this is the height the bedrock layer
+    /// fills, and a second copy of the number in the generator would be a constant
+    /// maintained in two files that must agree.
+    static constexpr i32 kBedrockTop = kWorldMinY + 4;
+
     /// Per-block spaghetti and noodle carving for one section, as a solidity mask.
     ///
     /// **This one cannot use the interpolation grid, and that is the whole point.** A

@@ -38,7 +38,9 @@ constexpr f32 kSqueeze = 30.0f;
 constexpr f32 kWarpStrength = 0.9f;
 
 /// Below this the world is solid regardless of noise, so the world has a floor.
-constexpr i32 kBedrockTop = kWorldMinY + 4;
+/// Declared on DensityGraph rather than here, because Generator fills this band with
+/// bedrock and the two must agree on where it ends.
+constexpr i32 kBedrockTop = DensityGraph::kBedrockTop;
 
 /// Above this, density is forced negative so terrain cannot reach the build limit.
 constexpr f32 kFadeStartY = 200.0f;

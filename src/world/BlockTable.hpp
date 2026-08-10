@@ -60,6 +60,11 @@ inline constexpr std::array kLayers{
     LayerInfo{"grass_top",  TextureRecipe::Grain,     0xFF5FA341u, 0u,          16.0f, 3u},
     LayerInfo{"grass_side", TextureRecipe::GrassSide, 0xFF6B4A2Fu, 0xFF5FA341u,  0.0f, 0u},
     LayerInfo{"sand",       TextureRecipe::Grain,     0xFFD8CA8Cu, 0u,          10.0f, 5u},
+
+    // Deep stone. Deepslate is deliberately darker and less rough than stone: the
+    // point of the Y 8 to 0 transition is that you can see you have crossed it.
+    LayerInfo{"bedrock",    TextureRecipe::Grain,     0xFF565658u, 0u,          38.0f, 6u},
+    LayerInfo{"deepslate",  TextureRecipe::Grain,     0xFF4F4F55u, 0u,          13.0f, 7u},
 };
 
 inline constexpr u16 kTextureLayerCount = static_cast<u16>(kLayers.size());
@@ -93,6 +98,13 @@ struct BlockInfo {
     u16 top = 0;
     u16 side = 0;
     u16 bottom = 0;
+
+    /// One character, for the cross-sections `--probe` prints.
+    ///
+    /// Data rather than a switch somewhere in the probe, for the same reason as
+    /// everything else here: a block type added to this table should not need a
+    /// second edit elsewhere to become visible in the tool used to check it.
+    char glyph = '?';
 };
 
 /// Block types, in BlockId order. The index of an entry *is* its BlockId.
@@ -101,13 +113,19 @@ struct BlockInfo {
 /// the palette both need it without knowing this table exists. The static_assert
 /// below is what keeps the two from drifting.
 inline constexpr std::array kBlocks{
-    BlockInfo{"air",   false, layerOf("stone"), layerOf("stone"),      layerOf("stone")},
-    BlockInfo{"stone", true,  layerOf("stone"), layerOf("stone"),      layerOf("stone")},
-    BlockInfo{"dirt",  true,  layerOf("dirt"),  layerOf("dirt"),       layerOf("dirt")},
+    BlockInfo{"air",   false, layerOf("stone"), layerOf("stone"), layerOf("stone"), '.'},
+    BlockInfo{"stone", true,  layerOf("stone"), layerOf("stone"), layerOf("stone"), '#'},
+    BlockInfo{"dirt",  true,  layerOf("dirt"),  layerOf("dirt"),  layerOf("dirt"),  'd'},
     // Grass is the reason a face carries a layer rather than a block id: one block
     // type, three different textures.
-    BlockInfo{"grass", true,  layerOf("grass_top"), layerOf("grass_side"), layerOf("dirt")},
-    BlockInfo{"sand",  true,  layerOf("sand"),  layerOf("sand"),       layerOf("sand")},
+    BlockInfo{"grass", true,  layerOf("grass_top"), layerOf("grass_side"),
+                              layerOf("dirt"),  'g'},
+    BlockInfo{"sand",  true,  layerOf("sand"),  layerOf("sand"),  layerOf("sand"),  's'},
+
+    BlockInfo{"bedrock",   true, layerOf("bedrock"),   layerOf("bedrock"),
+                                 layerOf("bedrock"),   'B'},
+    BlockInfo{"deepslate", true, layerOf("deepslate"), layerOf("deepslate"),
+                                 layerOf("deepslate"), 'D'},
 };
 
 /// Resolves a block name to its BlockId. Same reasoning as `layerOf`.
@@ -122,10 +140,12 @@ consteval BlockId blockIdOf(std::string_view name) {
 
 // Block ids. Declared here rather than beside the registry, because the value of
 // each one is a property of the table above and of nothing else.
-inline constexpr BlockId kStoneBlock = blockIdOf("stone");
-inline constexpr BlockId kDirtBlock  = blockIdOf("dirt");
-inline constexpr BlockId kGrassBlock = blockIdOf("grass");
-inline constexpr BlockId kSandBlock  = blockIdOf("sand");
+inline constexpr BlockId kStoneBlock     = blockIdOf("stone");
+inline constexpr BlockId kDirtBlock      = blockIdOf("dirt");
+inline constexpr BlockId kGrassBlock     = blockIdOf("grass");
+inline constexpr BlockId kSandBlock      = blockIdOf("sand");
+inline constexpr BlockId kBedrockBlock   = blockIdOf("bedrock");
+inline constexpr BlockId kDeepslateBlock = blockIdOf("deepslate");
 
 static_assert(blockIdOf("air") == kAirBlock,
               "air must be the first entry in kBlocks; core/Types.hpp fixes it at 0");

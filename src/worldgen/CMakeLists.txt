@@ -2,6 +2,7 @@ add_library(mc_worldgen STATIC
   DensityField.cpp
   DensityGraph.cpp
   Generator.cpp
+  TerrainProbe.cpp
 )
 
 # worldgen knows world, and nothing above it. Note the absence of mc_render and

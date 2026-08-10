@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace mc {
@@ -14,6 +15,86 @@ namespace {
 /// Solid where density is positive. Minecraft's rule exactly.
 constexpr bool isSolid(f32 density) {
     return density > 0.0f;
+}
+
+/// Where the bedrock floor stops being solid rock and starts being ragged.
+///
+/// Y = kWorldMinY is always bedrock, so the world has a floor you cannot fall
+/// through. The four layers above it thin out, which is what makes the bottom of
+/// the world read as a boundary rather than as a tiled plane.
+constexpr i32 kBedrockTop = DensityGraph::kBedrockTop;
+
+/// The band over which stone gives way to deepslate.
+///
+/// A gradient rather than a threshold, and Minecraft's own: stone is progressively
+/// replaced from Y 8 down to Y 0 and is gone below it. A plain `y < 0` test would
+/// put a dead-flat seam at one height across the entire world, which reads as a
+/// rendering artefact rather than as geology.
+constexpr i32 kDeepslateTop = 8;
+constexpr i32 kDeepslateBottom = 0;
+
+/// Deterministic value hash over a world position. Used for the two probabilistic
+/// bands below, which must give the same answer whenever a column is regenerated
+/// and on whichever worker happens to run it -- so no thread-local RNG state.
+u32 hashPosition(i32 x, i32 y, i32 z, u32 seed) {
+    u32 h = static_cast<u32>(x) * 0x9E3779B1u
+          ^ static_cast<u32>(y) * 0x85EBCA77u
+          ^ static_cast<u32>(z) * 0xC2B2AE3Du
+          ^ seed * 0x27D4EB2Fu;
+    h ^= h >> 15;
+    h *= 0x2545F491u;
+    h ^= h >> 13;
+    return h;
+}
+
+/// `hashPosition` as a fraction in [0, 1).
+f32 hashUnit(i32 x, i32 y, i32 z, u32 seed) {
+    return static_cast<f32>(hashPosition(x, y, z, seed) >> 8) / 16777216.0f;
+}
+
+/// Which rock a solid voxel is made of, before any feature replaces it.
+BlockId baseStone(i32 worldX, i32 worldY, i32 worldZ, u32 seed) {
+    if (worldY <= kWorldMinY) {
+        return kBedrockBlock;
+    }
+    if (worldY <= kBedrockTop) {
+        // Thins out with height: every layer is likelier to be bedrock the lower
+        // it sits, so the floor has a ragged top rather than a flat lid.
+        const f32 chance = static_cast<f32>(kBedrockTop + 1 - worldY)
+                         / static_cast<f32>(kBedrockTop + 1 - kWorldMinY);
+        if (hashUnit(worldX, worldY, worldZ, seed + 101u) < chance) {
+            return kBedrockBlock;
+        }
+    }
+
+    if (worldY < kDeepslateBottom) {
+        return kDeepslateBlock;
+    }
+    if (worldY <= kDeepslateTop) {
+        const f32 chance = static_cast<f32>(kDeepslateTop - worldY)
+                         / static_cast<f32>(kDeepslateTop - kDeepslateBottom);
+        return hashUnit(worldX, worldY, worldZ, seed + 202u) < chance ? kDeepslateBlock
+                                                                     : kStoneBlock;
+    }
+    return kStoneBlock;
+}
+
+/// The one rock a whole section is made of, when there is one.
+///
+/// Worth asking, because it is what keeps the uniform-section optimisation alive:
+/// a section entirely below the deepslate band or entirely above it stores one
+/// palette entry and no index array, exactly as it did when all stone was stone.
+/// Only the two sections holding a transition have to be filled per voxel.
+std::optional<BlockId> uniformBaseStone(i32 sectionMinY) {
+    const i32 sectionMaxY = sectionMinY + kSectionSize - 1;
+
+    if (sectionMinY > kDeepslateTop) {
+        return kStoneBlock;
+    }
+    if (sectionMaxY < kDeepslateBottom && sectionMinY > kBedrockTop) {
+        return kDeepslateBlock;
+    }
+    return std::nullopt;
 }
 
 } // namespace
@@ -165,18 +246,32 @@ void Generator::generateColumn(Chunk& chunk) const {
             section.fill(kAirBlock);
             continue;
         }
-        if (!anyAir) {
-            section.fill(kStoneBlock);
+
+        // Solid all through *and* made of one rock: one palette entry, no index
+        // array. This is the case that makes 12 sections per column affordable, and
+        // the deepslate band is arranged not to cost it -- only the two sections
+        // holding a transition fall through to the per-voxel path below.
+        const std::optional<BlockId> uniform = uniformBaseStone(sectionMinY);
+        if (!anyAir && uniform.has_value()) {
+            section.fill(*uniform);
             continue;
         }
 
+        const i32 baseX = chunk.position().x * kSectionSize;
+        const i32 baseZ = chunk.position().z * kSectionSize;
+
         section.fill(kAirBlock);
         for (i32 localY = 0; localY < kSectionSize; ++localY) {
+            const i32 worldY = sectionMinY + localY;
             for (i32 z = 0; z < kSectionSize; ++z) {
                 for (i32 x = 0; x < kSectionSize; ++x) {
-                    if (solid[localIndex(x, localY, z)] != 0) {
-                        section.set(x, localY, z, kStoneBlock);
+                    if (solid[localIndex(x, localY, z)] == 0) {
+                        continue;
                     }
+                    const BlockId rock = uniform.has_value()
+                                             ? *uniform
+                                             : baseStone(baseX + x, worldY, baseZ + z, m_seed);
+                    section.set(x, localY, z, rock);
                 }
             }
         }
