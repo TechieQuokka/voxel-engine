@@ -99,7 +99,8 @@ std::optional<BlockId> uniformBaseStone(i32 sectionMinY) {
 
 } // namespace
 
-Generator::Generator(u32 seed) : m_seed(seed), m_graph(std::make_unique<DensityGraph>(seed)) {}
+Generator::Generator(u32 seed)
+    : m_seed(seed), m_graph(std::make_unique<DensityGraph>(seed)), m_features(seed) {}
 
 Generator::~Generator() = default;
 
@@ -338,6 +339,15 @@ void Generator::generateColumn(Chunk& chunk) const {
             }
         }
     }
+
+    // ---------------------------------------------------------------------------
+    // Stage 3: features. Blob features -- stone variants, gravel, ores -- replace
+    // rock that the stages above placed.
+    //
+    // Last, and that is the point. Ore's air-exposure rule tests for the air the
+    // carvers made in stage 1b; run before them and the rule has nothing to see.
+    // ---------------------------------------------------------------------------
+    m_features.place(chunk);
 
     chunk.markAllDirty();
     chunk.setState(ChunkState::Ready);

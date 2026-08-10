@@ -68,6 +68,45 @@ void generateGrain(std::vector<u8>& out, u32 layer, u32 argb, f32 roughness, u32
     }
 }
 
+/// Host rock, with a scatter of ore blobs over it.
+///
+/// Blob centres come from the layer's own seed, so every ore gets a different
+/// arrangement rather than the same stencil in a different colour -- which is what
+/// it looked like when they shared one. The blobs are drawn with a darkened rim so
+/// they read as inclusions in the rock rather than as paint on top of it.
+void generateOre(std::vector<u8>& out, u32 layer, u32 rockArgb, u32 oreArgb,
+                 f32 roughness, u32 seed) {
+    generateGrain(out, layer, rockArgb, roughness, seed);
+
+    const Rgba ore = fromArgb(oreArgb);
+    constexpr u32 kBlobCount = 7;
+
+    for (u32 blob = 0; blob < kBlobCount; ++blob) {
+        const u32 cx = hash2D(blob, 0u, seed) % kSize;
+        const u32 cy = hash2D(blob, 1u, seed) % kSize;
+        // Two or three pixels across. Bigger reads as a solid block of ore.
+        const f32 radius = 1.6f + static_cast<f32>(hash2D(blob, 2u, seed) % 100u) / 120.0f;
+
+        const auto span = static_cast<i32>(radius) + 1;
+        for (i32 dy = -span; dy <= span; ++dy) {
+            for (i32 dx = -span; dx <= span; ++dx) {
+                const f32 distance = std::sqrt(static_cast<f32>(dx * dx + dy * dy));
+                if (distance > radius) {
+                    continue;
+                }
+                // Wrap, so a blob near an edge continues on the far side and the
+                // texture still tiles across a merged quad.
+                const u32 x = (cx + static_cast<u32>(dx + static_cast<i32>(kSize))) % kSize;
+                const u32 y = (cy + static_cast<u32>(dy + static_cast<i32>(kSize))) % kSize;
+
+                const f32 rim = distance > radius - 1.0f ? -34.0f : 0.0f;
+                writePixel(out, layer, x, y,
+                           shade(ore, rim + noise(x, y, seed + 3u) * 10.0f));
+            }
+        }
+    }
+}
+
 /// Dirt with a grass fringe along the top edge, so the side of a grass block
 /// reads correctly where it meets the top face.
 void generateGrassSide(std::vector<u8>& out, u32 layer, u32 dirtArgb, u32 grassArgb) {
@@ -108,6 +147,10 @@ BlockTextures::BlockTextures() {
             break;
         case TextureRecipe::GrassSide:
             generateGrassSide(pixels, index, layer.argb, layer.argbSecondary);
+            break;
+        case TextureRecipe::Ore:
+            generateOre(pixels, index, layer.argb, layer.argbSecondary,
+                        layer.roughness, layer.seed);
             break;
         }
     }

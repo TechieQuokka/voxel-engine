@@ -34,6 +34,9 @@ enum class TextureRecipe : u8 {
     /// Dirt with a ragged grass fringe along the top edge, so the side of a grass
     /// block reads correctly where it meets the top face.
     GrassSide,
+    /// Grain in the host rock's colour, with a scatter of blobs in a second colour.
+    /// Every ore is this, twice: once over stone and once over deepslate.
+    Ore,
 };
 
 struct LayerInfo {
@@ -65,6 +68,33 @@ inline constexpr std::array kLayers{
     // point of the Y 8 to 0 transition is that you can see you have crossed it.
     LayerInfo{"bedrock",    TextureRecipe::Grain,     0xFF565658u, 0u,          38.0f, 6u},
     LayerInfo{"deepslate",  TextureRecipe::Grain,     0xFF4F4F55u, 0u,          13.0f, 7u},
+
+    // Stone variants and gravel. Their whole job is to break up an otherwise
+    // uniform grey, so they are separated by value as much as by hue -- diorite
+    // reads light, tuff dark, andesite between them.
+    LayerInfo{"granite",    TextureRecipe::Grain,     0xFF9A6B5Bu, 0u,          17.0f, 8u},
+    LayerInfo{"diorite",    TextureRecipe::Grain,     0xFFCDCDD0u, 0u,          24.0f, 9u},
+    LayerInfo{"andesite",   TextureRecipe::Grain,     0xFF7E8280u, 0u,          14.0f, 10u},
+    LayerInfo{"tuff",       TextureRecipe::Grain,     0xFF6C6E5Fu, 0u,          19.0f, 11u},
+    LayerInfo{"gravel",     TextureRecipe::Grain,     0xFF8A8687u, 0u,          30.0f, 12u},
+
+    // Ores, twice over: the same speckle colour on stone and on deepslate. The
+    // host colours here must stay equal to the "stone" and "deepslate" entries
+    // above, or an ore block would not sit in the rock it replaced.
+    LayerInfo{"coal_ore",             TextureRecipe::Ore, 0xFF8C8C8Cu, 0xFF191919u, 20.0f, 20u},
+    LayerInfo{"deepslate_coal_ore",   TextureRecipe::Ore, 0xFF4F4F55u, 0xFF191919u, 13.0f, 21u},
+    LayerInfo{"iron_ore",             TextureRecipe::Ore, 0xFF8C8C8Cu, 0xFFD8AF93u, 20.0f, 22u},
+    LayerInfo{"deepslate_iron_ore",   TextureRecipe::Ore, 0xFF4F4F55u, 0xFFD8AF93u, 13.0f, 23u},
+    LayerInfo{"copper_ore",           TextureRecipe::Ore, 0xFF8C8C8Cu, 0xFFD8794Au, 20.0f, 24u},
+    LayerInfo{"deepslate_copper_ore", TextureRecipe::Ore, 0xFF4F4F55u, 0xFFD8794Au, 13.0f, 25u},
+    LayerInfo{"gold_ore",             TextureRecipe::Ore, 0xFF8C8C8Cu, 0xFFFCEE4Bu, 20.0f, 26u},
+    LayerInfo{"deepslate_gold_ore",   TextureRecipe::Ore, 0xFF4F4F55u, 0xFFFCEE4Bu, 13.0f, 27u},
+    LayerInfo{"redstone_ore",         TextureRecipe::Ore, 0xFF8C8C8Cu, 0xFFAA0F01u, 20.0f, 28u},
+    LayerInfo{"deepslate_redstone_ore", TextureRecipe::Ore, 0xFF4F4F55u, 0xFFAA0F01u, 13.0f, 29u},
+    LayerInfo{"lapis_ore",            TextureRecipe::Ore, 0xFF8C8C8Cu, 0xFF1B57B5u, 20.0f, 30u},
+    LayerInfo{"deepslate_lapis_ore",  TextureRecipe::Ore, 0xFF4F4F55u, 0xFF1B57B5u, 13.0f, 31u},
+    LayerInfo{"diamond_ore",          TextureRecipe::Ore, 0xFF8C8C8Cu, 0xFF5DECF5u, 20.0f, 32u},
+    LayerInfo{"deepslate_diamond_ore", TextureRecipe::Ore, 0xFF4F4F55u, 0xFF5DECF5u, 13.0f, 33u},
 };
 
 inline constexpr u16 kTextureLayerCount = static_cast<u16>(kLayers.size());
@@ -105,7 +135,24 @@ struct BlockInfo {
     /// everything else here: a block type added to this table should not need a
     /// second edit elsewhere to become visible in the tool used to check it.
     char glyph = '?';
+
+    /// Rock that a blob feature is allowed to replace: stone, deepslate, the four
+    /// stone variants. Vanilla's ore features carry this as an explicit `targets`
+    /// list per ore; every overworld ore names the same six blocks, so one flag on
+    /// the target says the same thing without repeating it eight times.
+    ///
+    /// Deliberately false for gravel, dirt and the surface blocks. An ore that
+    /// replaced the beach would be visible from the sky, and one that replaced
+    /// gravel would let a blob eat a feature placed before it.
+    bool stoneLike = false;
 };
+
+/// A block that draws the same layer on all six faces, which is most of them.
+consteval BlockInfo uniformBlock(std::string_view name, std::string_view layer,
+                                 char glyph, bool stoneLike = false) {
+    const u16 index = layerOf(layer);
+    return BlockInfo{name, true, index, index, index, glyph, stoneLike};
+}
 
 /// Block types, in BlockId order. The index of an entry *is* its BlockId.
 ///
@@ -113,19 +160,44 @@ struct BlockInfo {
 /// the palette both need it without knowing this table exists. The static_assert
 /// below is what keeps the two from drifting.
 inline constexpr std::array kBlocks{
-    BlockInfo{"air",   false, layerOf("stone"), layerOf("stone"), layerOf("stone"), '.'},
-    BlockInfo{"stone", true,  layerOf("stone"), layerOf("stone"), layerOf("stone"), '#'},
-    BlockInfo{"dirt",  true,  layerOf("dirt"),  layerOf("dirt"),  layerOf("dirt"),  'd'},
+    BlockInfo{"air", false, layerOf("stone"), layerOf("stone"), layerOf("stone"), '.'},
+
+    uniformBlock("stone", "stone", '#', true),
+    uniformBlock("dirt", "dirt", 'd'),
     // Grass is the reason a face carries a layer rather than a block id: one block
     // type, three different textures.
-    BlockInfo{"grass", true,  layerOf("grass_top"), layerOf("grass_side"),
-                              layerOf("dirt"),  'g'},
-    BlockInfo{"sand",  true,  layerOf("sand"),  layerOf("sand"),  layerOf("sand"),  's'},
+    BlockInfo{"grass", true, layerOf("grass_top"), layerOf("grass_side"),
+                             layerOf("dirt"), 'g'},
+    uniformBlock("sand", "sand", 's'),
 
-    BlockInfo{"bedrock",   true, layerOf("bedrock"),   layerOf("bedrock"),
-                                 layerOf("bedrock"),   'B'},
-    BlockInfo{"deepslate", true, layerOf("deepslate"), layerOf("deepslate"),
-                                 layerOf("deepslate"), 'D'},
+    uniformBlock("bedrock", "bedrock", 'B'),
+    uniformBlock("deepslate", "deepslate", 'D', true),
+
+    uniformBlock("granite", "granite", 'r', true),
+    uniformBlock("diorite", "diorite", 'o', true),
+    uniformBlock("andesite", "andesite", 'a', true),
+    uniformBlock("tuff", "tuff", 't', true),
+    uniformBlock("gravel", "gravel", 'v'),
+
+    // Ores. Each is two block types, because replacing deepslate has to yield the
+    // deepslate variant -- the ore keeps its speckle colour and takes the host
+    // rock's. Uppercase glyphs so a cross-section shows ore against rock at a
+    // glance; the deepslate variant shares its letter with the stone one, since
+    // which rock it sits in is already obvious from the depth.
+    uniformBlock("coal_ore", "coal_ore", 'C'),
+    uniformBlock("deepslate_coal_ore", "deepslate_coal_ore", 'C'),
+    uniformBlock("iron_ore", "iron_ore", 'I'),
+    uniformBlock("deepslate_iron_ore", "deepslate_iron_ore", 'I'),
+    uniformBlock("copper_ore", "copper_ore", 'U'),
+    uniformBlock("deepslate_copper_ore", "deepslate_copper_ore", 'U'),
+    uniformBlock("gold_ore", "gold_ore", 'G'),
+    uniformBlock("deepslate_gold_ore", "deepslate_gold_ore", 'G'),
+    uniformBlock("redstone_ore", "redstone_ore", 'R'),
+    uniformBlock("deepslate_redstone_ore", "deepslate_redstone_ore", 'R'),
+    uniformBlock("lapis_ore", "lapis_ore", 'L'),
+    uniformBlock("deepslate_lapis_ore", "deepslate_lapis_ore", 'L'),
+    uniformBlock("diamond_ore", "diamond_ore", 'X'),
+    uniformBlock("deepslate_diamond_ore", "deepslate_diamond_ore", 'X'),
 };
 
 /// Resolves a block name to its BlockId. Same reasoning as `layerOf`.
@@ -146,6 +218,11 @@ inline constexpr BlockId kGrassBlock     = blockIdOf("grass");
 inline constexpr BlockId kSandBlock      = blockIdOf("sand");
 inline constexpr BlockId kBedrockBlock   = blockIdOf("bedrock");
 inline constexpr BlockId kDeepslateBlock = blockIdOf("deepslate");
+
+/// True for the rock a blob feature may replace. See BlockInfo::stoneLike.
+constexpr bool isStoneLike(BlockId id) {
+    return id < kBlocks.size() && kBlocks[id].stoneLike;
+}
 
 static_assert(blockIdOf("air") == kAirBlock,
               "air must be the first entry in kBlocks; core/Types.hpp fixes it at 0");

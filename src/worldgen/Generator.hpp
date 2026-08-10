@@ -3,6 +3,7 @@
 #include "core/Types.hpp"
 #include "world/Chunk.hpp"
 #include "worldgen/DensityGraph.hpp"
+#include "worldgen/Features.hpp"
 
 #include <memory>
 
@@ -13,12 +14,14 @@ namespace mc {
 /// Follows the order Minecraft's chunk pipeline uses, because the order is load
 /// bearing rather than incidental (see DESIGN.md 7.6):
 ///
-///   1. **noise**   — the density field decides solid or air, nothing else
-///   2. **surface** — biome-dependent blocks replace the top of the solid column
+///   1. **noise**    — the density field decides solid or air, nothing else
+///   2. **carvers**  — thin caves are cut out of the solidity mask, per section
+///   3. **surface**  — biome-dependent blocks replace the top of the solid column
+///   4. **features** — blob features: stone variants, gravel, ores
 ///
-/// Carvers and features (caves, ores) come next; they have to run after `noise`
-/// because they replace blocks it placed, and ore's air-exposure rule only means
-/// anything once caves exist to expose it to.
+/// Features run last because ore's air-exposure rule can only be evaluated once the
+/// carvers have made the air it tests for. Run them earlier and every
+/// `discard_chance_on_air_exposure` in the table is dead code.
 ///
 /// One call fills one column, reads nothing but the shared noise graph, and writes
 /// nothing but that column — which is what makes it safe on N workers with no
@@ -74,6 +77,7 @@ private:
 
     u32 m_seed;
     std::unique_ptr<DensityGraph> m_graph;
+    FeaturePlacer m_features;
 };
 
 } // namespace mc

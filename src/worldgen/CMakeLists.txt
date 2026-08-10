@@ -1,6 +1,7 @@
 add_library(mc_worldgen STATIC
   DensityField.cpp
   DensityGraph.cpp
+  Features.cpp
   Generator.cpp
   TerrainProbe.cpp
 )
