@@ -2,10 +2,25 @@
 
 #include "core/Types.hpp"
 
+#include <cmath>
 #include <string>
 #include <vector>
 
 namespace mc::rhi {
+
+/// Decodes one sRGB channel to linear.
+///
+/// The exact piecewise transfer function, not an approximate 2.2 power, because
+/// this has to agree with the hardware's encode on framebuffer write -- and the
+/// two curves differ by several percent in the dark end, which is where voxel
+/// shading and ambient occlusion spend most of their range.
+///
+/// Lives here because the reason it is needed is GL_FRAMEBUFFER_SRGB, which
+/// Device turns on.
+inline f32 srgbToLinear(f32 channel) {
+    return channel <= 0.04045f ? channel / 12.92f
+                               : std::pow((channel + 0.055f) / 1.055f, 2.4f);
+}
 
 /// Owns the OpenGL function table and global driver state.
 ///
@@ -29,6 +44,10 @@ public:
     int versionMinor() const noexcept { return m_versionMinor; }
 
     void setViewport(int x, int y, int width, int height);
+
+    /// Clears colour and depth. The colour is **linear**, not sRGB: the
+    /// framebuffer is sRGB-encoded on write, so a value picked from a colour
+    /// picker has to be decoded before it gets here. See srgbToLinear below.
     void clear(f32 r, f32 g, f32 b, f32 a);
 
     void setDepthTest(bool enabled);

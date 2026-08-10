@@ -613,6 +613,35 @@ A voxel engine's performance characteristics can shift under a silent
 dependency update, and that is exactly the kind of change that must be
 deliberate.
 
+### 6.9 Colour management — shading is linear
+
+**All shading arithmetic happens in light-linear space.** Concretely:
+
+- Block textures are `GL_SRGB8_ALPHA8`, so the sampler decodes on fetch and
+  mipmap generation averages in linear space. `rhi::ColorSpace` is a required
+  argument of `TextureArray::create`, not a default — data that is not a colour
+  (brickmap indices in Phase 7) must not be decoded.
+- `GL_FRAMEBUFFER_SRGB` is enabled for the lifetime of the context, so the
+  hardware encodes on write. **Colours handed to `Device::clear` are therefore
+  linear**, and the sky colour is decoded through `rhi::srgbToLinear` at the
+  call site rather than written as a pre-converted magic number.
+- Shading factors chosen by eye — the per-face brightnesses, the AO ramp — are
+  *perceptual* quantities. They stay written as the sRGB values they were tuned
+  as, and are decoded where they are used: `srgbToLinear()` on literal arguments
+  in `chunk.frag` (constant-folded), and the pre-decoded `kAoLinear` table in
+  `chunk.vert`, because GLSL forbids function calls in a `const` initializer.
+
+The AO levels are decoded per-vertex rather than per-fragment for two reasons:
+interpolating occlusion across a merged quad is only meaningful in linear space,
+and a table lookup is free where a per-fragment `pow` would not be.
+
+Multiplying sRGB-encoded values, which is what the shader did through Phase 2,
+is simply the wrong operation for quantities that behave like light. Decoding the
+tuned constants keeps the rendered result within ~3/255 of the old appearance
+(worst case ~7/255, in deep shadow, slightly darker), so this was a correctness
+fix rather than an art change. The exact piecewise sRGB curve is used, not a 2.2
+power, because it has to agree with the hardware's encode.
+
 ---
 
 ## 7. Phase Plan
@@ -775,6 +804,36 @@ grid, not of any particular meshing strategy.
 Verification: the equivalence tests assert that greedy and reference meshing
 cover the *same cells*, not merely the same total area — an area-only check
 would pass if a quad were displaced with a compensating error elsewhere.
+
+### 7.4 Interim cleanup, before Phase 3
+
+A full read of the tree before starting Phase 3 turned up four things worth
+fixing while they were still cheap. None of them changed the architecture.
+
+**The two meshers disagreed about the `material` field.** `CulledMesher` wrote a
+`BlockId` where `BinaryGreedyMesher` wrote a texture layer — so the reference
+mesher's output, despite 7.3 documenting the field as a layer, would have
+rendered with the wrong textures. The equivalence test recorded a material per
+covered cell but never compared it, which is why nothing caught this. It now
+compares the value, so the two meshers are locked to one convention.
+
+**sRGB was half-configured.** The window asked for an sRGB-capable framebuffer
+and nothing used it. Resolved as described in 6.9.
+
+**The meshing benchmark ran on the startup path.** Several hundred meshing passes
+before the first frame. Moved behind `--mesh-benchmark`; the code stays, because
+the AO merge measurement has to be repeated in Phase 4 against terrain with
+caves and overhangs.
+
+**Duplicated tuning constants.** FOV and near plane were written twice, in the
+constructor and in the resize handler, where they could drift apart; both now go
+through `Engine::updateProjection`. The fragment shader's distance-darkening
+range was hard-coded at 400 blocks and is now `ChunkRenderer::setFadeDistance`,
+for streaming to derive from the render distance in Phase 3.
+
+Verified: 53 test cases pass, `-Werror` clean, and a `--capture` frame renders
+identically apart from the sRGB change. The Phase 2 measurement reproduces
+exactly — 4,842 → 2,083 quads AO-aware (57.0%), 1,428 AO-ignoring (70.5%).
 
 ---
 

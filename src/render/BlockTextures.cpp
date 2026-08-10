@@ -105,7 +105,10 @@ BlockTextures::BlockTextures() {
     generateGrain(pixels, static_cast<u32>(TextureLayer::Sand),
                   registry[kSandBlock].debugColor, 10.0f, 5u);
 
-    m_texture = rhi::TextureArray::create(kSize, kTextureLayerCount, pixels);
+    // The debugColor values are sRGB-encoded, which is what an authored PNG
+    // would be too, so the texture must declare itself as such.
+    m_texture = rhi::TextureArray::create(kSize, kTextureLayerCount, pixels,
+                                          rhi::ColorSpace::Srgb8A8);
 
     logDebug("Generated {} block textures at {}x{}", kTextureLayerCount, kSize, kSize);
 }

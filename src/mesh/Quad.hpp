@@ -15,7 +15,8 @@ namespace mc {
 ///   bits 24..29  height   merged extent along the second tangent, minus 1
 ///   bits 30..32  face     Face enum
 ///   bits 33..40  ao       2 bits per corner
-///   bits 41..56  material BlockId for now; becomes a texture array layer
+///   bits 41..56  material texture array layer (TextureLayer), not a BlockId --
+///                         grass alone needs three layers for one block type
 ///
 /// There is no vertex buffer. Quads live in an SSBO and the vertex shader
 /// expands each one into four corners from gl_VertexID.

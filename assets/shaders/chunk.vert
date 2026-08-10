@@ -15,7 +15,6 @@ layout(std430, binding = 0) readonly buffer QuadBuffer {
 
 uniform mat4 u_viewProjection;
 uniform vec3 u_sectionOrigin;
-uniform vec3 u_cameraPosition;
 
 out vec3 v_normal;
 out vec3 v_worldPos;
@@ -64,6 +63,16 @@ const vec2 kCorners[6] = vec2[6](
 // order in computeAo() in BinaryGreedyMesher.cpp.
 const uint kCornerIds[6] = uint[6](0u, 1u, 2u, 0u, 2u, 3u);
 
+// The four AO levels as linear light multipliers. The packed 2-bit value is a
+// perceptual level (0 fully occluded, 3 fully open), so these are 0, 1/3, 2/3
+// and 1 put through the sRGB decode -- the same curve chunk.frag uses.
+//
+// Decoded here rather than in the fragment shader for two reasons: interpolation
+// across a merged quad has to happen in linear space to be meaningful, and a
+// per-vertex table lookup is free where a per-fragment pow() would not be. GLSL
+// forbids function calls in a const initializer, so the values are written out.
+const float kAoLinear[4] = float[4](0.0, 0.090842, 0.401978, 1.0);
+
 void main() {
     uint quadIndex = uint(gl_VertexID) / 6u;
     uint cornerIndex = uint(gl_VertexID) % 6u;
@@ -98,7 +107,7 @@ void main() {
     v_uv = vec2(corner.x * width, corner.y * height);
 
     uint ao = (aoBits >> (2u * kCornerIds[cornerIndex])) & 0x3u;
-    v_ao = float(ao) / 3.0;
+    v_ao = kAoLinear[ao];
 
     v_worldPos = u_sectionOrigin + localPos;
     v_normal = kNormals[face];

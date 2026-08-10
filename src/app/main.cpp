@@ -25,9 +25,11 @@ int main(int argc, char** argv) {
         const std::string_view arg(args[i]);
         if (arg == "--capture" && i + 1 < args.size()) {
             options.capturePath = args[++i];
+        } else if (arg == "--mesh-benchmark") {
+            options.meshBenchmark = true;
         } else {
             mc::logError("Unknown argument: {}", arg);
-            mc::logError("Usage: minecraft [--capture <path.ppm>]");
+            mc::logError("Usage: minecraft [--capture <path.ppm>] [--mesh-benchmark]");
             return EXIT_FAILURE;
         }
     }

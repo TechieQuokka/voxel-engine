@@ -37,10 +37,20 @@ public:
     void setAoStrength(f32 strength) { m_aoStrength = strength; }
     f32 aoStrength() const noexcept { return m_aoStrength; }
 
+    /// Distance in blocks at which the stand-in distance darkening bottoms out.
+    /// Streaming in Phase 3 derives this from the render distance instead of
+    /// leaving it at the default.
+    void setFadeDistance(f32 blocks) { m_fadeDistance = blocks; }
+    f32 fadeDistance() const noexcept { return m_fadeDistance; }
+
     usize quadCount() const noexcept { return m_quadCount; }
 
 private:
     static constexpr u32 kTextureUnit = 0;
+
+    /// Comfortably beyond a single section, so nothing visible is affected while
+    /// only one is rendered.
+    static constexpr f32 kDefaultFadeDistance = 400.0f;
 
     rhi::Shader m_shader;
     rhi::VertexArray m_vao;
@@ -48,6 +58,7 @@ private:
     std::optional<rhi::Buffer> m_quadBuffer;
     usize m_quadCount = 0;
     f32 m_aoStrength = 1.0f;
+    f32 m_fadeDistance = kDefaultFadeDistance;
 };
 
 } // namespace mc

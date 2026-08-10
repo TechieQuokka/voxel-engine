@@ -90,6 +90,16 @@ Device::Device(GlProcLoader loader) {
     glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
     glClearDepth(0.0);
 
+    // sRGB-correct output, also applied once for the context lifetime. Shaders
+    // sample sRGB textures into linear values, do their arithmetic there, and
+    // this converts the result back on write to the framebuffer. Multiplying
+    // sRGB-encoded values directly -- which is what happens without this -- is
+    // simply the wrong operation for anything that behaves like light, and the
+    // shading here is all multiplicative.
+    //
+    // Consequence for every caller: colours handed to clear() are now linear.
+    glEnable(GL_FRAMEBUFFER_SRGB);
+
     GLint contextFlags = 0;
     glGetIntegerv(GL_CONTEXT_FLAGS, &contextFlags);
     if ((static_cast<GLuint>(contextFlags) & GLuint{GL_CONTEXT_FLAG_DEBUG_BIT}) != 0) {

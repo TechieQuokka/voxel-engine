@@ -1,6 +1,7 @@
 # Handoff
 
-Snapshot for resuming work. Written 2026-08-09, end of Phase 2.
+Snapshot for resuming work. Written 2026-08-09, end of Phase 2. Updated
+2026-08-10 with the pre-Phase-3 cleanup pass.
 
 Read `docs/DESIGN.md` for the full design and the reasoning behind every
 decision. This file is the short version plus the practical details needed to
@@ -18,8 +19,13 @@ pick the work back up cold.
 | `207fd7d` | Phase 1 — palette-compressed sections, culled meshing, camera |
 | `8180945` | Phase 2 — binary greedy meshing, block texture array |
 
-Working tree is clean. **The repository is local only — never push, never create
-a remote.**
+**The repository is local only — never push, never create a remote.**
+
+On top of those commits there is an **uncommitted cleanup pass** (see DESIGN.md
+7.4): the two meshers now agree that `Quad::material` is a texture layer, sRGB is
+configured properly end to end, the meshing benchmark moved behind
+`--mesh-benchmark`, and the duplicated FOV / near-plane / fade-distance constants
+were consolidated. 53 tests pass, `-Werror` clean.
 
 What runs today: a single 32³ section is generated, meshed with binary greedy
 meshing, textured from an array texture with ambient occlusion, and drawn at
@@ -38,7 +44,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (41+ cases, doctest)
+# Test  (53 cases, doctest)
 ctest --preset debug
 
 # Run
@@ -47,6 +53,9 @@ ctest --preset debug
 # Render one frame headlessly and exit
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
 convert /tmp/shot.ppm /tmp/shot.png     # ImageMagick is installed
+
+# Re-run the mesher comparison (off by default; it meshes a few hundred times)
+./build/release/src/app/minecraft --mesh-benchmark
 ```
 
 **Always measure on the `release` preset.** Debug is `-O0`; timings from it are
@@ -133,6 +142,13 @@ Learned the hard way; all of them cost real time.
   `kFaces` in `CulledMesher.cpp`. Changing it means changing all four.
 - **`-Wconversion` and `-Werror` are on.** Narrowing in bit-packing code is
   almost always a bug, so this is deliberate — expect explicit `static_cast`.
+- **A nested struct's default member initializers cannot be seen by a `= {}`
+  default argument** in the enclosing class. GCC parses them only after the
+  enclosing class is complete, and the error it reports ("could not convert
+  `<brace-enclosed initializer list>`") points at the default argument, not at
+  the field. This is why `Engine(Options)` takes its argument unconditionally.
+- **`Device::clear` takes linear colours, not sRGB** — `GL_FRAMEBUFFER_SRGB` is
+  enabled. Use `rhi::srgbToLinear`. See DESIGN.md 6.9 for the whole rule.
 - CMake needs `LANGUAGES C CXX`; GLFW and glad are C.
 - Ninja is not installed; presets use Unix Makefiles.
 
@@ -150,17 +166,31 @@ Expected work:
    meshing, or upload.
 2. `world/Chunk` (a column of 12 sections) and `world/World` (the chunk map plus
    load/unload around the camera).
-3. **Neighbour-aware boundary culling.** Both meshers currently emit boundary
-   faces because a section is meshed in isolation. Once the World can supply
-   the six neighbouring sections, `emitBoundaryFaces` gets replaced by real
-   neighbour lookups — otherwise every chunk seam renders a redundant wall of
-   quads.
+3. **Neighbour-aware boundary culling — and neighbour-aware AO.** Both meshers
+   currently emit boundary faces because a section is meshed in isolation, so
+   `emitBoundaryFaces` gets replaced by real neighbour lookups; otherwise every
+   chunk seam renders a redundant wall of quads.
+
+   The part that is easy to miss: **AO needs neighbours too, and it needs 26 of
+   them, not 6.** `opaqueAt()` in `BinaryGreedyMesher.cpp` returns false for
+   anything outside the section and `computeAo()` reads it for the two edge
+   neighbours *and the diagonal* — so it samples edge- and corner-adjacent
+   sections. Fixing face culling without fixing AO leaves a bright seam around
+   every chunk. Plan the neighbour accessor for the 3×3×3 block from the start.
 4. `render/Frustum` and hierarchical frustum culling: chunk column first, then
-   section.
+   section. **Note that the projection is infinite reversed-Z** — plane
+   extraction from it does not follow the textbook form, and `Camera` has no
+   tests yet, so add them alongside `Frustum`.
 5. Multi-chunk rendering. `ChunkRenderer` currently holds exactly one static
    buffer; it needs per-section buffers or a shared arena. This is also where
    `rhi::Buffer` should grow persistent mapping and triple buffering — the
    interface was shaped for it.
+6. **Stop looking up uniform locations per draw.** `Shader::setUniform` calls
+   `glGetUniformLocation` on every call by design (the header says so), which is
+   free at one draw call and is not at thousands: `u_sectionOrigin` varies per
+   section. Phase 3 is where that promise comes due — a UBO, or per-section data
+   in the quad SSBO. `u_fadeDistance` should come from the render distance at the
+   same time.
 
 Phase 4 is terrain generation with FastNoise2. Note that **the AO merge
 measurement should be repeated in Phase 4**: the 13.5-point figure comes from
@@ -192,3 +222,7 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   profiling in Phase 8.
 - **World persistence** — disk format, and whether it is in scope at all.
 - **Re-measure AO merging in Phase 4**, once terrain has caves and overhangs.
+- **`.clang-format` and `.clang-tidy` are listed in DESIGN.md 5.2 but do not
+  exist.** Adding a formatter now would reformat the whole tree in one commit, so
+  it is a deliberate decision rather than a chore — either add them and take that
+  commit, or drop them from the document.

@@ -30,7 +30,10 @@ TextureArray& TextureArray::operator=(TextureArray&& other) noexcept {
     return *this;
 }
 
-TextureArray TextureArray::create(u32 size, u32 layerCount, std::span<const u8> pixels) {
+TextureArray TextureArray::create(u32 size,
+                                  u32 layerCount,
+                                  std::span<const u8> pixels,
+                                  ColorSpace space) {
     MC_VERIFY(size > 0 && layerCount > 0);
     MC_VERIFY(std::has_single_bit(size));
     MC_VERIFY(pixels.size() == static_cast<usize>(size) * size * layerCount * 4);
@@ -39,8 +42,15 @@ TextureArray TextureArray::create(u32 size, u32 layerCount, std::span<const u8> 
     glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &handle);
     MC_VERIFY_MSG(handle != 0, "glCreateTextures failed");
 
+    // With SRGB8_ALPHA8 the hardware decodes to linear on sample and, just as
+    // importantly, mipmap generation averages in linear space -- averaging
+    // sRGB-encoded texels darkens distant terrain, which is exactly where the
+    // long view distance would make it visible.
+    const GLenum internalFormat =
+        space == ColorSpace::Srgb8A8 ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+
     const auto levels = static_cast<GLsizei>(std::bit_width(size));
-    glTextureStorage3D(handle, levels, GL_RGBA8,
+    glTextureStorage3D(handle, levels, internalFormat,
                        static_cast<GLsizei>(size),
                        static_cast<GLsizei>(size),
                        static_cast<GLsizei>(layerCount));

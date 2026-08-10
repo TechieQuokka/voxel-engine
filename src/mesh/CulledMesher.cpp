@@ -73,12 +73,17 @@ void meshSectionCulled(const Section& section, ChunkMesh& out, const MeshOptions
                         continue;
                     }
 
+                    // A texture array layer, not the BlockId. Both meshers must
+                    // agree on what the material field means, or a mesh from
+                    // this one would be textured wrongly -- and it stays
+                    // renderable precisely so it can be compared against the
+                    // greedy mesher on screen, not just in tests.
                     out.quads.push_back(Quad::make(static_cast<u32>(x + def.ox),
                                                    static_cast<u32>(y + def.oy),
                                                    static_cast<u32>(z + def.oz),
                                                    1, 1,
                                                    def.face,
-                                                   block));
+                                                   blocks.textureLayer(block, def.face)));
                 }
             }
         }

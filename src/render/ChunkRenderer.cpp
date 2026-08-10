@@ -54,6 +54,7 @@ void ChunkRenderer::draw(rhi::Device& device, const Camera& camera, const vec3& 
     m_shader.setUniform("u_sectionOrigin", sectionOrigin);
     m_shader.setUniform("u_cameraPosition", camera.position());
     m_shader.setUniform("u_aoStrength", m_aoStrength);
+    m_shader.setUniform("u_fadeDistance", m_fadeDistance);
 
     m_textures->bind(kTextureUnit);
     m_quadBuffer->bindBase(rhi::BufferTarget::Storage, kQuadBufferBinding);

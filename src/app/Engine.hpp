@@ -27,9 +27,19 @@ public:
         /// screenshot, which is also how reference captures get taken in later
         /// phases.
         std::string capturePath;
+
+        /// Times the meshers against each other before starting. Off by default
+        /// because it meshes the section several hundred times, which has no
+        /// business happening on the path to a running frame -- but the AO merge
+        /// measurement has to be repeated once terrain has caves and overhangs,
+        /// so the code stays.
+        bool meshBenchmark = false;
     };
 
-    explicit Engine(Options options = {});
+    /// No default argument: a nested struct's default member initializers are
+    /// parsed only after the enclosing class is complete, so `= {}` here cannot
+    /// see them. main always constructs an Options anyway.
+    explicit Engine(Options options);
     ~Engine();
 
     Engine(const Engine&) = delete;
@@ -40,8 +50,12 @@ public:
 private:
     void buildTestSection();
     /// Meshes the test section with each strategy, logs the comparison, and
-    /// returns the mesh to actually render.
+    /// returns the mesh to actually render. Only runs under
+    /// Options::meshBenchmark.
     ChunkMesh reportMeshingComparison();
+    /// Rebuilds the projection from the current framebuffer size. Called at
+    /// startup and on every resize, so the two cannot drift apart.
+    void updateProjection();
     void updateCamera(f64 deltaTime);
     void renderFrame();
     void captureAndExit();

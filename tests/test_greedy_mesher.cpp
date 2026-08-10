@@ -176,6 +176,9 @@ TEST_CASE("greedy meshing covers the same cells, not merely the same area") {
     for (const auto& [key, material] : referenceCells) {
         const auto found = greedyCells.find(key);
         REQUIRE(found != greedyCells.end());
+        // Both meshers put a texture array layer in the material field, so the
+        // agreement is on the actual value, not just on which cells are covered.
+        REQUIRE(found->second == material);
     }
 }
 

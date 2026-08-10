@@ -135,15 +135,18 @@ TEST_CASE("non-opaque blocks do not emit faces and do not hide neighbours") {
     CHECK(mesh.quadCount() == 6);
 }
 
-TEST_CASE("material carries the source block id") {
+TEST_CASE("material carries the texture layer for the face") {
     Section section;
     section.set(1, 1, 1, kGrassBlock);
 
     ChunkMesh mesh;
     meshSectionCulled(section, mesh);
 
+    // Same convention as the greedy mesher: the field is a texture array layer,
+    // so a mesh from either one renders identically.
+    const BlockRegistry& registry = BlockRegistry::instance();
     REQUIRE_FALSE(mesh.empty());
     for (const Quad& quad : mesh.quads) {
-        REQUIRE(quad.material() == kGrassBlock);
+        REQUIRE(quad.material() == registry.textureLayer(kGrassBlock, quad.face()));
     }
 }

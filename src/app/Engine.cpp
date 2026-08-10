@@ -25,6 +25,22 @@ constexpr f32 kMouseSensitivity = 0.0022f;
 /// The test section sits at the world origin.
 constexpr vec3 kSectionOrigin{0.0f, 0.0f, 0.0f};
 
+constexpr f32 kFovYDegrees = 70.0f;
+
+/// Reversed-Z concentrates depth precision in the distance, which is what allows
+/// a near plane this close without z-fighting far away.
+constexpr f32 kNearPlane = 0.05f;
+
+/// Sky colour, written as the sRGB value it was picked as. The framebuffer is
+/// sRGB-encoded on write, so Device::clear takes linear values -- decoded once
+/// here rather than per frame.
+const vec3& skyColorLinear() {
+    static const vec3 color{rhi::srgbToLinear(0.53f),
+                            rhi::srgbToLinear(0.71f),
+                            rhi::srgbToLinear(0.92f)};
+    return color;
+}
+
 /// Writes binary PPM (P6). Chosen over PNG because it needs no dependency and
 /// every image tool reads it; capture output is a debugging artefact, not
 /// something that has to be small.
@@ -71,7 +87,12 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
 
     buildTestSection();
 
-    ChunkMesh mesh = reportMeshingComparison();
+    ChunkMesh mesh;
+    if (m_options.meshBenchmark) {
+        mesh = reportMeshingComparison();
+    } else {
+        meshSectionGreedy(m_section, mesh);
+    }
     m_chunkRenderer->upload(mesh);
 
     logInfo("Section storage: {} bits/voxel, palette {} entries, {} bytes",
@@ -82,9 +103,7 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
     // Outside the section, aimed at its centre.
     m_camera.setPosition({-24.0f, 34.0f, 56.0f});
     m_camera.setOrientation(0.785f, -0.43f);
-    const f32 aspect = static_cast<f32>(m_window->framebufferWidth())
-                     / static_cast<f32>(m_window->framebufferHeight());
-    m_camera.setPerspective(math::radians(70.0f), aspect, 0.05f);
+    updateProjection();
 
     logInfo("Engine initialized");
 }
@@ -195,6 +214,18 @@ ChunkMesh Engine::reportMeshingComparison() {
     return std::move(variants[0].mesh);
 }
 
+void Engine::updateProjection() {
+    const int width = m_window->framebufferWidth();
+    const int height = m_window->framebufferHeight();
+    if (width <= 0 || height <= 0) {
+        return; // Minimized. The resize event that restores it will call again.
+    }
+
+    m_camera.setPerspective(math::radians(kFovYDegrees),
+                            static_cast<f32>(width) / static_cast<f32>(height),
+                            kNearPlane);
+}
+
 void Engine::updateCamera(f64 deltaTime) {
     const f32 dt = static_cast<f32>(deltaTime);
 
@@ -260,14 +291,10 @@ void Engine::run() {
         m_input->update();
 
         if (m_window->consumeResizeEvent()) {
-            const int width = m_window->framebufferWidth();
-            const int height = m_window->framebufferHeight();
-            m_device->setViewport(0, 0, width, height);
-            if (height > 0) {
-                m_camera.setPerspective(math::radians(70.0f),
-                                        static_cast<f32>(width) / static_cast<f32>(height),
-                                        0.05f);
-            }
+            m_device->setViewport(0, 0,
+                                  m_window->framebufferWidth(),
+                                  m_window->framebufferHeight());
+            updateProjection();
         }
 
         updateCamera(deltaTime);
@@ -291,7 +318,8 @@ void Engine::run() {
 void Engine::renderFrame() {
     MC_PROFILE_SCOPE_N("renderFrame");
 
-    m_device->clear(0.53f, 0.71f, 0.92f, 1.0f);
+    const vec3& sky = skyColorLinear();
+    m_device->clear(sky.x, sky.y, sky.z, 1.0f);
     m_chunkRenderer->draw(*m_device, m_camera, kSectionOrigin);
 }
 

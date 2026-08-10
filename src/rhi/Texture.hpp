@@ -6,6 +6,17 @@
 
 namespace mc::rhi {
 
+/// Storage format of an 8-bit-per-channel texture.
+///
+/// The distinction is not cosmetic: with Srgb8A8 the sampler decodes to linear
+/// on every fetch, so shading arithmetic happens in light-linear space. Data
+/// that is not a colour -- brickmap indices, material ids, heightfields -- must
+/// use Rgba8, or the decode would corrupt it.
+enum class ColorSpace : u32 {
+    Rgba8 = 0,   ///< Values pass through untouched.
+    Srgb8A8 = 1, ///< Sampled values are decoded from sRGB to linear.
+};
+
 /// A GL_TEXTURE_2D_ARRAY of RGBA8 images, all the same size.
 ///
 /// An array texture rather than an atlas, deliberately. An atlas needs UV
@@ -25,7 +36,13 @@ public:
 
     /// `pixels` holds `layerCount` images of `size` x `size` RGBA8, back to
     /// back. Mipmaps are generated automatically.
-    static TextureArray create(u32 size, u32 layerCount, std::span<const u8> pixels);
+    ///
+    /// `space` is required rather than defaulted: getting it wrong is invisible
+    /// in the code and obvious only on screen, so the call site has to say.
+    static TextureArray create(u32 size,
+                               u32 layerCount,
+                               std::span<const u8> pixels,
+                               ColorSpace space);
 
     void bind(u32 unit) const;
 
