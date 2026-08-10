@@ -1,4 +1,6 @@
 add_library(mc_worldgen STATIC
+  DensityField.cpp
+  DensityGraph.cpp
   Generator.cpp
 )
 
@@ -6,7 +8,12 @@ add_library(mc_worldgen STATIC
 # mc_mesh: how terrain is produced and how it is drawn are separate concerns, and
 # the link line is what keeps them that way.
 #
-# FastNoise2 becomes a PRIVATE dependency here in Phase 4.
-target_link_libraries(mc_worldgen PUBLIC mc_core mc_world)
+# FastNoise2 is PRIVATE: no FastNoise type appears in any header here, so it can be
+# replaced -- or moved to the GPU -- by changing DensityGraph.cpp alone. Same rule
+# glad follows in rhi and GLFW in platform.
+target_link_libraries(mc_worldgen
+  PUBLIC  mc_core mc_world
+  PRIVATE FastNoise
+)
 
 mc_set_warnings(mc_worldgen)

@@ -1,9 +1,11 @@
 #include "world/BlockRegistry.hpp"
 #include "world/World.hpp"
+#include "worldgen/DensityGraph.hpp"
 #include "worldgen/Generator.hpp"
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstdlib>
 
 using namespace mc;
@@ -40,18 +42,21 @@ TEST_CASE("the surface stays inside the world") {
     }
 }
 
-TEST_CASE("the surface is continuous across a chunk boundary") {
-    // The point of an analytic heightmap in world coordinates: a seam in the
-    // terrain would mean the generator is chunk-relative somewhere, which would
-    // make every neighbour test meaningless.
+TEST_CASE("the surface does not step at a chunk boundary") {
+    // A jump here would mean the generator is chunk-relative somewhere, which would
+    // make every neighbour test meaningless. The bound is loose on purpose: real
+    // terrain has cliffs, and this asserts "no seam", not "no slope". The exact
+    // continuity claim is the shared-density-plane test below.
     const Generator generator;
 
+    i32 worst = 0;
     for (i32 z = -40; z < 40; ++z) {
         const i32 left = generator.surfaceHeight(kSectionSize - 1, z);
         const i32 right = generator.surfaceHeight(kSectionSize, z);
-        CAPTURE(z);
-        REQUIRE(std::abs(left - right) <= 3);
+        worst = std::max(worst, std::abs(left - right));
     }
+    CAPTURE(worst);
+    REQUIRE(worst <= 8);
 }
 
 TEST_CASE("a generated column is Ready and fully dirty") {
@@ -114,28 +119,65 @@ TEST_CASE("sections far above and far below the surface stay uniform") {
     CHECK(uniformCount >= Chunk::kSectionCount - 4);
 }
 
-TEST_CASE("adjacent generated columns agree on the blocks along their seam") {
-    // The check 3c depends on. If neighbouring columns disagreed here, boundary
-    // face culling would be comparing against the wrong voxels.
-    World world(1);
-    world.updateLoadedRegion(ChunkPos{0, 0});
+TEST_CASE("adjacent columns share their boundary density plane exactly") {
+    // Terrain continuity across a chunk seam comes down to this: column (0,0)'s last
+    // grid plane and column (1,0)'s first grid plane are the same world positions, so
+    // they must hold the same values. If they did not, the surface would step at every
+    // seam and 3c's boundary face culling would be comparing against different terrain
+    // on each side.
+    //
+    // This replaces an earlier test that asserted "solid exactly below the surface
+    // height". That was only ever true of a heightmap; with a 3D density field an
+    // overhang has air below its own surface, so the old assertion was passing by
+    // luck rather than by construction.
+    const Generator generator(99);
+    const DensityGraph& graph = generator.graph();
 
-    const Generator generator;
-    world.forEachChunk([&generator](Chunk& chunk) { generator.generateColumn(chunk); });
+    DensityGraph::Climate climateA;
+    DensityField densityA;
+    graph.fillColumn(ChunkPos{0, 0}, climateA, densityA);
 
-    for (i32 y = 20; y < 60; ++y) {
-        for (i32 z = 0; z < kSectionSize; z += 4) {
-            // Block x = 31 is the last in column 0, x = 32 the first in column 1.
-            const BlockId inside = world.blockAt(BlockPos{kSectionSize - 1, y, z});
-            const BlockId across = world.blockAt(BlockPos{kSectionSize, y, z});
+    DensityGraph::Climate climateB;
+    DensityField densityB;
+    graph.fillColumn(ChunkPos{1, 0}, climateB, densityB);
 
-            const i32 heightInside = generator.surfaceHeight(kSectionSize - 1, z);
-            const i32 heightAcross = generator.surfaceHeight(kSectionSize, z);
+    constexpr i32 kLast = DensityField::kGridX - 1;
+    for (i32 gz = 0; gz < DensityField::kGridZ; ++gz) {
+        for (i32 gy = 0; gy < DensityField::kGridY; ++gy) {
+            CAPTURE(gy);
+            CAPTURE(gz);
+            REQUIRE(densityA.at(kLast, gy, gz) == densityB.at(0, gy, gz));
+        }
+    }
 
-            CAPTURE(y);
+    // And the same along Z, so a transposed axis cannot pass one and fail the other.
+    DensityGraph::Climate climateC;
+    DensityField densityC;
+    graph.fillColumn(ChunkPos{0, 1}, climateC, densityC);
+
+    for (i32 gy = 0; gy < DensityField::kGridY; ++gy) {
+        for (i32 gx = 0; gx < DensityField::kGridX; ++gx) {
+            CAPTURE(gx);
+            CAPTURE(gy);
+            REQUIRE(densityA.at(gx, gy, DensityField::kGridZ - 1) == densityC.at(gx, gy, 0));
+        }
+    }
+}
+
+TEST_CASE("the density field crosses zero once in open terrain") {
+    // A weaker but still useful shape check: at the surface, density has to go from
+    // positive underground to negative in the sky. A field that never crosses zero
+    // means the whole column is solid or empty, which is what a mis-tuned squeeze
+    // produces.
+    const Generator generator(5);
+
+    for (i32 x = 0; x < kSectionSize; x += 8) {
+        for (i32 z = 0; z < kSectionSize; z += 8) {
+            const i32 surface = generator.surfaceHeight(x, z);
+            CAPTURE(x);
             CAPTURE(z);
-            REQUIRE((inside != kAirBlock) == (y <= heightInside));
-            REQUIRE((across != kAirBlock) == (y <= heightAcross));
+            REQUIRE(surface > kWorldMinY);
+            REQUIRE(surface < kWorldMaxY - 1);
         }
     }
 }

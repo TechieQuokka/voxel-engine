@@ -70,6 +70,21 @@ if(glad_ADDED)
   glad_add_library(glad_gl_core_46 REPRODUCIBLE API gl:core=4.6)
 endif()
 
+# Node-graph SIMD noise, with runtime dispatch across SSE2/SSE4.1/AVX2/AVX512.
+# See DESIGN.md 4.1 for why this and not libnoise.
+#
+# NOISETOOL is a Qt application and has no business being built here.
+CPMAddPackage(
+  NAME FastNoise2
+  GITHUB_REPOSITORY Auburn/FastNoise2
+  GIT_TAG v0.10.0-alpha
+  SYSTEM YES
+  OPTIONS
+    "FASTNOISE2_NOISETOOL OFF"
+    "FASTNOISE2_TESTS OFF"
+    "BUILD_SHARED_LIBS OFF"
+)
+
 if(MC_ENABLE_TRACY)
   CPMAddPackage(
     NAME tracy

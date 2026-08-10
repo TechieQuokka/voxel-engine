@@ -99,6 +99,16 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
     m_world = std::make_unique<World>(m_options.renderDistance);
     m_generator = std::make_unique<Generator>();
 
+    // Worth one line: FastNoise2 dispatches on the CPU at runtime, and the gap between
+    // AVX2 and SSE2 is large enough that a generation timing is meaningless without
+    // knowing which one ran.
+    logInfo("Terrain noise: FastNoise2 on {}, density grid {}x{}x{} per column "
+            "({} samples for {} voxels)",
+            m_generator->graph().simdLevelName(),
+            DensityField::kGridX, DensityField::kGridY, DensityField::kGridZ,
+            DensityField::kSampleCount,
+            static_cast<usize>(kSectionSize) * kSectionSize * static_cast<usize>(kWorldHeight));
+
     // Sized and filled before any thread exists, and never resized afterwards:
     // indices into it travel through queues to other threads.
     m_meshTasks.resize(kMeshTaskPoolSize);
@@ -116,10 +126,20 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
         runMeshBenchmark();
     }
 
-    // Start above the terrain, looking slightly down.
-    m_camera.setPosition({0.0f, 70.0f, 0.0f});
-    m_camera.setOrientation(0.6f, -0.25f);
+    // Spawn above the actual ground rather than at a fixed height.
+    //
+    // A constant worked while terrain was a placeholder that never rose above y=60.
+    // With a real density field the surface moves with continentalness -- 73 at the
+    // origin, 91 a few hundred blocks away -- so a fixed camera height starts the
+    // engine underground, and what that looks like on screen is not obviously a
+    // spawn bug.
+    constexpr f32 kEyeHeightAboveGround = 12.0f;
+    const i32 groundY = m_generator->surfaceHeight(0, 0);
+    m_camera.setPosition({0.0f, static_cast<f32>(groundY) + kEyeHeightAboveGround, 0.0f});
+    m_camera.setOrientation(0.6f, -0.18f);
     updateProjection();
+
+    logInfo("Spawn: ground at y={}, camera at y={:.0f}", groundY, m_camera.position().y);
 
     // The outermost loaded ring is never meshed -- neighboursReady() refuses it --
     // so the darkening has to bottom out before it, or the world would visibly end.

@@ -17,6 +17,7 @@ add_executable(mc_tests
   test_palette.cpp
   test_chunk.cpp
   test_world.cpp
+  test_density_field.cpp
   test_generator.cpp
   test_mesher.cpp
   test_greedy_mesher.cpp

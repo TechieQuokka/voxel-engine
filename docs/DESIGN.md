@@ -343,6 +343,21 @@ Applied to this project's scale — ~1.26 billion voxels of 3D density — AVX2
 evaluation is on the order of **5 seconds single-threaded**, under a second
 across 8 cores. The same work with libnoise would take roughly half an hour.
 
+> **Correction, Phase 4.** The paragraph above asks the wrong question. Minecraft
+> does not evaluate its density function per voxel: `noise_settings` exposes
+> `size_horizontal` and `size_vertical`, which define an interpolation cell of
+> `4 * size` blocks per axis, and the Overworld uses 1 and 2 — so one sample covers
+> 4x8x4 = 128 blocks and the rest is trilinear interpolation. This engine now does
+> the same (`worldgen/DensityField`), which turns a 393,216-evaluation column into
+> 3,969 samples: a factor of **99**.
+>
+> The library choice stands, and the measured throughput above is still the reason
+> for it. But the conclusion that noise throughput was the bottleneck did not
+> survive contact with how Minecraft actually works — the win was in not calling the
+> noise function, not in calling a fast one. Interpolating is also part of the
+> *look*, because smoothing the density field vertically is what gives voxel terrain
+> its layered feel instead of the blobbiness of per-voxel 3D noise.
+
 ---
 
 ## 5. Project Structure
@@ -656,7 +671,7 @@ power, because it has to agree with the hardware's encode.
 | 1 **(done)** | Palette-compressed sections, naive culled meshing, camera | One chunk renders |
 | 2 **(done)** | Binary greedy meshing, texture array | Measured quad count reduction |
 | 3 **(done)** | Job system, streaming, frustum culling | Render distance 16, stable frame time |
-| 4 | FastNoise2 terrain generation | Infinite terrain traversal |
+| 4 *(in progress)* | FastNoise2 terrain generation | Infinite terrain traversal |
 | 5 | Indirect draw + GPU culling | Draw calls < 5 |
 | 6 | Four-level LOD | **Render distance 64 at 60 FPS** |
 | 7 | Brickmap far-field ray marching | Distance limit effectively removed |
@@ -1062,6 +1077,76 @@ A `--capture` frame from the async pipeline is pixel-identical to the synchronou
 and the meshed-section count matches exactly (3,812 both ways). The `release-tracy`
 preset builds and runs; taking an actual Tracy capture needs the Tracy server GUI, so
 that step is left to a human.
+
+### 7.6 Phase 4 progress
+
+Before starting, Minecraft's own generation pipeline was researched rather than
+assumed. Two findings changed the plan; both are recorded where they belong (the
+interpolation grid in the correction to 4.1, the pipeline order below).
+
+| | Content | State |
+|---|---|---|
+| 4a | FastNoise2, density grid, terrain shaping, surface pass | done |
+| 4b | Noise caves (cheese / spaghetti / noodle) and aquifers | next |
+| 4c | Ore features, with the air-exposure rule | |
+| 4d | Biome selection from the climate fields | |
+
+**Generation is a pipeline, not a step.** Java Edition orders it
+`biomes → noise → surface → carvers → features → light`, and the order is load
+bearing: ores are a `features` entry that runs *after* `carvers`, which is the only
+reason ore's `discard_chance_on_air_exposure` — the rule that stops diamond lying
+around on cave walls — means anything. `Generator` is built in these stages for that
+reason, and 4b has to land before 4c.
+
+**4a.** `worldgen/DensityGraph` holds the FastNoise2 node graphs; FastNoise2 is a
+PRIVATE dependency and appears in no header, so the noise backend or a future GPU
+evaluation changes one file. `worldgen/DensityField` is the interpolation grid and
+contains no FastNoise2 at all, so its indexing and interpolation are unit-testable —
+which mattered, because a transposed grid index is invisible in code and shows up as
+terrain made of floating horizontal sheets.
+
+The channels follow the noise router: continentalness and erosion through
+piecewise-linear splines (Minecraft nests cubic splines three deep; linear gets the
+same *shape* and is far easier to debug), peaks-and-valleys, and a vertically squashed
+3D field that warps the result so overhangs are possible.
+
+Two things were got wrong first and are worth recording:
+
+- **FBm cannot make a mountain.** It is symmetric about zero, so raising its amplitude
+  gives taller rolling hills and never a ridge. Peaks-and-valleys had to become a
+  *ridged* fractal, which folds the absolute value and puts a crest where the
+  underlying noise crosses zero — the same shape Minecraft reaches by folding
+  weirdness.
+- **Terrain was tuned by measurement, not by eye.** A `--transect` style probe reports
+  height range, standard deviation and local relief over 8,000 blocks. The first
+  parameter set gave a range of 38 blocks and a relief of 14 over any 128 — terrain
+  that reads as a contour map. The current set gives range 76, stddev 14.3, relief 47,
+  against a target of ~100 and ≥40 taken from what Minecraft does between plains and
+  mountains.
+
+The camera spawn now queries the surface height. A fixed spawn height was fine while
+terrain never rose above y=60; with a real density field the ground at the origin is
+at y=95, so the first render of Phase 4 was taken from inside a hill — and what that
+looks like on screen is not recognisable as a spawn bug.
+
+Measured, release + LTO, 6 workers, FastNoise2 dispatching to AVX2:
+
+| | Distance 8 | Distance 16 |
+|---|---|---|
+| Warm-up | 0.24 s | 0.85 s |
+| …placeholder generator, for comparison | 0.06 s | 0.24 s |
+| Sections meshed | 1,156 | 4,967 |
+| …holding geometry | 565 | 2,458 |
+| Frame p99 | 1.52 ms | 2.65 ms |
+| Arena used | 1 MiB | 9 MiB |
+
+Real terrain costs about 3.5x the placeholder to generate and still streams inside the
+frame budget — p99 went from 2.22 to 1.52 ms at distance 8 and 2.08 to 2.65 ms at 16,
+which is noise around the same number rather than a regression. Note that the
+fully-enclosed section count has already fallen as a share (2,509 of 4,967 versus
+1,532 of 3,812) because ridged terrain has more surface per column; caves in 4b will
+push it down further, and the arena sizing in `meshArenaBytesFor` should be rechecked
+then.
 
 ---
 

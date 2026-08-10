@@ -1,7 +1,7 @@
 # Handoff
 
-Snapshot for resuming work. Written 2026-08-09; updated 2026-08-10 at the end of
-Phase 3.
+Snapshot for resuming work. Written 2026-08-09; updated 2026-08-10 during
+Phase 4.
 
 Read `docs/DESIGN.md` for the full design and the reasoning behind every
 decision. This file is the short version plus the practical details needed to
@@ -11,8 +11,8 @@ pick the work back up cold.
 
 ## 1. Where things stand
 
-**Phases 0 through 3 are complete.** Next up is Phase 4. Phase 3's sub-steps and all
-its measurements are in DESIGN.md 7.5.
+**Phases 0 through 3 are complete. Phase 4 is in progress — 4a done, 4b next.**
+Measurements are in DESIGN.md 7.5 (Phase 3) and 7.6 (Phase 4).
 
 | Commit | Contents |
 |---|---|
@@ -25,15 +25,19 @@ its measurements are in DESIGN.md 7.5.
 | `7c29082` | Phase 3c — neighbour-aware boundary culling and AO |
 | `17bfb20` | Phase 3d/3e — one draw call for the visible set, five-plane frustum |
 | `8e60532` | Phase 3f — streaming onto the worker pool; Phase 3 complete |
+| `5df5ca6` | Record the Phase 3f commit in the handoff table |
 
 Working tree is clean. **The repository is local only — never push, never create
 a remote.**
 
-What runs today: streaming terrain that holds a **p99 frame time of 2.08 ms at render
-distance 16** — eight times under a 60 FPS budget — and 1.76 ms at distance 24.
+What runs today: **FastNoise2 terrain** — continents, erosion, ridged peaks and
+valleys, a 3D warp for overhangs, and a surface pass that grasses the top of every
+solid run. It streams infinitely, holds a **p99 frame time of 2.65 ms at render
+distance 16**, and draws the whole visible set with **one** `glMultiDrawArrays`.
 Generation and meshing run on a 6-worker pool, uploads on their own thread, and the
-whole visible set is drawn with **one** `glMultiDrawArrays`. The main thread only ever
-submits; it never waits for a worker.
+main thread only ever submits.
+
+No caves, no ores, no biomes yet — 4b, 4c and 4d.
 
 ---
 
@@ -48,7 +52,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (132 cases, doctest)
+# Test  (141 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
@@ -69,6 +73,7 @@ TSAN_OPTIONS="suppressions=$PWD/tsan.supp report_mutex_bugs=0" \
 convert /tmp/shot.ppm /tmp/shot.png     # ImageMagick is installed
 
 # Frame-time distribution: vsync off, no cursor capture, camera flies forward.
+# The spawn height is taken from the terrain, so this is safe on any seed.
 # The only way to measure the exit criterion -- vsync makes every frame read 16.7 ms.
 ./build/release/src/app/minecraft --render-distance 16 --bench-frames 900
 
@@ -125,8 +130,10 @@ src/rhi/                GL abstraction; no GL type in any header
 src/world/              pure data; knows nothing about rendering
   Coords (+ Face enum, ChunkPosHash), BlockRegistry, Palette, Section,
   Chunk (12-section column), Neighbourhood (3x3x3 view), World (chunk map)
-src/worldgen/           knows world, nothing above it
-  Generator — placeholder heightmap; FastNoise2 replaces its body in Phase 4
+src/worldgen/           knows world, nothing above it; FastNoise2 is PRIVATE
+  DensityField — the 4x8x4 interpolation grid (no FastNoise2, so it is testable)
+  DensityGraph — the noise router; the only file that includes FastNoise2
+  Generator    — the pipeline: noise stage, then surface stage
 src/mesh/               both meshers take a SectionNeighbourhood
   Quad (64-bit packed), ChunkMesh, CulledMesher, BinaryGreedyMesher
 src/render/
@@ -197,42 +204,63 @@ Learned the hard way; all of them cost real time.
 - **TSan over the app reports ~32 races inside GTK** — glib, gio, gobject, fontconfig,
   pango — reached only through `glfwCreateWindow`. Use `tsan.supp`, and read its header
   before adding to it.
+- **A transposed density grid index looks like a terrain bug, not an indexing bug.**
+  FastNoise2's `GenUniformGrid3D` writes x fastest, then y, then z. Get it wrong and
+  the world becomes floating horizontal sheets, which sends you looking at the shaper.
+  `test_density_field.cpp` pins the layout.
+- **FBm cannot make a ridge.** It is symmetric about zero, so more amplitude gives
+  taller rolling hills forever. Ridged noise is what puts a crest on a mountain.
+- **Tune terrain with the transect probe, not by eye.** Height range, stddev and local
+  relief over a few thousand blocks are checkable; "looks about right" from one camera
+  angle is not. See DESIGN.md 7.6 for the target numbers.
+- **The camera spawn is derived from the surface height.** A constant is wrong the
+  moment the shaper changes, and starting inside a hill does not look like a spawn bug.
 - CMake needs `LANGUAGES C CXX`; GLFW and glad are C.
 - Ninja is not installed; presets use Unix Makefiles.
 
 ---
 
-## 6. Next: Phase 4
+## 6. Phase 4 — in progress
 
 **Goal:** FastNoise2 terrain generation.
 **Exit criterion:** infinite terrain traversal.
 
-The shape of the work is already in place: `worldgen/Generator` has the right
-interface — one call fills one column, reads nothing but its own parameters, writes
-nothing but that column — and only its body changes. Add FastNoise2 as a **PRIVATE**
-dependency of `mc_worldgen` so its types cannot escape into any public header, and
-build the density-function graph from DESIGN.md 3.12.
+Sub-steps and measurements are in DESIGN.md 7.6. **4a is done.** Minecraft's own
+pipeline was researched first, and two findings shaped the plan: the interpolation
+grid (see the correction to DESIGN.md 4.1) and the fact that generation is an
+*ordered* pipeline — `biomes → noise → surface → carvers → features → light`.
 
-Three things to carry in from Phase 3:
+**That order is load bearing, so 4b must land before 4c.** Ores are a `features`
+entry that runs after `carvers`; their `discard_chance_on_air_exposure` — the rule
+that stops diamond lying around on cave walls — only means anything once caves exist
+to expose them to.
 
-1. **Re-measure the AO merge ratio.** The 13.5-point figure in 7.3 comes from smooth
-   heightmap terrain; caves and overhangs will make AO vary far more per face, which is
-   exactly the case that could make AO-aware merging a bad trade after all.
-   `--mesh-benchmark` still runs the comparison.
-2. **Watch how generation scales across workers.** The placeholder manages 4x on 6
-   threads because its inner loop is `Palette::set` — a palette scan plus a
-   read-modify-write per voxel — so it saturates memory bandwidth before cores. A
-   density-function generator is compute-bound and should do better. If it does not,
-   writing through the palette one voxel at a time is the thing to fix.
-3. **Caves break the "fully enclosed" saving.** Two fifths of all meshed sections
-   currently produce zero quads because they sit inside solid rock. Carving caves
-   through them turns each into real geometry, so both the arena sizing
-   (`meshArenaBytesFor`, ~11 KiB/column measured) and the mesh timings need rechecking.
+**4b — noise caves and aquifers.** Three kinds, per the 1.18 model: cheese (wide
+pockets), spaghetti (long thin connectors), noodle (1–5 block tunnels). Aquifers give
+flooded caves a *local* water level independent of sea level. Two consequences to plan
+for:
 
-Phase 5 is indirect draw plus GPU culling. Note that the shader side is already
-arranged for it: per-section data is an array indexed by `gl_DrawID`, which means the
-same thing under `glMultiDrawElementsIndirect`, so only the command buffer's producer
-changes.
+- **Caves destroy the fully-enclosed saving.** Roughly half of all meshed sections
+  currently produce zero quads because they sit inside solid rock. Carving through them
+  turns each into real geometry, so `meshArenaBytesFor` (~11 KiB/column measured, 48 KiB
+  budgeted) and the mesh timings both need rechecking.
+- **Caves make lighting necessary.** Without light propagation a cave is fully lit,
+  which reads as wrong immediately. `Quad` has room: bits 57–63 are free, and AO already
+  occupies 33–40, so a 4-bit light level fits beside it.
+
+**4c — ore features.** The parameter table is in the research notes: vein size, veins
+per chunk, triangle vs uniform distribution, and the air-exposure discard chance.
+**Scale the vein counts by 4** — they are per 16x16 Minecraft chunk, and a column here
+is 32x32. Adding ore block types is cheap: the palette already handles 16 types in 4
+bits and the texture array only needs more layers.
+
+**4d — biomes** from the climate fields that `DensityGraph` already computes. Minecraft
+uses a 6-parameter space (temperature, humidity, continentalness, erosion, weirdness,
+depth); this engine has three of them today.
+
+Phase 5 is indirect draw plus GPU culling. The shader side is already arranged for it:
+per-section data is an array indexed by `gl_DrawID`, which means the same thing under
+`glMultiDrawElementsIndirect`, so only the command buffer's producer changes.
 
 ---
 

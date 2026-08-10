@@ -5,113 +5,155 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 
 namespace mc {
 namespace {
 
-/// Deterministic scalar hash, for turning a seed into phase offsets.
-u32 mix(u32 value) {
-    value ^= value >> 16;
-    value *= 0x7FEB352Du;
-    value ^= value >> 15;
-    value *= 0x846CA68Bu;
-    return value ^ (value >> 16);
+/// Solid where density is positive. Minecraft's rule exactly.
+constexpr bool isSolid(f32 density) {
+    return density > 0.0f;
 }
 
 } // namespace
 
-Generator::Generator(u32 seed)
-    : m_seed(seed),
-      // Phase offsets rather than an amplitude or frequency change, so a different
-      // seed is a different world instead of the same one scaled.
-      m_offsetX(static_cast<f32>(mix(seed) % 100000u) * 0.01f),
-      m_offsetZ(static_cast<f32>(mix(seed ^ 0x9E3779B9u) % 100000u) * 0.01f) {}
+Generator::Generator(u32 seed) : m_seed(seed), m_graph(std::make_unique<DensityGraph>(seed)) {}
+
+Generator::~Generator() = default;
 
 i32 Generator::surfaceHeight(i32 worldX, i32 worldZ) const {
-    const f32 fx = static_cast<f32>(worldX) + m_offsetX;
-    const f32 fz = static_cast<f32>(worldZ) + m_offsetZ;
+    const ChunkPos column = toChunkPos(BlockPos{worldX, 0, worldZ});
 
-    // Three octaves standing in for the continentalness / erosion / detail split
-    // that 3.12 describes, so the shape of the terrain is roughly what Phase 4 will
-    // produce and the streaming numbers stay comparable.
-    const f32 continents = 18.0f * std::sin(fx * 0.0131f) * std::cos(fz * 0.0117f);
-    const f32 hills = 7.0f * std::sin((fx + fz) * 0.0413f);
-    const f32 detail = 2.5f * std::sin(fx * 0.113f) * std::sin(fz * 0.097f);
+    // thread_local because these are ~16 KiB each and this may be called in a loop.
+    static thread_local DensityGraph::Climate climate;
+    static thread_local DensityField density;
+    m_graph->fillColumn(column, climate, density);
 
-    const f32 height = static_cast<f32>(kBaseHeight) + continents + hills + detail;
+    const i32 localX = blockToLocalCoord(worldX);
+    const i32 localZ = blockToLocalCoord(worldZ);
 
-    return std::clamp(static_cast<i32>(std::lround(height)), kWorldMinY + 1, kWorldMaxY - 1);
-}
-
-BlockId Generator::blockFor(i32 y, i32 surface) {
-    if (y > surface) {
-        return kAirBlock;
+    for (i32 y = kWorldMaxY - 1; y >= kWorldMinY; --y) {
+        if (isSolid(density.sample(localX, y, localZ))) {
+            return y;
+        }
     }
-
-    const bool beach = surface <= kBeachLevel;
-    if (y == surface) {
-        return beach ? kSandBlock : kGrassBlock;
-    }
-    if (y > surface - kSoilDepth) {
-        return beach ? kSandBlock : kDirtBlock;
-    }
-    return kStoneBlock;
+    return kWorldMinY - 1;
 }
 
 void Generator::generateColumn(Chunk& chunk) const {
     MC_PROFILE_SCOPE_N("Generator::generateColumn");
 
-    const ChunkPos position = chunk.position();
-    const i32 baseX = position.x * kSectionSize;
-    const i32 baseZ = position.z * kSectionSize;
+    // ~16 KiB of density plus 1 KiB of climate, per worker rather than per call.
+    static thread_local DensityGraph::Climate climate;
+    static thread_local DensityField density;
 
-    // The surface is a 2D function, so it is evaluated once per column position and
-    // shared by all 12 sections. This is exactly why the load unit is a column.
-    std::array<i32, static_cast<usize>(kSectionSize) * kSectionSize> heights{};
-    i32 minSurface = kWorldMaxY;
-    i32 maxSurface = kWorldMinY;
+    m_graph->fillColumn(chunk.position(), climate, density);
 
-    for (i32 z = 0; z < kSectionSize; ++z) {
-        for (i32 x = 0; x < kSectionSize; ++x) {
-            const i32 surface = surfaceHeight(baseX + x, baseZ + z);
-            heights[static_cast<usize>(z * kSectionSize + x)] = surface;
-            minSurface = std::min(minSurface, surface);
-            maxSurface = std::max(maxSurface, surface);
-        }
-    }
+    // ---------------------------------------------------------------------------
+    // Stage 1: noise. Solid or air, and nothing else -- every solid block is stone.
+    //
+    // Sections are examined one at a time so the uniform cases can be taken whole:
+    // a section that came out entirely air or entirely stone stores one palette entry
+    // and no index array, which is what makes 12 sections per column affordable
+    // (DESIGN.md 3.5). Most of a column is one or the other.
+    // ---------------------------------------------------------------------------
+    std::array<bool, Chunk::kSectionCount> sectionHasAir{};
+    std::array<bool, Chunk::kSectionCount> sectionHasSolid{};
 
     for (usize index = 0; index < Chunk::kSectionCount; ++index) {
         Section& section = chunk.sectionByIndex(index);
-
         const i32 sectionMinY = sectionIndexToWorldY(static_cast<i32>(index));
-        const i32 sectionMaxY = sectionMinY + kSectionSize - 1;
 
-        // The two uniform cases are the reason a 384-block world height is
-        // affordable at all (DESIGN.md 3.5): they store one palette entry and no
-        // index array, and between them they cover most of a column.
-        if (sectionMinY > maxSurface) {
+        // First pass over the section: does it need an index array at all?
+        bool anyAir = false;
+        bool anySolid = false;
+        for (i32 localY = 0; localY < kSectionSize && !(anyAir && anySolid); ++localY) {
+            for (i32 z = 0; z < kSectionSize && !(anyAir && anySolid); ++z) {
+                for (i32 x = 0; x < kSectionSize; ++x) {
+                    if (isSolid(density.sample(x, sectionMinY + localY, z))) {
+                        anySolid = true;
+                    } else {
+                        anyAir = true;
+                    }
+                    if (anyAir && anySolid) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        sectionHasAir[index] = anyAir;
+        sectionHasSolid[index] = anySolid;
+
+        if (!anySolid) {
             section.fill(kAirBlock);
             continue;
         }
-        if (sectionMaxY < minSurface - kSoilDepth) {
+        if (!anyAir) {
             section.fill(kStoneBlock);
             continue;
         }
 
-        // Straddles the surface, so it has to be filled voxel by voxel. X innermost,
-        // matching the storage order in localIndex().
         section.fill(kAirBlock);
         for (i32 localY = 0; localY < kSectionSize; ++localY) {
             const i32 worldY = sectionMinY + localY;
             for (i32 z = 0; z < kSectionSize; ++z) {
                 for (i32 x = 0; x < kSectionSize; ++x) {
-                    const i32 surface = heights[static_cast<usize>(z * kSectionSize + x)];
-                    const BlockId block = blockFor(worldY, surface);
-                    if (block != kAirBlock) {
-                        section.set(x, localY, z, block);
+                    if (isSolid(density.sample(x, worldY, z))) {
+                        section.set(x, localY, z, kStoneBlock);
                     }
                 }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Stage 2: surface. Walk each column down from the sky and replace the top of
+    // each solid run with soil.
+    //
+    // Down from the top rather than up from a known height, because with a 3D
+    // density field there is no single surface: an overhang has a top face partway
+    // down, and it should be grassed too. Minecraft's surface rules work the same
+    // way, on runs rather than on a heightmap.
+    // ---------------------------------------------------------------------------
+    for (i32 z = 0; z < kSectionSize; ++z) {
+        for (i32 x = 0; x < kSectionSize; ++x) {
+            // Depth below the most recent air block. -1 means "still in open air".
+            i32 depth = -1;
+
+            for (i32 worldY = kWorldMaxY - 1; worldY >= kWorldMinY; --worldY) {
+                const usize sectionIndex =
+                    static_cast<usize>(sectionIndexInColumn(blockToSectionCoord(worldY)));
+
+                // Skip whole uniform sections rather than reading 32 voxels of known
+                // answer. An all-air section resets the run; an all-stone one is
+                // interior and only advances the depth counter.
+                if (!sectionHasSolid[sectionIndex]) {
+                    depth = -1;
+                    worldY = sectionIndexToWorldY(static_cast<i32>(sectionIndex));
+                    continue;
+                }
+
+                Section& section = chunk.sectionByIndex(sectionIndex);
+                const i32 localY = blockToLocalCoord(worldY);
+
+                if (section.get(x, localY, z) == kAirBlock) {
+                    depth = -1;
+                    continue;
+                }
+
+                ++depth;
+                if (depth >= kSoilDepth) {
+                    continue; // Interior stone.
+                }
+
+                const bool beach = worldY <= kBeachLevel;
+                BlockId block = kStoneBlock;
+                if (depth == 0) {
+                    block = beach ? kSandBlock : kGrassBlock;
+                } else {
+                    block = beach ? kSandBlock : kDirtBlock;
+                }
+                section.set(x, localY, z, block);
             }
         }
     }
