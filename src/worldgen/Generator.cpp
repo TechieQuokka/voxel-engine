@@ -2,6 +2,7 @@
 
 #include "core/Profile.hpp"
 #include "world/BlockRegistry.hpp"
+#include "world/SkyLight.hpp"
 
 #include <algorithm>
 #include <array>
@@ -348,6 +349,12 @@ void Generator::generateColumn(Chunk& chunk) const {
     // carvers made in stage 1b; run before them and the rule has nothing to see.
     // ---------------------------------------------------------------------------
     m_features.place(chunk);
+
+    // ---------------------------------------------------------------------------
+    // Stage 4: light. Last of all, because what casts a shadow depends on every
+    // block the stages above placed -- including the ore, which is opaque.
+    // ---------------------------------------------------------------------------
+    computeSkyLight(chunk);
 
     chunk.markAllDirty();
     chunk.setState(ChunkState::Ready);

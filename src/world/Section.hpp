@@ -1,6 +1,7 @@
 #pragma once
 
 #include "world/Coords.hpp"
+#include "world/LightArray.hpp"
 #include "world/Palette.hpp"
 
 namespace mc {
@@ -27,10 +28,25 @@ public:
     const Palette& storage() const noexcept { return m_storage; }
     Palette& storage() noexcept { return m_storage; }
 
-    usize memoryUsage() const noexcept { return m_storage.memoryUsage(); }
+    /// Sky light, 0 to 15.
+    ///
+    /// Only sky for now. Block light is a second `LightArray` and the propagation
+    /// is the same code, but nothing in the world emits light yet -- there are no
+    /// torches and lava is not a block type -- so a block channel would be a
+    /// uniformly zero array in every section in the world.
+    u8 skyLight(i32 x, i32 y, i32 z) const { return m_skyLight.get(x, y, z); }
+    void setSkyLight(i32 x, i32 y, i32 z, u8 level) { m_skyLight.set(x, y, z, level); }
+
+    const LightArray& skyLightArray() const noexcept { return m_skyLight; }
+    LightArray& skyLightArray() noexcept { return m_skyLight; }
+
+    usize memoryUsage() const noexcept {
+        return m_storage.memoryUsage() + m_skyLight.memoryUsage();
+    }
 
 private:
     Palette m_storage;
+    LightArray m_skyLight;
 };
 
 } // namespace mc

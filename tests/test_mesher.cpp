@@ -19,7 +19,10 @@ usize countFaces(const ChunkMesh& mesh, Face face) {
 } // namespace
 
 TEST_CASE("Quad round-trips every packed field") {
-    const Quad quad = Quad::make(32, 17, 5, 40, 64, Face::PosY, 4321, 0xB7);
+    // Every field at a value that uses bits the neighbouring fields would claim if
+    // an offset were wrong: material at its 7-bit maximum, light with a different
+    // level in each of its four nibbles.
+    const Quad quad = Quad::make(32, 17, 5, 40, 64, Face::PosY, 127, 0xB7, 0xF3A1);
 
     CHECK(quad.x() == 32);
     CHECK(quad.y() == 17);
@@ -27,8 +30,34 @@ TEST_CASE("Quad round-trips every packed field") {
     CHECK(quad.width() == 40);
     CHECK(quad.height() == 64);
     CHECK(quad.face() == Face::PosY);
-    CHECK(quad.material() == 4321);
+    CHECK(quad.material() == 127);
     CHECK(quad.ao() == 0xB7);
+    CHECK(quad.light() == 0xF3A1);
+}
+
+TEST_CASE("Quad's material field holds every texture layer that exists") {
+    // The field was narrowed from 16 bits to 7 to make room for per-corner light.
+    // That is only safe while the layer table stays under 128 entries, and this is
+    // the assertion that says so rather than a comment hoping it.
+    CHECK(kTextureLayerCount <= Quad::kMaxMaterial + 1);
+
+    const Quad quad = Quad::make(0, 0, 0, 1, 1, Face::NegX,
+                                 static_cast<u16>(kTextureLayerCount - 1));
+    CHECK(quad.material() == kTextureLayerCount - 1);
+}
+
+TEST_CASE("Quad light packs four independent corners") {
+    // A merged quad interpolates between these four, so a shift that aliased two
+    // of them together would show up as lighting that is subtly flat rather than
+    // as anything that looks like a bug.
+    for (u32 corner = 0; corner < 4; ++corner) {
+        const auto light = static_cast<u16>(0xFu << (corner * 4));
+        const Quad quad = Quad::make(1, 1, 1, 1, 1, Face::PosZ, 3, 0, light);
+
+        CHECK(quad.light() == light);
+        CHECK(quad.ao() == 0);
+        CHECK(quad.material() == 3);
+    }
 }
 
 TEST_CASE("Quad encodes coordinate 32, the far face plane") {

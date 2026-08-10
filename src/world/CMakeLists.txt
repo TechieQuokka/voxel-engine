@@ -1,5 +1,6 @@
 add_library(mc_world STATIC
   BlockRegistry.cpp
+  SkyLight.cpp
   Chunk.cpp
   Palette.cpp
   World.cpp

@@ -4,6 +4,7 @@ in vec3 v_normal;
 in vec3 v_worldPos;
 in vec2 v_uv;
 in float v_ao;
+in float v_light;
 flat in uint v_layer;
 
 layout(binding = 0) uniform sampler2DArray u_blockTextures;
@@ -47,7 +48,10 @@ void main() {
     // light space. 1 is a fully open corner, 0 a fully occluded one.
     float ao = mix(1.0, v_ao, u_aoStrength);
 
-    vec3 shaded = albedo.rgb * faceShading(v_normal) * ao;
+    // Sky light multiplies in alongside AO, both already linear. They answer
+    // different questions -- AO is how enclosed this corner is, light is how much
+    // daylight reaches it -- and a surface needs to be dark when either says so.
+    vec3 shaded = albedo.rgb * faceShading(v_normal) * ao * v_light;
 
     // Distance fog, as a mix toward the sky rather than a multiply toward black.
     //

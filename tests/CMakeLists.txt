@@ -20,6 +20,7 @@ add_executable(mc_tests
   test_density_field.cpp
   test_generator.cpp
   test_mesher.cpp
+  test_skylight.cpp
   test_greedy_mesher.cpp
 )
 

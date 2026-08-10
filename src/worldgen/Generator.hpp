@@ -18,6 +18,7 @@ namespace mc {
 ///   2. **carvers**  — thin caves are cut out of the solidity mask, per section
 ///   3. **surface**  — biome-dependent blocks replace the top of the solid column
 ///   4. **features** — blob features: stone variants, gravel, ores
+///   5. **light**    — sky light flood fill over the finished column
 ///
 /// Features run last because ore's air-exposure rule can only be evaluated once the
 /// carvers have made the air it tests for. Run them earlier and every

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -129,6 +130,99 @@ void reportStoneGradient(const std::vector<Histogram>& byY) {
     }
 }
 
+/// Sky light over the same slice, as one hex digit per voxel.
+///
+/// The only way to see whether lighting works. A cave is underground by
+/// definition, so no camera the engine can be placed at will show whether its far
+/// end went dark -- and "the surface looks right" is satisfied by lighting that
+/// does nothing at all below it.
+void reportLightSection(const Chunk& column, i32 minY, i32 maxY) {
+    constexpr i32 kSliceZ = kSectionSize / 2;
+    constexpr char kDigits[] = "0123456789abcdef";
+
+    logInfo("sky light over the same slice (0 dark, f full daylight):");
+
+    for (i32 y = maxY; y >= minY; --y) {
+        const Section* section = column.sectionAt(blockToSectionCoord(y));
+        if (section == nullptr) {
+            continue;
+        }
+        const i32 localY = blockToLocalCoord(y);
+
+        std::string row;
+        row.reserve(static_cast<usize>(kSectionSize));
+        for (i32 x = 0; x < kSectionSize; ++x) {
+            // Solid blocks are drawn as a space: their own light value is
+            // meaningless, and printing it hides where the rock is.
+            row.push_back(section->get(x, localY, kSliceZ) == kAirBlock
+                              ? kDigits[section->skyLight(x, localY, kSliceZ)]
+                              : ' ');
+        }
+        logInfo("   y {:>4} |{}|", y, row);
+    }
+}
+
+/// What the light actually cost, and whether the collapse held.
+void reportLightCost(const std::vector<Chunk*>& columns) {
+    usize uniform = 0;
+    usize stored = 0;
+    usize bytes = 0;
+    std::array<u64, 16> levels{};
+    u64 undergroundAir = 0;
+
+    for (const Chunk* column : columns) {
+        for (usize index = 0; index < Chunk::kSectionCount; ++index) {
+            const Section& section = column->sectionByIndex(index);
+            if (section.skyLightArray().isUniform()) {
+                ++uniform;
+            } else {
+                ++stored;
+            }
+            bytes += section.skyLightArray().memoryUsage();
+        }
+
+        // Light of the air below each voxel column's own surface -- the cave air
+        // that the whole exercise is about.
+        for (i32 z = 0; z < kSectionSize; ++z) {
+            for (i32 x = 0; x < kSectionSize; ++x) {
+                bool belowSurface = false;
+                for (i32 y = kWorldMaxY - 1; y >= kWorldMinY; --y) {
+                    const Section* section = column->sectionAt(blockToSectionCoord(y));
+                    if (section == nullptr) {
+                        continue;
+                    }
+                    const i32 localY = blockToLocalCoord(y);
+                    const bool air = section->get(x, localY, z) == kAirBlock;
+                    if (!belowSurface) {
+                        belowSurface = !air;
+                        continue;
+                    }
+                    if (!air) {
+                        continue;
+                    }
+                    ++undergroundAir;
+                    ++levels[section->skyLight(x, localY, z)];
+                }
+            }
+        }
+    }
+
+    const usize sections = uniform + stored;
+    logInfo("sky light storage: {} of {} sections uniform ({:.1f} %), {} KiB for the rest",
+            uniform, sections, percentOf(uniform, sections), bytes / 1024);
+    logInfo("  a section that is not uniform costs 16 KiB; if this ever inverts, the "
+            "collapse in LightArray has stopped working");
+
+    logInfo("underground air by light level:");
+    for (usize level = 0; level < levels.size(); ++level) {
+        if (levels[level] == 0) {
+            continue;
+        }
+        logInfo("   level {:>2}  {:>10}  {:>6.2f} %", level, levels[level],
+                percentOf(levels[level], undergroundAir));
+    }
+}
+
 void reportCrossSection(const Chunk& column, i32 minY, i32 maxY) {
     constexpr i32 kSliceZ = kSectionSize / 2;
 
@@ -161,14 +255,22 @@ void runTerrainProbe(const Generator& generator, const ProbeOptions& options) {
 
     AirBelowSurface undergroundAir;
 
+    // Kept rather than discarded, because the light report needs whole columns and
+    // regenerating them all a second time is the most expensive thing here.
+    std::vector<std::unique_ptr<Chunk>> kept;
+    std::vector<Chunk*> keptRaw;
+    kept.reserve(static_cast<usize>(columns));
+
     // A diagonal sweep rather than a block of adjacent columns: continentalness runs
     // at 0.00035 cycles per block, so a compact patch would measure one landform and
     // report it as the world.
     for (i32 i = 0; i < columns; ++i) {
-        Chunk column(ChunkPos{i * 3, i * 5});
-        generator.generateColumn(column);
-        countColumn(column, total, byY);
-        countAirBelowSurface(column, undergroundAir);
+        auto column = std::make_unique<Chunk>(ChunkPos{i * 3, i * 5});
+        generator.generateColumn(*column);
+        countColumn(*column, total, byY);
+        countAirBelowSurface(*column, undergroundAir);
+        keptRaw.push_back(column.get());
+        kept.push_back(std::move(column));
     }
 
     const auto voxels = static_cast<u64>(columns) * static_cast<u64>(kSectionVolume)
@@ -179,6 +281,7 @@ void runTerrainProbe(const Generator& generator, const ProbeOptions& options) {
     reportComposition(total, voxels);
     reportUndergroundAir(undergroundAir);
     reportStoneGradient(byY);
+    reportLightCost(keptRaw);
 
     if (options.crossSection) {
         // Regenerated rather than kept from the loop: a column is 400 KiB of section
@@ -186,6 +289,7 @@ void runTerrainProbe(const Generator& generator, const ProbeOptions& options) {
         Chunk sample(ChunkPos{0, 0});
         generator.generateColumn(sample);
         reportCrossSection(sample, options.sliceMinY, options.sliceMaxY);
+        reportLightSection(sample, options.sliceMinY, options.sliceMaxY);
     }
     logInfo("-----------------------------------------------------");
 }

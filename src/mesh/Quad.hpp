@@ -15,8 +15,16 @@ namespace mc {
 ///   bits 24..29  height   merged extent along the second tangent, minus 1
 ///   bits 30..32  face     Face enum
 ///   bits 33..40  ao       2 bits per corner
-///   bits 41..56  material index into kLayers (world/BlockTable.hpp), not a
+///   bits 41..56  light    4 bits per corner, sky light 0..15
+///   bits 57..63  material index into kLayers (world/BlockTable.hpp), not a
 ///                         BlockId -- grass alone draws three layers for one type
+///
+/// **`material` is seven bits, and that is what made smooth lighting fit.** It held
+/// sixteen for what is 26 texture layers; moving it to the top of the word freed
+/// 41..56 for a light level per corner, which is the difference between lighting
+/// that interpolates across a merged quad and a single flat level per face. AO
+/// stays a separable field at 33..40, so `setAoStrength()` still works -- folding
+/// the two together would have fit as well and cost that.
 ///
 /// There is no vertex buffer. Quads live in an SSBO and the vertex shader
 /// expands each one into four corners from gl_VertexID.
@@ -24,15 +32,19 @@ struct Quad {
     u64 packed = 0;
 
     static constexpr u32 kMaxExtent = 64;
+    /// What seven bits of material holds.
+    static constexpr u16 kMaxMaterial = 127;
 
     static constexpr Quad make(u32 x, u32 y, u32 z,
                                u32 width, u32 height,
                                Face face,
                                u16 material,
-                               u8 ao = 0) {
+                               u8 ao = 0,
+                               u16 light = 0) {
         MC_ASSERT(x < 64 && y < 64 && z < 64);
         MC_ASSERT(width >= 1 && width <= kMaxExtent);
         MC_ASSERT(height >= 1 && height <= kMaxExtent);
+        MC_ASSERT(material <= kMaxMaterial);
 
         Quad quad;
         quad.packed = static_cast<u64>(x)
@@ -42,7 +54,8 @@ struct Quad {
                     | (static_cast<u64>(height - 1) << 24)
                     | (static_cast<u64>(face) << 30)
                     | (static_cast<u64>(ao) << 33)
-                    | (static_cast<u64>(material) << 41);
+                    | (static_cast<u64>(light) << 41)
+                    | (static_cast<u64>(material) << 57);
         return quad;
     }
 
@@ -53,7 +66,8 @@ struct Quad {
     constexpr u32 height() const { return static_cast<u32>((packed >> 24) & 0x3F) + 1; }
     constexpr Face face() const { return static_cast<Face>((packed >> 30) & 0x7); }
     constexpr u8 ao() const { return static_cast<u8>((packed >> 33) & 0xFF); }
-    constexpr u16 material() const { return static_cast<u16>((packed >> 41) & 0xFFFF); }
+    constexpr u16 light() const { return static_cast<u16>((packed >> 41) & 0xFFFF); }
+    constexpr u16 material() const { return static_cast<u16>((packed >> 57) & 0x7F); }
 };
 
 static_assert(sizeof(Quad) == 8, "Quad must stay 8 bytes; the shader reads it as a uvec2");

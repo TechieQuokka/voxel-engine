@@ -6,8 +6,8 @@
 //
 // Packing must match mesh/Quad.hpp:
 //   bits  0..5   x        bits 18..23  width - 1    bits 33..40  ao
-//   bits  6..11  y        bits 24..29  height - 1   bits 41..56  material
-//   bits 12..17  z        bits 30..32  face
+//   bits  6..11  y        bits 24..29  height - 1   bits 41..56  light
+//   bits 12..17  z        bits 30..32  face         bits 57..63  material
 
 layout(std430, binding = 0) readonly buffer QuadBuffer {
     uvec2 b_quads[];
@@ -30,6 +30,7 @@ out vec3 v_normal;
 out vec3 v_worldPos;
 out vec2 v_uv;
 out float v_ao;
+out float v_light;
 flat out uint v_layer;
 
 // Tangent basis per face, chosen so that cross(U, V) equals the face normal.
@@ -83,6 +84,19 @@ const uint kCornerIds[6] = uint[6](0u, 1u, 2u, 0u, 2u, 3u);
 // forbids function calls in a const initializer, so the values are written out.
 const float kAoLinear[4] = float[4](0.0, 0.090842, 0.401978, 1.0);
 
+// Sky light 0..15 as a linear multiplier, 0.8^(15 - level) -- Minecraft's falloff.
+// It is already a light quantity rather than a perceptual one, so unlike the AO
+// table it needs no sRGB decode; interpolating it across a merged quad is what
+// makes a cave mouth fade smoothly instead of in fifteen visible steps.
+//
+// The floor is not zero. A pitch-black cave is correct and unreadable, and there
+// is no block light yet to carry a torch into it, so the darkest level keeps a
+// little ambient rather than swallowing the geometry.
+const float kLightLinear[16] = float[16](
+    0.035, 0.044, 0.055, 0.069, 0.086, 0.107, 0.134, 0.168,
+    0.210, 0.262, 0.328, 0.410, 0.512, 0.640, 0.800, 1.000
+);
+
 void main() {
     // gl_VertexID is absolute in OpenGL -- it already includes the draw's `first`
     // -- so this indexes the shared quad arena directly, with no base offset.
@@ -108,7 +122,8 @@ void main() {
     uint face = ((lo >> 30) & 0x3u) | ((hi & 0x1u) << 2);
 
     uint aoBits = (hi >> 1) & 0xFFu;
-    v_layer = (hi >> 9) & 0xFFFFu;
+    uint lightBits = (hi >> 9) & 0xFFFFu;
+    v_layer = (hi >> 25) & 0x7Fu;
 
     vec2 corner = kCorners[cornerIndex];
     vec3 localPos = origin
@@ -120,8 +135,15 @@ void main() {
     // with GL_REPEAT rather than in an atlas.
     v_uv = vec2(corner.x * width, corner.y * height);
 
-    uint ao = (aoBits >> (2u * kCornerIds[cornerIndex])) & 0x3u;
+    // Which of the four packed corners this vertex reads. AO and light are packed
+    // in the same corner order, so one index serves both.
+    uint cornerId = kCornerIds[cornerIndex];
+
+    uint ao = (aoBits >> (2u * cornerId)) & 0x3u;
     v_ao = kAoLinear[ao];
+
+    uint light = (lightBits >> (4u * cornerId)) & 0xFu;
+    v_light = kLightLinear[light];
 
     v_worldPos = sectionOrigin + localPos;
     v_normal = kNormals[face];

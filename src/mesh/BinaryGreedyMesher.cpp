@@ -77,6 +77,11 @@ struct Scratch {
     /// Opacity including the one-voxel shell of neighbours.
     std::array<u8, kPaddedVolume> opaque{};
 
+    /// Sky light, on the same padded grid and for the same reason: a face on a
+    /// section boundary has to be lit by the light in the neighbour it faces, or
+    /// every chunk seam becomes a visible band.
+    std::array<u8, kPaddedVolume> light{};
+
     Mask2D colX{}; ///< [y][z], bit x
     Mask2D colY{}; ///< [x][z], bit y
     Mask2D colZ{}; ///< [x][y], bit z
@@ -91,8 +96,9 @@ struct Scratch {
 
     /// Per-plane merge state for the face currently being processed.
     /// planeRows[plane][v] is a bitmask over u; cells[plane][v][u] holds
-    /// (layer << 8) | ao and is only meaningful where the row bit is set, so it
-    /// never has to be cleared.
+    /// (layer << 24) | (light << 8) | ao and is only meaningful where the row bit
+    /// is set, so it never has to be cleared. Seven bits of layer, sixteen of
+    /// light and eight of AO come to 31, which is why one word still holds it.
     std::array<std::array<u32, kN>, kN> planeRows{};
     std::array<std::array<std::array<u32, kN>, kN>, kN> cells{};
 };
@@ -104,6 +110,10 @@ Scratch& scratch() {
 
 bool opaqueAt(const Scratch& s, i32 x, i32 y, i32 z) {
     return s.opaque[paddedIndex(x, y, z)] != 0;
+}
+
+u8 lightAt(const Scratch& s, i32 x, i32 y, i32 z) {
+    return s.light[paddedIndex(x, y, z)];
 }
 
 /// The padded coordinate range one neighbour offset covers.
@@ -130,6 +140,10 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
     // Zero first, so a null or all-air neighbour costs nothing at all beyond this
     // memset -- which is the common case, since most of a column is sky.
     std::memset(s.opaque.data(), 0, s.opaque.size());
+    std::memset(s.light.data(), 0, s.light.size());
+
+    const bool centerLightUniform = center->skyLightArray().isUniform();
+    const u8 centerLightLevel = center->skyLightArray().uniformLevel();
 
     for (i32 y = 0; y < kN; ++y) {
         for (i32 z = 0; z < kN; ++z) {
@@ -138,6 +152,8 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
                 const BlockId block = center->getByIndex(local);
                 s.blocks[local] = block;
                 s.opaque[paddedIndex(x, y, z)] = registry.isOpaque(block) ? u8{1} : u8{0};
+                s.light[paddedIndex(x, y, z)] =
+                    centerLightUniform ? centerLightLevel : center->skyLight(x, y, z);
             }
         }
     }
@@ -161,28 +177,34 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
                 const auto [yBegin, yEnd] = rangeFor(dy);
                 const auto [zBegin, zEnd] = rangeFor(dz);
 
-                if (section->isUniform()) {
-                    if (!registry.isOpaque(section->uniformBlock())) {
-                        continue; // Already zero.
-                    }
-                    for (i32 y = yBegin; y < yEnd; ++y) {
-                        for (i32 z = zBegin; z < zEnd; ++z) {
-                            for (i32 x = xBegin; x < xEnd; ++x) {
-                                s.opaque[paddedIndex(x, y, z)] = 1;
-                            }
-                        }
-                    }
-                    continue;
+                // Opacity and light are uniform independently of each other: a
+                // section can be solid rock throughout and still hold a gradient of
+                // light, or be open air throughout and hold one level. So the two
+                // fast paths are asked about separately.
+                const bool blocksUniform = section->isUniform();
+                const bool opaqueFill =
+                    blocksUniform && registry.isOpaque(section->uniformBlock());
+                const bool lightUniform = section->skyLightArray().isUniform();
+                const u8 lightLevel = section->skyLightArray().uniformLevel();
+
+                if (blocksUniform && !opaqueFill && lightUniform && lightLevel == 0) {
+                    continue; // Both already zero.
                 }
 
                 for (i32 y = yBegin; y < yEnd; ++y) {
                     for (i32 z = zBegin; z < zEnd; ++z) {
                         for (i32 x = xBegin; x < xEnd; ++x) {
-                            const BlockId block = section->get(blockToLocalCoord(x),
-                                                               blockToLocalCoord(y),
-                                                               blockToLocalCoord(z));
+                            const i32 lx = blockToLocalCoord(x);
+                            const i32 ly = blockToLocalCoord(y);
+                            const i32 lz = blockToLocalCoord(z);
+
                             s.opaque[paddedIndex(x, y, z)] =
-                                registry.isOpaque(block) ? u8{1} : u8{0};
+                                blocksUniform
+                                    ? (opaqueFill ? u8{1} : u8{0})
+                                    : (registry.isOpaque(section->get(lx, ly, lz)) ? u8{1}
+                                                                                   : u8{0});
+                            s.light[paddedIndex(x, y, z)] =
+                                lightUniform ? lightLevel : section->skyLight(lx, ly, lz);
                         }
                     }
                 }
@@ -315,6 +337,49 @@ u8 computeAo(const Scratch& s, const FacePlan& plan, i32 x, i32 y, i32 z) {
     return packed;
 }
 
+/// Smooth lighting: each corner takes the mean of the light in the four cells that
+/// touch it on the lit side of the face.
+///
+/// The same four cells AO looks at, and that is not a coincidence -- AO asks how
+/// many of them are solid, this asks how bright the ones that are not are. Solid
+/// cells are skipped rather than counted as dark, or every corner against a wall
+/// would read as a shadow that the AO term is already drawing.
+u16 computeCornerLight(const Scratch& s, const FacePlan& plan, i32 x, i32 y, i32 z) {
+    const i32 bx = x + plan.nx;
+    const i32 by = y + plan.ny;
+    const i32 bz = z + plan.nz;
+
+    u16 packed = 0;
+    for (u32 corner = 0; corner < 4; ++corner) {
+        // Corner order matches computeAo and kCorners in chunk.vert.
+        const i32 su = (corner == 1 || corner == 2) ? 1 : -1;
+        const i32 sv = (corner == 2 || corner == 3) ? 1 : -1;
+
+        // The cell the face looks into is transparent by construction -- that is
+        // why the face exists -- so there is always at least one sample.
+        u32 total = lightAt(s, bx, by, bz);
+        u32 count = 1;
+
+        const auto take = [&](i32 ox, i32 oy, i32 oz) {
+            if (opaqueAt(s, ox, oy, oz)) {
+                return;
+            }
+            total += lightAt(s, ox, oy, oz);
+            ++count;
+        };
+
+        take(bx + plan.ux * su, by + plan.uy * su, bz + plan.uz * su);
+        take(bx + plan.vx * sv, by + plan.vy * sv, bz + plan.vz * sv);
+        take(bx + plan.ux * su + plan.vx * sv,
+             by + plan.uy * su + plan.vy * sv,
+             bz + plan.uz * su + plan.vz * sv);
+
+        const u32 level = (total + count / 2) / count; // rounded mean
+        packed |= static_cast<u16>(level << (corner * 4));
+    }
+    return packed;
+}
+
 /// Maps (plane, u, v) back to the voxel that owns the face.
 void voxelFor(const FacePlan& plan, i32 p, i32 u, i32 v, i32& x, i32& y, i32& z) {
     x = plan.nx != 0 ? p : (plan.ux != 0 ? u : v);
@@ -347,7 +412,15 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
     buildFaceMasks(s);
 
     const BlockRegistry& registry = BlockRegistry::instance();
-    const u32 keyShift = options.aoAwareMerging ? 0u : 8u;
+
+    // What two neighbouring faces must agree on to merge into one quad.
+    //
+    // A mask rather than a shift, because the optional field is no longer the
+    // lowest one: light has to stay in the key whatever AO does. Merging across a
+    // light boundary would take one corner's brightness and stretch it over both
+    // faces, which is a far more visible error than a lost merge -- it puts a hard
+    // edge of the wrong shade across the middle of a cave wall.
+    const u32 keyMask = options.aoAwareMerging ? 0xFFFFFFFFu : 0xFFFFFF00u;
 
     for (usize faceIndex = 0; faceIndex < kFaceCount; ++faceIndex) {
         const FacePlan& plan = kPlans[faceIndex];
@@ -380,11 +453,12 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
                     const BlockId block = s.blocks[localIndex(x, y, z)];
                     const u16 layer = registry.textureLayer(block, plan.face);
                     const u8 ao = options.ambientOcclusion ? computeAo(s, plan, x, y, z) : 0;
+                    const u16 light = computeCornerLight(s, plan, x, y, z);
 
                     s.planeRows[static_cast<usize>(p)][static_cast<usize>(v)] |=
                         1u << static_cast<u32>(u);
                     s.cells[static_cast<usize>(p)][static_cast<usize>(v)][static_cast<usize>(u)] =
-                        (static_cast<u32>(layer) << 8) | ao;
+                        (static_cast<u32>(layer) << 24) | (static_cast<u32>(light) << 8) | ao;
                     occupiedPlanes |= 1u << static_cast<u32>(p);
                 }
             }
@@ -404,13 +478,13 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
                     const auto u = static_cast<i32>(std::countr_zero(rows[uv]));
                     const auto uu = static_cast<usize>(u);
                     const u32 cell = cells[uv][uu];
-                    const u32 key = cell >> keyShift;
+                    const u32 key = cell & keyMask;
 
                     // Extend along U while the key matches.
                     i32 width = 1;
                     while (u + width < kN
                            && ((rows[uv] >> static_cast<u32>(u + width)) & 1u) != 0
-                           && (cells[uv][static_cast<usize>(u + width)] >> keyShift) == key) {
+                           && (cells[uv][static_cast<usize>(u + width)] & keyMask) == key) {
                         ++width;
                     }
 
@@ -428,7 +502,7 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
                         }
                         bool sameKey = true;
                         for (i32 d = 0; d < width; ++d) {
-                            if ((cells[next][static_cast<usize>(u + d)] >> keyShift) != key) {
+                            if ((cells[next][static_cast<usize>(u + d)] & keyMask) != key) {
                                 sameKey = false;
                                 break;
                             }
@@ -454,8 +528,9 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
                                                    static_cast<u32>(width),
                                                    static_cast<u32>(height),
                                                    plan.face,
-                                                   static_cast<u16>(cell >> 8),
-                                                   static_cast<u8>(cell & 0xFFu)));
+                                                   static_cast<u16>(cell >> 24),
+                                                   static_cast<u8>(cell & 0xFFu),
+                                                   static_cast<u16>((cell >> 8) & 0xFFFFu)));
                 }
             }
         }
