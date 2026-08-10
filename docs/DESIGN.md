@@ -379,7 +379,7 @@ to `world`.
 ```
 minecraft/
 ├── CMakeLists.txt
-├── CMakePresets.json          # debug / release / release-tracy
+├── CMakePresets.json          # debug / asan / tsan / release / release-tracy
 ├── cmake/
 │   ├── CPM.cmake
 │   └── CompilerWarnings.cmake
@@ -576,9 +576,12 @@ Headers use `#pragma once`, not include guards.
   and do not require the GNU dialect.
 - Warnings: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wold-style-cast`,
   and **warnings are errors**. Centralized in `cmake/CompilerWarnings.cmake`.
-- Presets: `debug` (`-O0 -g`, asserts on, sanitizers available),
-  `release` (`-O3`, LTO, asserts off),
-  `release-tracy` (release plus Tracy instrumentation).
+- Presets: `debug` (`-O0 -g`, asserts on), `asan` (debug plus
+  address/undefined), `tsan` (debug plus thread), `release` (`-O3`, LTO, asserts
+  off), `release-tracy` (release plus Tracy instrumentation).
+- **`tsan` is not optional for the job system.** A lock-free queue whose tests
+  pass has demonstrated nothing about its memory ordering; only the sanitizer
+  can say. Any change to `MpmcQueue` or `JobSystem` gets re-run under it.
 
 ### 6.5 Assertions
 

@@ -36,6 +36,17 @@
     },
 
     {
+      "name": "tsan",
+      "inherits": "debug",
+      "displayName": "Debug + ThreadSanitizer",
+      "description": "The only way to check the lock-free queue's memory ordering; a passing test tells you nothing on its own",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
+      }
+    },
+
+    {
       "name": "release",
       "inherits": "base",
       "displayName": "Release",
@@ -64,6 +75,7 @@
   "buildPresets": [
     { "name": "debug",         "configurePreset": "debug",         "jobs": 0 },
     { "name": "asan",          "configurePreset": "asan",          "jobs": 0 },
+    { "name": "tsan",          "configurePreset": "tsan",          "jobs": 0 },
     { "name": "release",       "configurePreset": "release",       "jobs": 0 },
     { "name": "release-tracy", "configurePreset": "release-tracy", "jobs": 0 }
   ],
@@ -72,6 +84,16 @@
     {
       "name": "debug",
       "configurePreset": "debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
       "output": { "outputOnFailure": true }
     }
   ]

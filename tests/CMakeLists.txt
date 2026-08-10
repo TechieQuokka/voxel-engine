@@ -5,6 +5,8 @@ add_executable(mc_tests
   test_main.cpp
   test_result.cpp
   test_bitpack.cpp
+  test_mpmc_queue.cpp
+  test_jobsystem.cpp
   test_coords.cpp
   test_palette.cpp
   test_mesher.cpp

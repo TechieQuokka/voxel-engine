@@ -44,8 +44,12 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (53 cases, doctest)
+# Test  (70 cases, doctest)
 ctest --preset debug
+
+# Sanitizers. tsan is mandatory after touching MpmcQueue or JobSystem.
+ctest --preset asan
+setarch $(uname -m) -R ./build/tsan/tests/mc_tests   # see the ASLR note below
 
 # Run
 ./build/debug/src/app/minecraft
@@ -149,6 +153,12 @@ Learned the hard way; all of them cost real time.
   the field. This is why `Engine(Options)` takes its argument unconditionally.
 - **`Device::clear` takes linear colours, not sRGB** — `GL_FRAMEBUFFER_SRGB` is
   enabled. Use `rhi::srgbToLinear`. See DESIGN.md 6.9 for the whole rule.
+- **ThreadSanitizer will not start on this kernel without disabling ASLR.** It
+  dies with `FATAL: ThreadSanitizer: unexpected memory mapping`, which looks like
+  a bug in the binary and is not — the kernel's `vm.mmap_rnd_bits` is wider than
+  TSan's shadow mapping expects. Run it through
+  `setarch $(uname -m) -R`. `ctest --preset tsan` hits the same wall, so the
+  binary gets run directly.
 - CMake needs `LANGUAGES C CXX`; GLFW and glad are C.
 - Ninja is not installed; presets use Unix Makefiles.
 

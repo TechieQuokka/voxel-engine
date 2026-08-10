@@ -20,6 +20,13 @@ using f64 = double;
 
 using usize = std::size_t;
 
+/// Cache line size, used to pad away false sharing in lock-free structures.
+///
+/// A plain constant rather than std::hardware_destructive_interference_size:
+/// GCC warns that the standard one's value is not stable across ABI versions,
+/// and this project targets x86-64 Linux only, where 64 is correct.
+inline constexpr usize kCacheLineSize = 64;
+
 /// Identifies a block type in the global BlockRegistry.
 ///
 /// 16 bits rather than 8: palette compression already removes the per-voxel
