@@ -24,6 +24,7 @@ its measurements are in DESIGN.md 7.5.
 | `1c84b5e` | Phase 3b — chunk columns, world streaming, placeholder generator |
 | `7c29082` | Phase 3c — neighbour-aware boundary culling and AO |
 | `17bfb20` | Phase 3d/3e — one draw call for the visible set, five-plane frustum |
+| `8e60532` | Phase 3f — streaming onto the worker pool; Phase 3 complete |
 
 Working tree is clean. **The repository is local only — never push, never create
 a remote.**
