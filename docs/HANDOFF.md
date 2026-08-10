@@ -38,21 +38,30 @@ already sits at 33–40, so a 4-bit light level fits beside it without widening 
 Working tree is clean. **Published publicly** at the `origin` remote as of
 2026-08-10; the earlier local-only rule was lifted by the user at that point.
 
-What runs today: **FastNoise2 terrain** — continents, erosion, ridged peaks and
-valleys, a 3D warp for overhangs, and a surface pass that grasses the top of every
-solid run. It streams infinitely, holds a **p99 frame time of 0.85 ms at render
-distance 16** (2.14 ms at distance 24), and draws the whole visible set with **one**
-`glMultiDrawArrays`. Verified interactively: 31 seconds of flying, vsync-locked 60 FPS
-throughout, no dropped frames and no GL messages.
-Generation and meshing run on a 6-worker pool, uploads on their own thread, and the
-main thread only ever submits.
+What runs today: **FastNoise2 terrain with caves** — continents, erosion, ridged peaks
+and valleys, a 3D warp for overhangs, cheese caverns on the density grid, spaghetti and
+noodle tunnels carved per block, and a surface pass that grasses the top of the terrain
+(and only the terrain — not cave ceilings). It streams infinitely and draws the whole
+visible set with **one** `glMultiDrawArrays`. Generation and meshing run on a 6-worker
+pool, uploads on their own thread, and the main thread only ever submits.
 
-**Caves work** — cheese caverns on the density grid, spaghetti and noodle tunnels carved
-per block, 6.8% underground air. They cost a great deal: 4.1 M quads at distance 16
-against 260 k without them, p99 6.0 ms, and the fully-enclosed-section saving is gone
-entirely. See DESIGN.md 7.6.
+| Distance 16 | Without caves | With caves |
+|---|---|---|
+| Frame p99 | 0.85 ms | **6.00 ms** |
+| Quads drawn | 260 k | **4.1 M** |
+| Arena used | 8 MiB | 112 MiB |
+| Sections with an empty mesh | 2,509 of 4,967 | **0** |
 
-No aquifers, ores, biomes or lighting yet — 4c and 4d, and lighting after them.
+**Quote the cave numbers, not the others** — caves are on by default, so 6.00 ms is what
+the engine does today. Distance 24 has not been measured with caves and would be close to
+the budget. The pre-cave figures are kept only because the gap between the columns is the
+argument for Phase 8.
+
+The last interactive verification — 31 seconds of flying at vsync-locked 60 FPS with no
+dropped frames and no GL messages — was taken **before** caves landed.
+
+No aquifers, ores, biomes or lighting yet. Lighting comes first — see the resume
+pointer above.
 
 ---
 
@@ -78,7 +87,7 @@ setarch $(uname -m) -R ./build/tsan/tests/mc_tests
 # tsan over the whole running pipeline, including load/unload while jobs hold pins
 TSAN_OPTIONS="suppressions=$PWD/tsan.supp report_mutex_bugs=0" \
   setarch $(uname -m) -R ./build/tsan/src/app/minecraft \
-    --render-distance 6 --bench-frames 400
+    --render-distance 6 --bench-seconds 12
 
 # Run
 ./build/debug/src/app/minecraft
@@ -152,7 +161,7 @@ src/world/              pure data; knows nothing about rendering
 src/worldgen/           knows world, nothing above it; FastNoise2 is PRIVATE
   DensityField — the 4x8x4 interpolation grid (no FastNoise2, so it is testable)
   DensityGraph — the noise router; the only file that includes FastNoise2
-  Generator    — the pipeline: noise stage, then surface stage
+  Generator    — the pipeline: noise, then carvers, then surface (order matters)
 src/mesh/               both meshers take a SectionNeighbourhood
   Quad (64-bit packed), ChunkMesh, CulledMesher, BinaryGreedyMesher
 src/render/
@@ -164,11 +173,13 @@ src/app/
 assets/shaders/         chunk.vert, chunk.frag, triangle.*
 tests/                  doctest; links module libraries individually
 tsan.supp               third-party race suppressions, with usage in its header
+README.md               public-facing summary; keep its numbers in step with 7.5-7.7
+LICENSE                 MIT
 ```
 
 One static library per module. **Dependency direction is enforced at link
-time**, not just documented: `mc_render` does not link `mc_worldgen`, and glad /
-GLFW are linked `PRIVATE` so their types cannot appear in public headers.
+time**, not just documented: `mc_render` does not link `mc_worldgen`, and glad, GLFW and
+FastNoise2 are all linked `PRIVATE` so their types cannot appear in public headers.
 
 ---
 
@@ -262,28 +273,28 @@ Learned the hard way; all of them cost real time.
 **Goal:** FastNoise2 terrain generation.
 **Exit criterion:** infinite terrain traversal.
 
-Sub-steps and measurements are in DESIGN.md 7.6. **4a is done.** Minecraft's own
-pipeline was researched first, and two findings shaped the plan: the interpolation
-grid (see the correction to DESIGN.md 4.1) and the fact that generation is an
-*ordered* pipeline — `biomes → noise → surface → carvers → features → light`.
+Sub-steps and measurements are in DESIGN.md 7.6. **4a and 4b are done.** Minecraft's own
+pipeline was researched first, and two findings shaped the plan: the interpolation grid
+(see the correction to DESIGN.md 4.1) and the fact that generation is an *ordered*
+pipeline — `biomes → noise → surface → carvers → features → light`.
 
-**That order is load bearing, so 4b must land before 4c.** Ores are a `features`
-entry that runs after `carvers`; their `discard_chance_on_air_exposure` — the rule
-that stops diamond lying around on cave walls — only means anything once caves exist
-to expose them to.
+**Next: lighting**, ahead of the remaining 4c and 4d. Caves exist and light propagation
+does not, so underground is uniformly lit, which is the most visible thing wrong with the
+engine. Two channels, sky and block, 0–15, `max(sky, block)` at render time.
+`Quad` bits 57–63 are free and AO sits at 33–40, so a 4-bit level fits without widening
+the quad.
 
-**4b — noise caves and aquifers.** Three kinds, per the 1.18 model: cheese (wide
-pockets), spaghetti (long thin connectors), noodle (1–5 block tunnels). Aquifers give
-flooded caves a *local* water level independent of sea level. Two consequences to plan
-for:
+**What 4b actually cost**, now measured rather than predicted — every number here was a
+guess in the previous version of this section:
 
-- **Caves destroy the fully-enclosed saving.** Roughly half of all meshed sections
-  currently produce zero quads because they sit inside solid rock. Carving through them
-  turns each into real geometry, so `meshArenaBytesFor` (~11 KiB/column measured, 48 KiB
-  budgeted) and the mesh timings both need rechecking.
-- **Caves make lighting necessary.** Without light propagation a cave is fully lit,
-  which reads as wrong immediately. `Quad` has room: bits 57–63 are free, and AO already
-  occupies 33–40, so a 4-bit light level fits beside it.
+- The fully-enclosed saving is **gone entirely**, not merely reduced: 0 sections produce
+  an empty mesh where 2,509 of 4,967 used to. A 6.8% underground air fraction is enough
+  to give almost every underground section some cave wall.
+- `meshArenaBytesFor` went from 48 KiB per column to **176 KiB**. The old budget predated
+  caves and distance 16 wedged against a permanently full arena, which also exposed
+  `drainStreaming` looping forever when `store()` kept failing.
+- Aquifers were **not** built. Flooded caves with a local water level independent of sea
+  level are still open, and need a water block type first.
 
 **4c — ore features.** The parameter table is in the research notes: vein size, veins
 per chunk, triangle vs uniform distribution, and the air-exposure discard chance.
@@ -316,6 +327,7 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
 | Meshing | binary greedy, AO-aware near, AO-ignoring for LOD |
 | Geometry | no vertex buffers anywhere; quads in an SSBO expanded from `gl_VertexID` |
 | Textures | `GL_TEXTURE_2D_ARRAY`, procedurally generated |
+| Terrain | density functions on a 4x8x4 interpolation grid, never per voxel — except the thin-cave carve, which cannot be interpolated |
 | Errors | exceptions only at init/load boundaries; `Result<T,E>` everywhere else |
 | Namespace | flat `mc`, except `mc::rhi` |
 
@@ -324,7 +336,11 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
 - **Occlusion culling method** — HZB, visibility graph, or both. Decided by
   profiling in Phase 8.
 - **World persistence** — disk format, and whether it is in scope at all.
-- **Re-measure AO merging in Phase 4**, once terrain has caves and overhangs.
+- **Re-measure AO merging — the precondition is now met.** The 13.5-point figure in
+  DESIGN.md 7.3 came from smooth heightmap terrain. Caves and overhangs exist, so
+  `--mesh-benchmark` should be re-run against a real generated column rather than the
+  synthetic test section it still uses; that is the case that could make AO-aware merging
+  a bad trade after all.
 - **`.clang-format` and `.clang-tidy` are listed in DESIGN.md 5.2 but do not
   exist.** Adding a formatter now would reformat the whole tree in one commit, so
   it is a deliberate decision rather than a chore — either add them and take that
