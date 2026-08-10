@@ -99,6 +99,19 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
     m_world = std::make_unique<World>(m_options.renderDistance);
     m_generator = std::make_unique<Generator>();
 
+    // Sized and filled before any thread exists, and never resized afterwards:
+    // indices into it travel through queues to other threads.
+    m_meshTasks.resize(kMeshTaskPoolSize);
+    m_freeMeshTasks = std::make_unique<MpmcQueue<u32>>(kMeshTaskPoolSize);
+    m_uploadQueue = std::make_unique<MpmcQueue<u32>>(kMeshTaskPoolSize);
+    for (u32 index = 0; index < kMeshTaskPoolSize; ++index) {
+        const bool pushed = m_freeMeshTasks->tryPush(index);
+        MC_VERIFY(pushed);
+    }
+
+    m_jobs = std::make_unique<JobSystem>();
+    startUploadThread();
+
     if (m_options.meshBenchmark) {
         runMeshBenchmark();
     }
@@ -118,22 +131,19 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
     updateLoadedRegion();
 
     if (m_options.warmUp || !m_options.capturePath.empty()) {
+        // Blocks on purpose, and only here: a capture should show a finished world
+        // rather than whatever had streamed in by frame one, and a benchmark should
+        // measure the steady state rather than the fill.
         Clock clock;
-        usize columns = 0;
-        usize sections = 0;
-        // Unbudgeted: this path exists to measure the total, and to make a capture
-        // show a finished world rather than whatever streamed in by frame one.
-        for (;;) {
-            const usize generated = generatePending();
-            const usize meshed = meshPending();
-            columns += generated;
-            sections += meshed;
-            if (generated == 0 && meshed == 0) {
-                break;
-            }
-        }
-        logInfo("Warm-up: {} columns generated, {} sections meshed in {:.2f} s",
-                columns, sections, clock.elapsed());
+        drainStreaming();
+        const f64 seconds = clock.elapsed();
+
+        const usize meshed = m_sectionsMeshed.load();
+        const usize empty = m_sectionsEmpty.load();
+        logInfo("Warm-up: {} columns, {} sections meshed in {:.2f} s on {} workers",
+                m_world->loadedChunkCount(), meshed, seconds, m_jobs->workerCount());
+        logInfo("  {} sections hold geometry, {} are fully enclosed and hold none",
+                m_meshStore->sectionCount(), empty);
         m_reportedWarm = true;
     }
 
@@ -141,7 +151,9 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
             m_options.renderDistance, m_world->loadedChunkCount());
 }
 
-Engine::~Engine() = default;
+Engine::~Engine() {
+    shutdownStreaming();
+}
 
 void Engine::runMeshBenchmark() {
     // The Phase 2 exit criterion is a measured quad-count reduction, and the
@@ -295,22 +307,243 @@ void Engine::updateLoadedRegion() {
     }
 }
 
-usize Engine::generatePending() {
-    MC_PROFILE_SCOPE_N("Engine::generatePending");
+void Engine::generateColumnJob(void* context, u64 payload) {
+    MC_PROFILE_SCOPE_N("generateColumnJob");
 
-    const usize budget = m_options.warmUp || !m_options.capturePath.empty()
-                             ? ~usize{0}
-                             : kColumnsPerFrame;
+    auto* generator = static_cast<Generator*>(context);
+    auto* chunk = reinterpret_cast<Chunk*>(static_cast<std::uintptr_t>(payload));
 
-    usize generated = 0;
+    // Sets the column Ready and marks every section dirty when it finishes. The
+    // Generating state it was put in before submission is what keeps the World from
+    // unloading it while this runs.
+    generator->generateColumn(*chunk);
+}
+
+void Engine::meshSectionJob(void* context, u64 payload) {
+    MC_PROFILE_SCOPE_N("meshSectionJob");
+
+    auto* engine = static_cast<Engine*>(context);
+    const auto index = static_cast<usize>(payload);
+    MeshTask& task = engine->m_meshTasks[index];
+
+    meshSectionGreedy(task.hood, task.mesh);
+
+    // The upload queue is at least as large as the task pool, so there is always
+    // room -- a slot cannot be in flight without having come from the pool.
+    const bool pushed = engine->m_uploadQueue->tryPush(static_cast<u32>(index));
+    MC_VERIFY_MSG(pushed, "upload queue smaller than the mesh task pool");
+
+    engine->m_uploadSignal.release();
+}
+
+JobPriority Engine::priorityFor(ChunkPos pos) const {
+    const i32 distance = std::max(std::abs(pos.x - m_loadedCenter.x),
+                                  std::abs(pos.z - m_loadedCenter.z));
+    const i32 renderDistance = std::max(1, m_options.renderDistance);
+
+    // Thirds of the render distance. The bands only have to be roughly right: they
+    // decide what gets done first, and the camera keeps changing the answer anyway.
+    if (distance * 3 <= renderDistance) {
+        return JobPriority::High;
+    }
+    if (distance * 3 <= renderDistance * 2) {
+        return JobPriority::Normal;
+    }
+    return JobPriority::Low;
+}
+
+usize Engine::submitGeneration() {
+    MC_PROFILE_SCOPE_N("Engine::submitGeneration");
+
+    usize submitted = 0;
     m_world->forEachChunk([&](Chunk& chunk) {
-        if (generated >= budget || chunk.state() != ChunkState::Empty) {
+        if (submitted >= kColumnsPerFrame || chunk.state() != ChunkState::Empty) {
             return;
         }
-        m_generator->generateColumn(chunk); // Sets Ready and marks every section dirty.
-        ++generated;
+
+        // Claimed before submitting: the World must not unload a column a worker is
+        // about to write into, and Generating is what tells it so.
+        chunk.setState(ChunkState::Generating);
+
+        const Job job{&generateColumnJob, m_generator.get(),
+                      static_cast<u64>(reinterpret_cast<std::uintptr_t>(&chunk))};
+
+        if (!m_jobs->submit(priorityFor(chunk.position()), job)) {
+            chunk.setState(ChunkState::Empty); // Band full; try again next frame.
+            return;
+        }
+        ++submitted;
     });
-    return generated;
+    return submitted;
+}
+
+usize Engine::submitMeshing() {
+    MC_PROFILE_SCOPE_N("Engine::submitMeshing");
+
+    usize submitted = 0;
+
+    m_world->forEachChunk([&](Chunk& chunk) {
+        if (submitted >= kSectionsPerFrame || !chunk.anyDirty()) {
+            return;
+        }
+        if (!neighboursReady(chunk.position())) {
+            return;
+        }
+
+        for (usize index = 0; index < Chunk::kSectionCount && submitted < kSectionsPerFrame;
+             ++index) {
+            if (!chunk.isSectionDirty(index)) {
+                continue;
+            }
+
+            const SectionPos pos{chunk.position().x,
+                                 kMinSectionY + static_cast<i32>(index),
+                                 chunk.position().z};
+
+            if (chunk.sectionByIndex(index).isEmpty()) {
+                // Nothing to draw and nothing to keep -- the common case above the
+                // surface. No job needed.
+                m_meshStore->release(pos, m_frame);
+                chunk.clearSectionDirty(index);
+                continue;
+            }
+
+            u32 taskIndex = 0;
+            if (!m_freeMeshTasks->tryPop(taskIndex)) {
+                return; // Pool exhausted. Backpressure, not an error.
+            }
+
+            MeshTask& task = m_meshTasks[taskIndex];
+            task.pos = pos;
+            task.hood = m_world->neighbourhood(pos);
+
+            // Pin every column the neighbourhood points into, for as long as the
+            // task lives -- which is until the upload thread is done with it, not
+            // until the mesher returns.
+            usize slot = 0;
+            for (i32 dz = -1; dz <= 1; ++dz) {
+                for (i32 dx = -1; dx <= 1; ++dx) {
+                    Chunk* neighbour = m_world->find(ChunkPos{pos.x + dx, pos.z + dz});
+                    task.pinned[slot++] = neighbour;
+                    if (neighbour != nullptr) {
+                        neighbour->pin();
+                    }
+                }
+            }
+            MC_ASSERT(task.pinned[kCentrePinSlot] == &chunk);
+
+            // Cleared before submitting rather than after: if something dirties the
+            // section again while the job runs, that has to be noticed and remeshed,
+            // not swallowed by a clear that happens later.
+            chunk.clearSectionDirty(index);
+
+            const Job job{&meshSectionJob, this, static_cast<u64>(taskIndex)};
+            if (!m_jobs->submit(priorityFor(chunk.position()), job)) {
+                for (Chunk* pinned : task.pinned) {
+                    if (pinned != nullptr) {
+                        pinned->unpin();
+                    }
+                }
+                task.pinned.fill(nullptr);
+                chunk.markSectionDirty(index);
+
+                const bool returned = m_freeMeshTasks->tryPush(taskIndex);
+                MC_VERIFY_MSG(returned, "free-task queue smaller than the pool");
+                return;
+            }
+            ++submitted;
+        }
+    });
+
+    return submitted;
+}
+
+void Engine::uploadLoop() {
+    MC_PROFILE_THREAD("upload");
+
+    for (;;) {
+        m_uploadSignal.acquire();
+
+        if (m_uploadStopping.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        u32 index = 0;
+        if (!m_uploadQueue->tryPop(index)) {
+            continue; // Spurious wake; permits and pushes are otherwise one to one.
+        }
+
+        MeshTask& task = m_meshTasks[index];
+
+        // The whole of the upload: a memcpy into a persistently mapped, coherent
+        // buffer. No GL call, which is exactly why this thread needs no context.
+        m_sectionsMeshed.fetch_add(1, std::memory_order_relaxed);
+        if (task.mesh.empty()) {
+            m_sectionsEmpty.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        const u64 frame = m_frameForUpload.load(std::memory_order_relaxed);
+        if (!m_meshStore->store(task.pos, task.mesh, frame)) {
+            // Arena full. Put the section back on the dirty list -- while its column
+            // is still pinned, so it is certainly still alive -- and let the main
+            // thread resubmit once recycle() has returned some ranges.
+            m_arenaFullEvents.fetch_add(1, std::memory_order_relaxed);
+            if (Chunk* owner = task.pinned[kCentrePinSlot]) {
+                owner->markSectionDirty(
+                    static_cast<usize>(sectionIndexInColumn(task.pos.y)));
+            }
+        }
+
+        for (Chunk* pinned : task.pinned) {
+            if (pinned != nullptr) {
+                pinned->unpin();
+            }
+        }
+        task.pinned.fill(nullptr);
+
+        const bool returned = m_freeMeshTasks->tryPush(index);
+        MC_VERIFY_MSG(returned, "free-task queue smaller than the pool");
+    }
+}
+
+void Engine::startUploadThread() {
+    m_uploadThread = std::jthread([this] { uploadLoop(); });
+}
+
+void Engine::shutdownStreaming() {
+    // Order matters. Workers hold task indices and Chunk pins, so they have to stop
+    // before the upload thread that recycles what they produce, and both have to
+    // stop before the World and the mesh store go away.
+    if (m_jobs) {
+        m_jobs.reset(); // Joins the workers; queued jobs are dropped.
+    }
+
+    if (m_uploadThread.joinable()) {
+        m_uploadStopping.store(true, std::memory_order_release);
+        m_uploadSignal.release();
+        m_uploadThread.join();
+    }
+}
+
+void Engine::drainStreaming() {
+    // Submit, let the pool finish, repeat. Generation produces meshing work, so this
+    // needs more than one pass; it settles when a full round submits nothing.
+    for (;;) {
+        const usize generated = submitGeneration();
+        const usize meshedSubmitted = submitMeshing();
+
+        m_jobs->waitIdle();
+
+        // Wait for the upload thread to drain what those jobs produced. Nothing else
+        // is running by now, so an empty queue means finished.
+        while (m_uploadQueue->sizeApprox() != 0) {
+            std::this_thread::yield();
+        }
+
+        if (generated == 0 && meshedSubmitted == 0) {
+            break;
+        }
+    }
 }
 
 bool Engine::neighboursReady(ChunkPos pos) const {
@@ -323,66 +556,6 @@ bool Engine::neighboursReady(ChunkPos pos) const {
         }
     }
     return true;
-}
-
-usize Engine::meshPending() {
-    MC_PROFILE_SCOPE_N("Engine::meshPending");
-
-    const usize budget = m_options.warmUp || !m_options.capturePath.empty()
-                             ? ~usize{0}
-                             : kSectionsPerFrame;
-
-    usize meshed = 0;
-    bool arenaFull = false;
-
-    m_world->forEachChunk([&](Chunk& chunk) {
-        if (meshed >= budget || arenaFull || !chunk.anyDirty()) {
-            return;
-        }
-        if (!neighboursReady(chunk.position())) {
-            return;
-        }
-
-        for (usize index = 0; index < Chunk::kSectionCount && meshed < budget; ++index) {
-            if (!chunk.isSectionDirty(index)) {
-                continue;
-            }
-
-            const SectionPos pos{chunk.position().x,
-                                 kMinSectionY + static_cast<i32>(index),
-                                 chunk.position().z};
-
-            const Section& section = chunk.sectionByIndex(index);
-            if (section.isEmpty()) {
-                // Nothing to draw, and nothing to keep: an all-air section is the
-                // common case above the surface.
-                m_meshStore->release(pos, m_frame);
-                chunk.clearSectionDirty(index);
-                continue;
-            }
-
-            meshSectionGreedy(m_world->neighbourhood(pos), m_meshScratch);
-
-            if (!m_meshStore->store(pos, m_meshScratch, m_frame)) {
-                // Arena full. Leave the section dirty and try again next frame,
-                // once recycle() has returned the retired ranges.
-                arenaFull = true;
-                return;
-            }
-
-            chunk.clearSectionDirty(index);
-            ++meshed;
-        }
-    });
-
-    if (arenaFull) {
-        logWarn("Mesh arena full: {} / {} MiB used, largest free block {} KiB",
-                m_meshStore->usedBytes() / (1024 * 1024),
-                m_meshStore->capacityBytes() / (1024 * 1024),
-                m_meshStore->largestFreeBlock() / 1024);
-    }
-
-    return meshed;
 }
 
 void Engine::buildVisibleSet() {
@@ -482,23 +655,29 @@ void Engine::reportStats(f64 fps, f64 frameMs) {
 }
 
 void Engine::stepFrame(f64 deltaTime) {
+    (void)deltaTime;
+
     // Return ranges retired long enough ago before allocating any new ones.
     m_meshStore->recycle(m_frame);
 
     updateLoadedRegion();
-    const usize generated = generatePending();
-    const usize meshed = meshPending();
 
-    if (!m_reportedWarm && generated == 0 && meshed == 0) {
+    // Submit only. Nothing here waits for a worker, which is the entire point:
+    // whatever the pool has not finished simply appears a frame or two later.
+    const usize generated = submitGeneration();
+    const usize meshed = submitMeshing();
+
+    if (!m_reportedWarm && generated == 0 && meshed == 0 && m_jobs->pending() == 0) {
         logInfo("Streaming settled: {} columns, {} sections meshed, {} MiB arena",
                 m_world->loadedChunkCount(), m_meshStore->sectionCount(),
                 m_meshStore->usedBytes() / (1024 * 1024));
         m_reportedWarm = true;
     }
 
-    (void)deltaTime;
     renderFrame();
+
     ++m_frame;
+    m_frameForUpload.store(m_frame, std::memory_order_relaxed);
 }
 
 void Engine::runBenchmark() {

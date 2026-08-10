@@ -655,7 +655,7 @@ power, because it has to agree with the hardware's encode.
 | 0 **(done)** | CMake skeleton, GLFW + glad window, triangle | Builds, window opens |
 | 1 **(done)** | Palette-compressed sections, naive culled meshing, camera | One chunk renders |
 | 2 **(done)** | Binary greedy meshing, texture array | Measured quad count reduction |
-| 3 | Job system, streaming, frustum culling | Render distance 16, stable frame time |
+| 3 **(done)** | Job system, streaming, frustum culling | Render distance 16, stable frame time |
 | 4 | FastNoise2 terrain generation | Infinite terrain traversal |
 | 5 | Indirect draw + GPU culling | Draw calls < 5 |
 | 6 | Four-level LOD | **Render distance 64 at 60 FPS** |
@@ -839,11 +839,16 @@ Verified: 53 test cases pass, `-Werror` clean, and a `--capture` frame renders
 identically apart from the sRGB change. The Phase 2 measurement reproduces
 exactly — 4,842 → 2,083 quads AO-aware (57.0%), 1,428 AO-ignoring (70.5%).
 
-### 7.5 Phase 3 progress
+### 7.5 Phase 3 result
 
-Phase 3 is built in sub-steps, each one verifiable on its own. The job system is
-wired in **last**, deliberately: getting streaming correct single-threaded first
-means a later bug is either a streaming bug or a race, and not ambiguously both.
+**Exit criterion met.** Render distance 16 holds a p99 frame time of 2.08 ms — eight
+times under a 60 FPS budget — and distance 24 still holds 1.76 ms.
+
+Phase 3 was built in sub-steps, each verifiable on its own. The job system was wired
+in **last**, deliberately: getting streaming correct single-threaded first meant a
+later bug was either a streaming bug or a race, and not ambiguously both. That paid
+off — 3f changed no rendering behaviour, and the capture it produces is pixel-identical
+to the single-threaded one.
 
 | | Content | State |
 |---|---|---|
@@ -852,7 +857,7 @@ means a later bug is either a streaming bug or a race, and not ambiguously both.
 | 3c | Neighbour-aware boundary culling and AO | done |
 | 3d | Multi-chunk rendering, per-section data in an SSBO | done |
 | 3e | `render/Frustum`, hierarchical culling | done |
-| 3f | Job system wired in, upload thread, Tracy capture | next |
+| 3f | Job system wired in, upload thread | done |
 
 **3a.** Vyukov bounded MPMC queue plus a semaphore-parked worker pool. Bounded is
 the point: an unbounded queue would let streaming enqueue more work than the pool
@@ -990,6 +995,73 @@ moved to linear space: a linear ramp to zero reads as terrain turning black at t
 render distance, which looks like a bug. Blending toward the sky is what fog
 physically is — light scattered in, not light removed — and it makes the edge of the
 loaded region disappear rather than announce itself.
+
+**3f.** Generation and meshing moved onto the worker pool and uploads onto their own
+thread, and the frame loop now only *submits*. It never waits for a worker: whatever
+the pool has not finished simply appears a frame or two later.
+
+**The upload thread needs no GL context**, which corrects what 3.13 was assumed to
+imply. The arena is persistently and coherently mapped, so writing to it is a memcpy
+into process memory and issues no GL command at all — any thread may do it. The whole
+GL-side contract is one `barrierAfterClientWrites()` per frame on the context-owning
+thread; coherence removed the need to flush, not the need to order. A second shared
+context, with its fence and object-visibility rules, would have been complexity bought
+for nothing.
+
+The real hazard turned out to be lifetime, not GL. A meshing job borrows
+`const Section*` from up to nine columns and holds them across frames, so if the camera
+moved far enough the World would unload one underneath it. `Chunk::pin()` answers that:
+a counter, not a flag, because one column is a neighbour of nine sections and can be
+pinned by nine jobs at once. The pin is held until the *upload* finishes, not until the
+mesher returns, which also closes the smaller hole where a section could be stored after
+its column was already released.
+
+Work is passed by pooled index rather than by value: `Job` carries a `u64`, and a pooled
+`ChunkMesh` keeps its vector capacity between uses, so once the pool is warm the mesh
+path allocates nothing. Ownership moves main → worker → upload → free list, and the
+queue's acquire/release pairs are what make each handoff safe.
+
+Measured, release + LTO, 6 workers plus an upload thread, 900 frames with vsync off and
+the camera flying at 40 blocks/s:
+
+| Render distance | 8 | 16 | 24 |
+|---|---|---|---|
+| Columns | 289 | 1,089 | 2,401 |
+| Sections meshed | 892 | 3,812 | 8,748 |
+| …holding geometry | 535 | 2,280 | 5,228 |
+| …fully enclosed, empty | 357 | 1,532 | 3,520 |
+| Warm-up | 0.06 s | 0.24 s | 0.56 s |
+| Frame mean | 0.17 ms | 0.41 ms | 0.86 ms |
+| Frame median | 0.11 ms | 0.36 ms | 0.83 ms |
+| **Frame p99** | **2.22 ms** | **2.08 ms** | **1.76 ms** |
+| Quads drawn | 1,615 | 150,733 | 469,294 |
+| Arena used | 1 MiB | 7 MiB | 15 MiB |
+
+Against 3d/3e at distance 16, p99 went from 29.7 ms to 2.08 ms and warm-up from 0.86 s
+to 0.24 s. Two things in that table are worth more than the headline:
+
+- **p99 does not grow with render distance** — it falls slightly, because per-frame
+  streaming work becomes a smaller share of a longer frame. That is what "stable frame
+  time" was supposed to mean, and it is the actual exit criterion rather than the
+  average.
+- **Two fifths of all meshed sections produce zero quads.** They sit entirely inside
+  rock, every face hidden by a neighbour, so they are meshed once and stored nowhere.
+  This number only exists because 3c made boundary culling real; before it, every one
+  of those 1,532 sections would have emitted six full walls.
+
+Verification. TSan reports **zero** races over the full pipeline, including a
+400-frame run with the camera moving so that columns load and unload while jobs hold
+pins — the path `Chunk::pin()` exists for. GTK, dragged in by GLFW's Wayland backend,
+races inside itself during window creation in a different library each time; `tsan.supp`
+suppresses those by library, and the application run additionally sets
+`report_mutex_bugs=0`, because engine code uses `std::lock_guard` exclusively and cannot
+produce that class of report. The unit-test run links no GTK and keeps every check on,
+and it is the run that exercises `MpmcQueue` and `JobSystem` directly.
+
+A `--capture` frame from the async pipeline is pixel-identical to the synchronous one,
+and the meshed-section count matches exactly (3,812 both ways). The `release-tracy`
+preset builds and runs; taking an actual Tracy capture needs the Tracy server GUI, so
+that step is left to a human.
 
 ---
 

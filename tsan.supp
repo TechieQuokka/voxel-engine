@@ -1,0 +1,41 @@
+# ThreadSanitizer suppressions.
+#
+# Usage:
+#   TSAN_OPTIONS="suppressions=$PWD/tsan.supp report_mutex_bugs=0" \
+#     setarch $(uname -m) -R ./build/tsan/src/app/minecraft --render-distance 6 \
+#       --capture /tmp/shot.ppm
+#
+# (setarch -R is needed on this kernel; see docs/HANDOFF.md.)
+#
+# `report_mutex_bugs=0` is for the *application* run only. GTK's accessibility stack
+# unlocks mutexes it does not hold, in a different library each time, so suppressing
+# them by name is whack-a-mole. Engine code uses std::lock_guard exclusively and
+# cannot produce that class of report, so switching the checker off costs nothing
+# here. The unit-test run links no GTK and keeps every check enabled -- which is the
+# run that actually exercises MpmcQueue and JobSystem.
+#
+# Everything here is third-party and unreachable from engine code. GLFW's Wayland
+# backend pulls in GTK, which pulls in glib, gio, gobject, fontconfig and pango, and
+# those race internally on their own refcounts and caches during window creation.
+# Engine frames appear in those stacks only as the caller of glfwCreateWindow.
+#
+# This file exists because leaving them unsuppressed defeats the purpose of running
+# TSan at all: a real race in the streaming pipeline would be one report among thirty
+# that are always there, and would simply be skimmed past.
+#
+# Add nothing here for engine code. If mc:: appears as a racing access rather than as
+# a caller, that is a bug to fix, not to suppress.
+
+called_from_lib:libglib-2.0.so
+called_from_lib:libgio-2.0.so
+called_from_lib:libgobject-2.0.so
+called_from_lib:libgmodule-2.0.so
+called_from_lib:libgtk-3.so
+called_from_lib:libgdk-3.so
+called_from_lib:libgdk_pixbuf-2.0.so
+called_from_lib:libatk-1.0.so
+called_from_lib:libfontconfig.so
+called_from_lib:libpango-1.0.so
+called_from_lib:libpangoft2-1.0.so
+called_from_lib:libpangocairo-1.0.so
+called_from_lib:libcairo.so

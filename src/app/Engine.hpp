@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/JobSystem.hpp"
+#include "core/MpmcQueue.hpp"
 #include "core/Types.hpp"
 #include "mesh/ChunkMesh.hpp"
 #include "platform/Input.hpp"
@@ -11,9 +13,13 @@
 #include "world/World.hpp"
 #include "worldgen/Generator.hpp"
 
+#include <array>
+#include <atomic>
 #include <memory>
 #include <optional>
+#include <semaphore>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace mc {
@@ -78,10 +84,48 @@ private:
     /// Loads and unloads columns around the camera. Only does work when the camera
     /// has crossed into a different column.
     void updateLoadedRegion();
-    /// Generates up to a budget of columns, nearest first.
-    usize generatePending();
-    /// Meshes up to a budget of dirty sections and uploads them.
-    usize meshPending();
+
+    /// Hands columns needing generation to the worker pool. Returns how many were
+    /// submitted, not how many finished -- nothing here waits.
+    usize submitGeneration();
+    /// Hands dirty sections to the worker pool, with their neighbourhood gathered
+    /// and the nine columns it points into pinned.
+    usize submitMeshing();
+
+    /// Which band a piece of work goes in, from its distance to the camera column.
+    JobPriority priorityFor(ChunkPos pos) const;
+
+    /// Runs the pipeline until nothing is outstanding. Used by --warm-up and by
+    /// captures; never by the frame loop, which must not block.
+    void drainStreaming();
+
+    void startUploadThread();
+    void shutdownStreaming();
+    void uploadLoop();
+
+    /// A meshing job's borrowed state. Built on the main thread, filled by a worker,
+    /// consumed by the upload thread, then returned to the free list.
+    ///
+    /// Pooled rather than allocated per job for two reasons: `Job` carries a `u64`,
+    /// so an index is what fits, and the pooled ChunkMesh keeps its vector capacity
+    /// between uses, which removes the per-section allocation from the mesh path
+    /// entirely once the pool is warm.
+    struct MeshTask {
+        SectionPos pos{};
+        SectionNeighbourhood hood;
+        /// The nine columns the neighbourhood points into, pinned for the task's
+        /// whole life so the World cannot unload one underneath it. Indexed
+        /// (dz + 1) * 3 + (dx + 1), so the centre is 4.
+        std::array<Chunk*, 9> pinned{};
+        ChunkMesh mesh;
+    };
+
+    static constexpr usize kCentrePinSlot = 4;
+
+    /// Job entry points. Static members rather than free functions so they can reach
+    /// private state; `Job::Fn` is a plain function pointer either way.
+    static void generateColumnJob(void* context, u64 payload);
+    static void meshSectionJob(void* context, u64 payload);
     /// True when every column of `pos`'s 3x3 neighbourhood holds generated voxels.
     ///
     /// Meshing before that would cull the section's boundary faces against columns
@@ -122,9 +166,35 @@ private:
     ChunkPos m_loadedCenter{};
     bool m_hasLoadedCenter = false;
 
-    /// Reused across frames so the streaming path does not allocate.
-    ChunkMesh m_meshScratch;
-    std::vector<ChunkPos> m_unloadedScratch;
+    /// In-flight meshing tasks. Sized once, before any thread starts, and never
+    /// resized -- indices into it travel through queues.
+    static constexpr usize kMeshTaskPoolSize = 1024;
+
+    std::unique_ptr<JobSystem> m_jobs;
+    std::vector<MeshTask> m_meshTasks;
+    /// Indices of unused tasks. Popping one is how the main thread reserves a slot,
+    /// and an empty queue is backpressure: it stops submitting this frame.
+    std::unique_ptr<MpmcQueue<u32>> m_freeMeshTasks;
+    /// Finished meshes waiting to be copied into the arena. At least as large as the
+    /// task pool, so a worker's push can never fail.
+    std::unique_ptr<MpmcQueue<u32>> m_uploadQueue;
+
+    std::counting_semaphore<> m_uploadSignal{0};
+    std::atomic<bool> m_uploadStopping{false};
+    /// The frame number the upload thread stamps retired ranges with.
+    std::atomic<u64> m_frameForUpload{0};
+    std::atomic<usize> m_arenaFullEvents{0};
+    /// Meshing jobs completed. Deliberately separate from the mesh store's section
+    /// count: a section entirely inside solid rock has every face hidden by its
+    /// neighbours, so it is meshed, produces zero quads, and is stored nowhere. The
+    /// gap between these two numbers is how much of the world costs nothing to draw.
+    std::atomic<usize> m_sectionsMeshed{0};
+    std::atomic<usize> m_sectionsEmpty{0};
+
+    /// Declared after everything it touches, so it is joined before any of it is
+    /// destroyed. shutdownStreaming() still signals it explicitly first, because a
+    /// thread parked on a semaphore cannot observe a destructor.
+    std::jthread m_uploadThread;
 
     f64 m_lastFrameTime = 0.0;
     f64 m_fpsAccumulator = 0.0;

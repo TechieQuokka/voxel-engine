@@ -1,7 +1,7 @@
 # Handoff
 
-Snapshot for resuming work. Written 2026-08-09, end of Phase 2. Updated
-2026-08-10 with the pre-Phase-3 cleanup pass.
+Snapshot for resuming work. Written 2026-08-09; updated 2026-08-10 at the end of
+Phase 3.
 
 Read `docs/DESIGN.md` for the full design and the reasoning behind every
 decision. This file is the short version plus the practical details needed to
@@ -11,8 +11,8 @@ pick the work back up cold.
 
 ## 1. Where things stand
 
-**Phases 0, 1 and 2 are complete. Phase 3 is in progress — 3a through 3e done, 3f
-next.** The sub-step table and the measurements are in DESIGN.md 7.5.
+**Phases 0 through 3 are complete.** Next up is Phase 4. Phase 3's sub-steps and all
+its measurements are in DESIGN.md 7.5.
 
 | Commit | Contents |
 |---|---|
@@ -23,15 +23,16 @@ next.** The sub-step table and the measurements are in DESIGN.md 7.5.
 | `0d73b2b` | Phase 3a — lock-free MPMC queue and worker pool |
 | `1c84b5e` | Phase 3b — chunk columns, world streaming, placeholder generator |
 | `7c29082` | Phase 3c — neighbour-aware boundary culling and AO |
+| `17bfb20` | Phase 3d/3e — one draw call for the visible set, five-plane frustum |
 
 Working tree is clean. **The repository is local only — never push, never create
 a remote.**
 
-What runs today: streaming terrain at render distance 16, drawn with **one**
-`glMultiDrawArrays` per frame and hierarchical frustum culling. Median frame time is
-0.35 ms — but p99 is 29.7 ms, because generation and meshing still run on the main
-thread. 3f moves them onto the worker pool, which is the whole remaining gap to the
-exit criterion. See DESIGN.md 7.5.
+What runs today: streaming terrain that holds a **p99 frame time of 2.08 ms at render
+distance 16** — eight times under a 60 FPS budget — and 1.76 ms at distance 24.
+Generation and meshing run on a 6-worker pool, uploads on their own thread, and the
+whole visible set is drawn with **one** `glMultiDrawArrays`. The main thread only ever
+submits; it never waits for a worker.
 
 ---
 
@@ -49,9 +50,15 @@ cmake --build --preset release
 # Test  (132 cases, doctest)
 ctest --preset debug
 
-# Sanitizers. tsan is mandatory after touching MpmcQueue or JobSystem.
+# Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
+# on the streaming path. See the ASLR note below for why setarch is needed.
 ctest --preset asan
-setarch $(uname -m) -R ./build/tsan/tests/mc_tests   # see the ASLR note below
+setarch $(uname -m) -R ./build/tsan/tests/mc_tests
+
+# tsan over the whole running pipeline, including load/unload while jobs hold pins
+TSAN_OPTIONS="suppressions=$PWD/tsan.supp report_mutex_bugs=0" \
+  setarch $(uname -m) -R ./build/tsan/src/app/minecraft \
+    --render-distance 6 --bench-frames 400
 
 # Run
 ./build/debug/src/app/minecraft
@@ -125,10 +132,11 @@ src/render/
   Camera, Frustum (5 planes -- no far plane), BlockTextures,
   SectionMeshStore (one persistently mapped arena), ChunkRenderer (one multi-draw)
 src/app/
-  main, Engine
+  main, Engine (streaming pipeline: submit-only frame loop, upload thread)
 
 assets/shaders/         chunk.vert, chunk.frag, triangle.*
 tests/                  doctest; links module libraries individually
+tsan.supp               third-party race suppressions, with usage in its header
 ```
 
 One static library per module. **Dependency direction is enforced at link
@@ -177,40 +185,53 @@ Learned the hard way; all of them cost real time.
 - **The frustum has five planes.** With an infinite reversed-Z projection the far
   plane's row is `(0, 0, 0, near)`, a zero normal; normalizing it divides by zero and
   the result rejects the entire world. See `render/Frustum.cpp`.
+- **A meshing job holds pointers into nine columns across frames.** Unloading one
+  underneath it is the sharpest lifetime hazard in the engine. `Chunk::pin()` prevents
+  it, and the pin must be held until the *upload* completes, not until the mesher
+  returns. `World::updateLoadedRegion` retains pinned columns and counts them in
+  `LoadResult::retained`.
+- **The upload thread has no GL context and must not need one.** It writes into a
+  persistently mapped coherent buffer, which is a memcpy, not a GL call. If anything
+  there ever needs a real GL call, that is a design change, not a small fix.
+- **TSan over the app reports ~32 races inside GTK** — glib, gio, gobject, fontconfig,
+  pango — reached only through `glfwCreateWindow`. Use `tsan.supp`, and read its header
+  before adding to it.
 - CMake needs `LANGUAGES C CXX`; GLFW and glad are C.
 - Ninja is not installed; presets use Unix Makefiles.
 
 ---
 
-## 6. Phase 3 — in progress
+## 6. Next: Phase 4
 
-**Goal:** job system, chunk streaming, frustum culling.
-**Exit criterion:** render distance 16 with a stable frame time.
+**Goal:** FastNoise2 terrain generation.
+**Exit criterion:** infinite terrain traversal.
 
-Sub-steps and measurements are tracked in DESIGN.md 7.5. **3a through 3e are
-done.** What remains:
+The shape of the work is already in place: `worldgen/Generator` has the right
+interface — one call fills one column, reads nothing but its own parameters, writes
+nothing but that column — and only its body changes. Add FastNoise2 as a **PRIVATE**
+dependency of `mc_worldgen` so its types cannot escape into any public header, and
+build the density-function graph from DESIGN.md 3.12.
 
-**3f — wire the job pool in.** Generation and meshing onto the worker pool, plus the
-upload thread from DESIGN.md 3.13. Ends with a Tracy capture. Deliberately last:
-getting streaming right single-threaded first means a later bug is either a streaming
-bug or a race, not ambiguously both.
+Three things to carry in from Phase 3:
 
-**The upload thread needs no GL context of its own**, contrary to what this file said
-earlier. That was the wrong conclusion: the arena is persistently and coherently
-mapped, so writing to it is a plain memcpy into process memory and issues no GL
-command at all. Any thread may do it. The only GL requirement is one
-`rhi::Buffer::barrierAfterClientWrites()` per frame on the context-owning thread —
-coherence removes the need to flush, not the need to order.
+1. **Re-measure the AO merge ratio.** The 13.5-point figure in 7.3 comes from smooth
+   heightmap terrain; caves and overhangs will make AO vary far more per face, which is
+   exactly the case that could make AO-aware merging a bad trade after all.
+   `--mesh-benchmark` still runs the comparison.
+2. **Watch how generation scales across workers.** The placeholder manages 4x on 6
+   threads because its inner loop is `Palette::set` — a palette scan plus a
+   read-modify-write per voxel — so it saturates memory bandwidth before cores. A
+   density-function generator is compute-bound and should do better. If it does not,
+   writing through the palette one voxel at a time is the thing to fix.
+3. **Caves break the "fully enclosed" saving.** Two fifths of all meshed sections
+   currently produce zero quads because they sit inside solid rock. Carving caves
+   through them turns each into real geometry, so both the arena sizing
+   (`meshArenaBytesFor`, ~11 KiB/column measured) and the mesh timings need rechecking.
 
-The hazard 3f has to handle instead is lifetime: a meshing job borrows
-`const Section*` from up to nine columns and holds them across frames, so the World
-must not unload one underneath it. That is what `Chunk::pin()` is for, and
-`updateLoadedRegion` already retains pinned columns.
-
-Phase 4 is terrain generation with FastNoise2, replacing the body of
-`worldgen/Generator`. Note that **the AO merge measurement should be repeated
-then**: the 13.5-point figure comes from smooth heightmap terrain, and caves and
-overhangs will make AO vary far more.
+Phase 5 is indirect draw plus GPU culling. Note that the shader side is already
+arranged for it: per-section data is an array indexed by `gl_DrawID`, which means the
+same thing under `glMultiDrawElementsIndirect`, so only the command buffer's producer
+changes.
 
 ---
 
