@@ -79,10 +79,42 @@ constexpr SectionPos toSectionPos(BlockPos pos) {
     return {blockToSectionCoord(pos.x), blockToSectionCoord(pos.y), blockToSectionCoord(pos.z)};
 }
 
+/// Lowest and one-past-highest section Y in a column: -2 and 10.
+inline constexpr i32 kMinSectionY = kWorldMinY / kSectionSize;
+inline constexpr i32 kMaxSectionY = kMinSectionY + kSectionsPerColumn;
+
 /// Section index within a column, 0 at kWorldMinY.
 constexpr i32 sectionIndexInColumn(i32 sectionY) {
-    return sectionY - blockToSectionCoord(kWorldMinY);
+    return sectionY - kMinSectionY;
 }
+
+constexpr bool isValidSectionY(i32 sectionY) {
+    return sectionY >= kMinSectionY && sectionY < kMaxSectionY;
+}
+
+/// Lowest block coordinate of a section index within a column.
+constexpr i32 sectionIndexToWorldY(i32 index) {
+    return (index + kMinSectionY) * kSectionSize;
+}
+
+/// Hash for using ChunkPos as a map key.
+///
+/// The two coordinates pack into 64 bits without loss, so the only real work is
+/// mixing. This is splitmix64's finalizer: chunk coordinates are small,
+/// consecutive and often differ in one axis only, which a weaker mix would leave
+/// clustered in the same buckets.
+struct ChunkPosHash {
+    usize operator()(ChunkPos pos) const noexcept {
+        u64 h = (static_cast<u64>(static_cast<u32>(pos.x)) << 32)
+              | static_cast<u64>(static_cast<u32>(pos.z));
+        h ^= h >> 30;
+        h *= 0xBF58476D1CE4E5B9ull;
+        h ^= h >> 27;
+        h *= 0x94D049BB133111EBull;
+        h ^= h >> 31;
+        return static_cast<usize>(h);
+    }
+};
 
 constexpr bool isValidWorldY(i32 y) {
     return y >= kWorldMinY && y < kWorldMaxY;

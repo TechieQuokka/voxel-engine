@@ -11,7 +11,8 @@ pick the work back up cold.
 
 ## 1. Where things stand
 
-**Phases 0, 1 and 2 are complete.** Next up is Phase 3.
+**Phases 0, 1 and 2 are complete. Phase 3 is in progress — 3a and 3b done, 3c
+next.** The sub-step table and the measurements are in DESIGN.md 7.5.
 
 | Commit | Contents |
 |---|---|
@@ -44,7 +45,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (70 cases, doctest)
+# Test  (106 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue or JobSystem.
@@ -102,13 +103,17 @@ cmake/CompilerWarnings.cmake
 
 src/core/               no dependencies
   Types, Math (only file including glm), Result<T,E>, BitPack,
-  Log, Assert, Profile (Tracy macros), Paths
+  Log, Assert, Profile (Tracy macros), Paths,
+  MpmcQueue (Vyukov bounded lock-free), JobSystem (worker pool)
 src/platform/           GLFW lives here and nowhere else
   Window, Input, Clock
 src/rhi/                GL abstraction; no GL type in any header
   Device, Buffer, Shader, Texture, VertexArray
 src/world/              pure data; knows nothing about rendering
-  Coords (+ Face enum), BlockRegistry, Palette, Section
+  Coords (+ Face enum, ChunkPosHash), BlockRegistry, Palette, Section,
+  Chunk (12-section column), Neighbourhood (3x3x3 view), World (chunk map)
+src/worldgen/           knows world, nothing above it
+  Generator — placeholder heightmap; FastNoise2 replaces its body in Phase 4
 src/mesh/
   Quad (64-bit packed), ChunkMesh, CulledMesher, BinaryGreedyMesher
 src/render/

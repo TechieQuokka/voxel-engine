@@ -432,6 +432,7 @@ minecraft/
 │   │   ├── Palette.hpp/.cpp   # palette + bit-packed indices
 │   │   ├── Section.hpp        # 32^3, uniform optimization
 │   │   ├── Chunk.hpp/.cpp     # column of 12 sections
+│   │   ├── Neighbourhood.hpp  # the 3x3x3 sections a mesher may read
 │   │   └── World.hpp/.cpp     # chunk map, streaming
 │   │
 │   ├── worldgen/
@@ -837,6 +838,57 @@ for streaming to derive from the render distance in Phase 3.
 Verified: 53 test cases pass, `-Werror` clean, and a `--capture` frame renders
 identically apart from the sRGB change. The Phase 2 measurement reproduces
 exactly — 4,842 → 2,083 quads AO-aware (57.0%), 1,428 AO-ignoring (70.5%).
+
+### 7.5 Phase 3 progress
+
+Phase 3 is built in sub-steps, each one verifiable on its own. The job system is
+wired in **last**, deliberately: getting streaming correct single-threaded first
+means a later bug is either a streaming bug or a race, and not ambiguously both.
+
+| | Content | State |
+|---|---|---|
+| 3a | `core/MpmcQueue`, `core/JobSystem` | done |
+| 3b | `world/Chunk`, `world/World`, `world/Neighbourhood`, `worldgen/Generator` | done |
+| 3c | Neighbour-aware boundary culling and AO | next |
+| 3d | Multi-chunk rendering, per-section data in an SSBO | |
+| 3e | `render/Frustum`, hierarchical culling | |
+| 3f | Job system wired in, upload thread, Tracy capture | |
+
+**3a.** Vyukov bounded MPMC queue plus a semaphore-parked worker pool. Bounded is
+the point: an unbounded queue would let streaming enqueue more work than the pool
+can retire, so pending-job memory would scale with camera speed. `Job` is a POD
+(function pointer, context, `u64`) rather than `std::function`, both because `core`
+must not know what a section is and because a lambda capturing `World*` plus
+`SectionPos` overruns libstdc++'s 16-byte buffer and would allocate per section.
+
+**3b.** Columns are held by `unique_ptr` because jobs hold a `Chunk*` across
+frames and a value-holding map would invalidate every one of them on rehash. A
+column in `Generating` is never unloaded. `worldgen` exists now with a placeholder
+analytic heightmap — continuous in world coordinates, so a seam means the neighbour
+handling is wrong — and Phase 4 replaces only its body.
+
+Measured, release + LTO, RTX 3060 machine, 8 hardware threads:
+
+| | Distance 8 | Distance 16 |
+|---|---|---|
+| Columns | 289 | 1,089 |
+| Region update | 0.14 ms | 0.28 ms |
+| Generation, 1 thread | 116.8 ms (0.404 ms/column) | 435.3 ms (0.400 ms/column) |
+| Generation, 6 workers | 29.0 ms (4.03x) | 109.6 ms (3.97x) |
+| Resident memory | 4.4 MiB | 16.7 MiB |
+
+Three things worth keeping:
+
+- **16.7 MiB for a full distance-16 world** is the uniform-section optimization
+  paying off exactly as 3.5 predicted. Terrain occupies a narrow height band, so
+  nine or ten of every twelve sections carry no index array at all.
+- **4x on 6 workers, not 6x.** The placeholder generator is memory-bound — its
+  inner loop is `Palette::set`, a palette scan plus a read-modify-write per voxel —
+  so it saturates bandwidth before it saturates cores. Phase 4's density evaluation
+  is compute-bound and should scale better; if it does not, the generator writes
+  through the palette one voxel at a time and that is the thing to fix.
+- **Gathering a neighbourhood costs 0.050 us per section**, against ~180 us to mesh
+  one. Nine hash lookups shared down the y axis, and nothing needs caching.
 
 ---
 

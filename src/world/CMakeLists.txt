@@ -1,6 +1,8 @@
 add_library(mc_world STATIC
   BlockRegistry.cpp
+  Chunk.cpp
   Palette.cpp
+  World.cpp
 )
 
 # world is pure data: it knows nothing about rendering, so that the same

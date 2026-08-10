@@ -9,6 +9,9 @@ add_executable(mc_tests
   test_jobsystem.cpp
   test_coords.cpp
   test_palette.cpp
+  test_chunk.cpp
+  test_world.cpp
+  test_generator.cpp
   test_mesher.cpp
   test_greedy_mesher.cpp
 )
@@ -16,6 +19,7 @@ add_executable(mc_tests
 target_link_libraries(mc_tests PRIVATE
   mc_core
   mc_world
+  mc_worldgen
   mc_mesh
   doctest::doctest
 )
