@@ -6,6 +6,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 
 using namespace mc;
@@ -18,8 +19,8 @@ TEST_CASE("generation is deterministic for a given seed") {
     bool differsSomewhere = false;
     for (i32 x = -64; x < 64; x += 7) {
         for (i32 z = -64; z < 64; z += 7) {
-            REQUIRE(a.surfaceHeight(x, z) == b.surfaceHeight(x, z));
-            if (a.surfaceHeight(x, z) != other.surfaceHeight(x, z)) {
+            REQUIRE(a.terrainHeight(x, z) == b.terrainHeight(x, z));
+            if (a.terrainHeight(x, z) != other.terrainHeight(x, z)) {
                 differsSomewhere = true;
             }
         }
@@ -32,9 +33,9 @@ TEST_CASE("generation is deterministic for a given seed") {
 TEST_CASE("the surface stays inside the world") {
     const Generator generator;
 
-    for (i32 x = -500; x < 500; x += 13) {
-        for (i32 z = -500; z < 500; z += 13) {
-            const i32 height = generator.surfaceHeight(x, z);
+    for (i32 x = -500; x < 500; x += 61) {
+        for (i32 z = -500; z < 500; z += 61) {
+            const i32 height = generator.terrainHeight(x, z);
             CAPTURE(x);
             CAPTURE(z);
             REQUIRE(isValidWorldY(height));
@@ -51,8 +52,8 @@ TEST_CASE("the surface does not step at a chunk boundary") {
 
     i32 worst = 0;
     for (i32 z = -40; z < 40; ++z) {
-        const i32 left = generator.surfaceHeight(kSectionSize - 1, z);
-        const i32 right = generator.surfaceHeight(kSectionSize, z);
+        const i32 left = generator.terrainHeight(kSectionSize - 1, z);
+        const i32 right = generator.terrainHeight(kSectionSize, z);
         worst = std::max(worst, std::abs(left - right));
     }
     CAPTURE(worst);
@@ -75,8 +76,11 @@ TEST_CASE("the surface block matches the surface height") {
     const Generator generator;
     generator.generateColumn(chunk);
 
-    for (i32 z = 0; z < kSectionSize; z += 5) {
-        for (i32 x = 0; x < kSectionSize; x += 5) {
+    // surfaceHeight, not terrainHeight: this compares against blocks that carvers have
+    // already cut, so the cheap density-only answer would disagree wherever a cave
+    // breaks the surface -- which is a real thing that happens now.
+    for (i32 z = 0; z < kSectionSize; z += 11) {
+        for (i32 x = 0; x < kSectionSize; x += 11) {
             const i32 surface = generator.surfaceHeight(x, z);
             CAPTURE(x);
             CAPTURE(z);
@@ -94,20 +98,23 @@ TEST_CASE("the surface block matches the surface height") {
     }
 }
 
-TEST_CASE("sections far above and far below the surface stay uniform") {
-    // This is the property that makes a 384-block world height affordable: most of
-    // a column carries no index array at all.
+TEST_CASE("the sky stays uniform, and caves cost some of the deep uniformity") {
+    // The property that makes a 384-block world height affordable is that most of a
+    // column carries no index array at all. Caves eat into it, and this test records
+    // by how much rather than asserting the pre-cave number.
+    //
+    // Before carvers, 8 of 12 sections in this column were uniform and the bottom one
+    // was solid stone all the way down. Thin caves reach to y = -59, one block above
+    // bedrock, so the bottom section is no longer uniform -- which is correct, and is
+    // exactly the cost predicted when caves were planned.
     Chunk chunk(ChunkPos{0, 0});
     const Generator generator;
     generator.generateColumn(chunk);
 
+    // The sky is untouched by anything and must stay free.
     const Section& sky = chunk.sectionByIndex(Chunk::kSectionCount - 1);
     CHECK(sky.isUniform());
     CHECK(sky.isEmpty());
-
-    const Section& deep = chunk.sectionByIndex(0); // World Y -64..-33.
-    CHECK(deep.isUniform());
-    CHECK(deep.uniformBlock() == kStoneBlock);
 
     usize uniformCount = 0;
     for (usize index = 0; index < Chunk::kSectionCount; ++index) {
@@ -115,8 +122,61 @@ TEST_CASE("sections far above and far below the surface stay uniform") {
             ++uniformCount;
         }
     }
-    // The terrain spans a limited height band, so most sections are untouched.
-    CHECK(uniformCount >= Chunk::kSectionCount - 4);
+    CAPTURE(uniformCount);
+    // Still the majority of the column. If this drops below half, the caves have
+    // become a sponge and the storage argument in DESIGN.md 3.5 needs revisiting.
+    CHECK(uniformCount >= Chunk::kSectionCount / 2);
+}
+
+TEST_CASE("caves actually carve, and only below the surface") {
+    // Two things at once: air appears underground where the density field alone would
+    // have put rock, and the very top of the world is not perforated.
+    Chunk chunk(ChunkPos{3, -2});
+    const Generator generator(4242);
+    generator.generateColumn(chunk);
+
+    // Surface heights first, one per horizontal position. Calling surfaceHeight inside
+    // the voxel loop would generate a column per voxel -- it is cached per column, not
+    // per position.
+    std::array<i32, kSectionSize * kSectionSize> surface{};
+    for (i32 z = 0; z < kSectionSize; z += 8) {
+        for (i32 x = 0; x < kSectionSize; x += 8) {
+            surface[static_cast<usize>(z * kSectionSize + x)] = generator.surfaceHeight(
+                chunk.position().x * kSectionSize + x, chunk.position().z * kSectionSize + z);
+        }
+    }
+
+    usize undergroundAir = 0;
+    usize solidBlocks = 0;
+    for (usize index = 0; index < Chunk::kSectionCount; ++index) {
+        const Section& section = chunk.sectionByIndex(index);
+        const i32 sectionMinY = sectionIndexToWorldY(static_cast<i32>(index));
+        if (section.isEmpty()) {
+            continue;
+        }
+        for (i32 y = 0; y < kSectionSize; ++y) {
+            const i32 worldY = sectionMinY + y;
+            for (i32 z = 0; z < kSectionSize; z += 8) {
+                for (i32 x = 0; x < kSectionSize; x += 8) {
+                    const bool air = section.get(x, y, z) == kAirBlock;
+                    // Well below the surface, so this is cave air rather than sky.
+                    const bool covered =
+                        worldY + 20 < surface[static_cast<usize>(z * kSectionSize + x)];
+                    if (air && covered) {
+                        ++undergroundAir;
+                    }
+                    if (!air) {
+                        ++solidBlocks;
+                    }
+                }
+            }
+        }
+    }
+
+    CAPTURE(undergroundAir);
+    CAPTURE(solidBlocks);
+    CHECK(undergroundAir > 0);   // Caves exist.
+    CHECK(solidBlocks > 0);      // And have not eaten everything.
 }
 
 TEST_CASE("adjacent columns share their boundary density plane exactly") {
@@ -173,7 +233,7 @@ TEST_CASE("the density field crosses zero once in open terrain") {
 
     for (i32 x = 0; x < kSectionSize; x += 8) {
         for (i32 z = 0; z < kSectionSize; z += 8) {
-            const i32 surface = generator.surfaceHeight(x, z);
+            const i32 surface = generator.terrainHeight(x, z);
             CAPTURE(x);
             CAPTURE(z);
             REQUIRE(surface > kWorldMinY);

@@ -1091,7 +1091,7 @@ interpolation grid in the correction to 4.1, the pipeline order below).
 | | Content | State |
 |---|---|---|
 | 4a | FastNoise2, density grid, terrain shaping, surface pass | done |
-| 4b | Noise caves (cheese / spaghetti / noodle) and aquifers | next |
+| 4b | Noise caves (cheese / spaghetti / noodle) | done; aquifers not yet |
 | 4c | Ore features, with the air-exposure rule | |
 | 4d | Biome selection from the climate fields | |
 

@@ -27,8 +27,8 @@ Measurements are in DESIGN.md 7.5 (Phase 3) and 7.6 (Phase 4).
 | `8e60532` | Phase 3f — streaming onto the worker pool; Phase 3 complete |
 | `5df5ca6` | Record the Phase 3f commit in the handoff table |
 
-Working tree is clean. **The repository is local only — never push, never create
-a remote.**
+Working tree is clean. **Published publicly** at the `origin` remote as of
+2026-08-10; the earlier local-only rule was lifted by the user at that point.
 
 What runs today: **FastNoise2 terrain** — continents, erosion, ridged peaks and
 valleys, a 3D warp for overhangs, and a surface pass that grasses the top of every
@@ -39,7 +39,12 @@ throughout, no dropped frames and no GL messages.
 Generation and meshing run on a 6-worker pool, uploads on their own thread, and the
 main thread only ever submits.
 
-No caves, no ores, no biomes yet — 4b, 4c and 4d.
+**Caves work** — cheese caverns on the density grid, spaghetti and noodle tunnels carved
+per block, 6.8% underground air. They cost a great deal: 4.1 M quads at distance 16
+against 260 k without them, p99 6.0 ms, and the fully-enclosed-section saving is gone
+entirely. See DESIGN.md 7.6.
+
+No aquifers, ores, biomes or lighting yet — 4c and 4d, and lighting after them.
 
 ---
 
@@ -54,7 +59,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (141 cases, doctest)
+# Test  (142 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
@@ -112,7 +117,8 @@ These are the user's standing instructions, not suggestions.
 4. **Minor decisions are yours to make** — the user said so explicitly. Do not
    ask about test frameworks, warning flags, naming, and the like. Decide,
    state what you decided, move on.
-5. **Git is local only.** Commit when asked. Never push, never `gh repo create`.
+5. **Commit when asked.** The repository is public now, so a push is visible
+   immediately — still ask before pushing anything not asked for.
 6. Stay inside the project directory. The parent directory is off-limits.
 
 ---
@@ -209,6 +215,12 @@ Learned the hard way; all of them cost real time.
 - **TSan over the app reports ~32 races inside GTK** — glib, gio, gobject, fontconfig,
   pango — reached only through `glfwCreateWindow`. Use `tsan.supp`, and read its header
   before adding to it.
+- **From above, a world with no caves looks identical to a world full of them.** Tune
+  caves against a measured air fraction and a printed cross-section, never a screenshot.
+  The cross-section is also what caught the surface rule sanding every cave ceiling.
+- **Thin features cannot live on the interpolation grid.** A 1-5 block tunnel is smaller
+  than a 4x8x4 cell, so it has to be carved per block. `DensityGraph::carveThinCaves` is
+  the only per-voxel noise in the engine and is bounded three ways; keep it that way.
 - **A transposed density grid index looks like a terrain bug, not an indexing bug.**
   FastNoise2's `GenUniformGrid3D` writes x fastest, then y, then z. Get it wrong and
   the world becomes floating horizontal sheets, which sends you looking at the shaper.

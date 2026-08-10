@@ -551,7 +551,14 @@ void Engine::shutdownStreaming() {
 void Engine::drainStreaming() {
     // Submit, let the pool finish, repeat. Generation produces meshing work, so this
     // needs more than one pass; it settles when a full round submits nothing.
-    for (;;) {
+    //
+    // The round counter is not paranoia. A full arena makes store() fail, which marks
+    // the section dirty again, which makes the next round submit it again -- a loop that
+    // never terminates and never says why. That happened the first time caves ran at
+    // distance 16, because the arena budget still reflected pre-cave mesh sizes.
+    constexpr usize kMaxRounds = 512;
+
+    for (usize round = 0; round < kMaxRounds; ++round) {
         const usize generated = submitGeneration();
         const usize meshedSubmitted = submitMeshing();
 
@@ -564,9 +571,17 @@ void Engine::drainStreaming() {
         }
 
         if (generated == 0 && meshedSubmitted == 0) {
-            break;
+            return;
         }
     }
+
+    logWarn("Warm-up gave up after {} rounds: arena {} / {} MiB, largest free block {} KiB, "
+            "{} arena-full events -- the mesh arena is too small for this render distance",
+            kMaxRounds,
+            m_meshStore->usedBytes() / (1024 * 1024),
+            m_meshStore->capacityBytes() / (1024 * 1024),
+            m_meshStore->largestFreeBlock() / 1024,
+            m_arenaFullEvents.load());
 }
 
 bool Engine::neighboursReady(ChunkPos pos) const {

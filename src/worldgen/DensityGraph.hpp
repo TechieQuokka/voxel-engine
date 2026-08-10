@@ -6,6 +6,7 @@
 
 #include <array>
 #include <memory>
+#include <span>
 
 namespace mc {
 
@@ -51,7 +52,37 @@ public:
 
     /// Evaluates every channel for one column. Thread-safe: reads only the graph,
     /// writes only the outputs.
+    ///
+    /// Cheese caves are folded into `density` here, because they are large enough to
+    /// survive the interpolation grid. Thin caves are not — see carveThinCaves.
     void fillColumn(ChunkPos pos, Climate& climate, DensityField& density) const;
+
+    /// Vertical extent within which thin caves are carved. Outside it the sky and the
+    /// deep floor need no per-block work at all.
+    static constexpr i32 kCaveMinY = kWorldMinY + 5;
+    static constexpr i32 kCaveMaxY = 120;
+
+    /// Per-block spaghetti and noodle carving for one section, as a solidity mask.
+    ///
+    /// **This one cannot use the interpolation grid, and that is the whole point.** A
+    /// noodle tunnel is one to five blocks across; the grid's vertical cell is eight,
+    /// so interpolation would erase it. Minecraft has the same problem and answers it
+    /// the same way — some entries in its noise router are explicitly not interpolated.
+    ///
+    /// So this is the one place the engine does pay for noise per voxel, and it is
+    /// bounded three ways: only sections that already hold both rock and air, only
+    /// within [kCaveMinY, kCaveMaxY], and one SIMD grid call per section rather than a
+    /// call per block.
+    ///
+    /// `out` is 32^3 entries: 1 where the block survives, 0 where the cave takes it.
+    /// Everything already air stays air.
+    void carveThinCaves(SectionPos pos, std::span<u8> solid) const;
+
+    /// True when a section's Y range can contain a thin cave at all.
+    static bool thinCavesReach(i32 sectionY) {
+        const i32 minY = sectionY * kSectionSize;
+        return minY + kSectionSize > kCaveMinY && minY <= kCaveMaxY;
+    }
 
     /// Which SIMD level FastNoise2's runtime dispatch actually chose, as a name.
     /// Worth logging once: it is the difference between AVX2 and SSE2 throughput.

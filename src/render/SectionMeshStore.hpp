@@ -112,19 +112,29 @@ private:
 
 /// Arena size for a given render distance.
 ///
-/// Derived from measurement rather than guessed: a fully meshed distance-16 region
-/// is 1,089 columns and about 12 MiB of quads, so roughly 11 KiB per column. The 4x
-/// margin covers fragmentation, the retired-but-not-yet-recycled ranges, and terrain
-/// rougher than the placeholder generator's.
+/// Derived from measurement, and re-derived once caves existed — which is the whole
+/// reason this is a function and not a constant.
+///
+/// Before carvers a fully meshed distance-16 region was ~12 MiB of quads, about 11 KiB
+/// per column, and 48 KiB was a comfortable 4x margin. Caves changed that by a lot:
+/// thin tunnels have an enormous surface-to-volume ratio, so a 1.7% air fraction
+/// underground produced 50 KiB per column — right at the old budget. Distance 16 then
+/// wedged with a permanently full arena.
+///
+/// 176 KiB per column is the cave-era measurement with headroom: distance 16 settles at
+/// 112 MiB of the 136 that 128 KiB/column bought, which is closer to full than a fixed
+/// allocation should ever run. LOD in Phase 6 pulls it back down for distant chunks;
+/// occlusion culling in Phase 8 stops those cave surfaces being *drawn*, but they still
+/// have to be stored.
 ///
 /// The arena is immutable GL storage and persistently mapped, so this is pinned
 /// memory that exists whether or not it is used — which is exactly why it is scaled
 /// to the render distance instead of being one fixed number large enough for the
 /// eventual distance-64 target.
 inline usize meshArenaBytesFor(i32 renderDistance) {
-    constexpr usize kBytesPerColumn = 48u * 1024u;
+    constexpr usize kBytesPerColumn = 176u * 1024u;
     constexpr usize kMinimum = 32u * 1024u * 1024u;
-    constexpr usize kMaximum = 512u * 1024u * 1024u;
+    constexpr usize kMaximum = 768u * 1024u * 1024u;
 
     const auto side = static_cast<usize>(2 * (renderDistance > 0 ? renderDistance : 1) + 1);
     const usize estimate = side * side * kBytesPerColumn;

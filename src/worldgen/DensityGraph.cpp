@@ -45,6 +45,40 @@ constexpr f32 kFadeStartY = 200.0f;
 
 } // namespace shape
 
+/// Cave tuning. The three kinds are the 1.18 model: wide cheese pockets, long thin
+/// spaghetti connecting them, and thinner noodle branches off those.
+namespace cave {
+
+/// Cheese caves ride the density grid, so they must be larger than a grid cell (4x8x4)
+/// to survive interpolation at all. This is the amount of density they subtract where
+/// the cheese field is strongest.
+/// Tuned against a measured underground air fraction and an ASCII cross-section, not by
+/// eye on the surface -- from above, a world with no caves at all looks identical.
+constexpr f32 kCheeseStrength = 5.5f;
+/// Only where the field exceeds this, so caverns are pockets rather than a sponge.
+constexpr f32 kCheeseThreshold = 0.28f;
+
+/// Spaghetti and noodle are carved per block. A tunnel exists where the ridged field is
+/// near its crest, so the width is set by how near.
+///
+/// Tuned in three steps, each measured. 0.055 and 0.022 produced single-block slits
+/// rather than tunnels -- visible in a cross-section only if you knew to look. Widening
+/// to 0.16 and 0.07 overshot to a 12.9% underground air fraction, well above
+/// Minecraft's. These land at 6.8%, inside the 3-8% range Minecraft occupies.
+///
+/// Cost scales with air fraction, and steeply: 1.7% air was 2.0 M quads at distance 16,
+/// 6.8% is 4.1 M, 10.8% is 4.7 M. All of it is cave wall that nothing outside can see,
+/// which is what makes occlusion culling (Phase 8) the answer rather than thinner caves.
+constexpr f32 kSpaghettiWidth = 0.115f;
+constexpr f32 kNoodleWidth = 0.045f;
+
+/// Caves fade out near the surface so the world is not visibly perforated from above,
+/// and near the floor so there is always rock underneath.
+constexpr i32 kSurfaceMargin = 8;
+constexpr i32 kFloorMargin = 6;
+
+} // namespace cave
+
 /// Frequencies, in cycles per block. The climate fields are deliberately far lower
 /// frequency than the 3D warp: continents should span hundreds of blocks while
 /// overhangs span tens.
@@ -53,6 +87,9 @@ constexpr f32 kContinentalness = 0.00035f;
 constexpr f32 kErosion = 0.00055f;
 constexpr f32 kPeaksValleys = 0.0045f;
 constexpr f32 kDensity3D = 0.0075f;
+constexpr f32 kCheese = 0.0125f;
+constexpr f32 kSpaghetti = 0.021f;
+constexpr f32 kNoodle = 0.047f;
 } // namespace freq
 
 FastNoise::SmartNode<FastNoise::FractalFBm> makeFbm(int octaves, f32 gain, f32 lacunarity) {
@@ -147,6 +184,13 @@ struct DensityGraph::Impl {
     FastNoise::SmartNode<FastNoise::FractalRidged> peaksValleys;
     FastNoise::SmartNode<FastNoise::DomainAxisScale> density3D;
 
+    /// Wide caverns, on the density grid.
+    FastNoise::SmartNode<FastNoise::DomainAxisScale> cheese;
+    /// Thin tunnels, per block. Ridged so that a tunnel follows the crest of the field
+    /// rather than filling a blob -- the same reason peaks-and-valleys is ridged.
+    FastNoise::SmartNode<FastNoise::FractalRidged> spaghetti;
+    FastNoise::SmartNode<FastNoise::FractalRidged> noodle;
+
     /// Scratch for the 3D grid, so fillColumn does not allocate. One per graph, and
     /// the graph is shared across threads -- so this cannot live here. It is
     /// thread_local in fillColumn instead; see there.
@@ -163,6 +207,18 @@ struct DensityGraph::Impl {
         density3D->SetScale<FastNoise::Dim::X>(1.0f);
         density3D->SetScale<FastNoise::Dim::Y>(0.55f);
         density3D->SetScale<FastNoise::Dim::Z>(1.0f);
+
+        // Cheese caverns are flattened harder than the terrain field: a cavern that is
+        // wider than it is tall reads as a cave, one that is spherical reads as a bubble.
+        auto cheeseBase = makeFbm(3, 0.5f, 2.0f);
+        cheese = FastNoise::New<FastNoise::DomainAxisScale>();
+        cheese->SetSource(cheeseBase);
+        cheese->SetScale<FastNoise::Dim::X>(1.0f);
+        cheese->SetScale<FastNoise::Dim::Y>(2.1f);
+        cheese->SetScale<FastNoise::Dim::Z>(1.0f);
+
+        spaghetti = makeRidged(2, 0.5f, 2.0f);
+        noodle = makeRidged(2, 0.5f, 2.0f);
     }
 };
 
@@ -244,7 +300,9 @@ void DensityGraph::fillColumn(ChunkPos pos, Climate& climate, DensityField& dens
     // thread_local rather than a member: the graph is shared by every worker, so a
     // member scratch buffer would be a data race. Same reasoning as the mesher's.
     static thread_local std::vector<f32> warp;
+    static thread_local std::vector<f32> cheeseField;
     warp.resize(DensityField::kSampleCount);
+    cheeseField.resize(DensityField::kSampleCount);
 
     {
         MC_PROFILE_SCOPE_N("density3D");
@@ -254,6 +312,12 @@ void DensityGraph::fillColumn(ChunkPos pos, Climate& climate, DensityField& dens
             DensityField::kGridX, DensityField::kGridY, DensityField::kGridZ,
             freq::kDensity3D * kCellW,
             static_cast<int>(m_impl->seed) + 4231);
+
+        m_impl->cheese->GenUniformGrid3D(
+            cheeseField.data(), originX, originY, originZ,
+            DensityField::kGridX, DensityField::kGridY, DensityField::kGridZ,
+            freq::kCheese * kCellW,
+            static_cast<int>(m_impl->seed) + 5507);
     }
 
     // Combine into the final density, on the grid.
@@ -284,6 +348,22 @@ void DensityGraph::fillColumn(ChunkPos pos, Climate& climate, DensityField& dens
                     f32 value = (target - worldY) / shape::kSqueeze;
                     value += warp[DensityField::index(gx, gy, gz)] * shape::kWarpStrength;
 
+                    // Cheese caverns: subtract density where the flattened field is
+                    // strongest, but only well below the surface, so the terrain is not
+                    // visibly perforated from above.
+                    const f32 surfaceLimit =
+                        target - static_cast<f32>(cave::kSurfaceMargin);
+                    const auto floorLimit =
+                        static_cast<f32>(shape::kBedrockTop + cave::kFloorMargin);
+                    if (worldY < surfaceLimit && worldY > floorLimit) {
+                        const f32 field = std::abs(cheeseField[DensityField::index(gx, gy, gz)]);
+                        if (field > cave::kCheeseThreshold) {
+                            const f32 excess = (field - cave::kCheeseThreshold)
+                                             / (1.0f - cave::kCheeseThreshold);
+                            value -= excess * cave::kCheeseStrength;
+                        }
+                    }
+
                     // Hard floor and a soft ceiling, so the world has a bottom and
                     // terrain never touches the build limit.
                     if (worldY <= static_cast<f32>(shape::kBedrockTop)) {
@@ -293,6 +373,66 @@ void DensityGraph::fillColumn(ChunkPos pos, Climate& climate, DensityField& dens
                     }
 
                     density.at(gx, gy, gz) = value;
+                }
+            }
+        }
+    }
+}
+
+void DensityGraph::carveThinCaves(SectionPos pos, std::span<u8> solid) const {
+    MC_PROFILE_SCOPE_N("DensityGraph::carveThinCaves");
+    MC_ASSERT(solid.size() == kSectionVolume);
+
+    const i32 baseX = pos.x * kSectionSize;
+    const i32 baseY = pos.y * kSectionSize;
+    const i32 baseZ = pos.z * kSectionSize;
+
+    // Two SIMD grid calls for the whole section rather than a call per block. At block
+    // resolution the grid step is one block, so the frequency needs no cell scaling.
+    static thread_local std::vector<f32> spaghettiField;
+    static thread_local std::vector<f32> noodleField;
+    spaghettiField.resize(kSectionVolume);
+    noodleField.resize(kSectionVolume);
+
+    m_impl->spaghetti->GenUniformGrid3D(
+        spaghettiField.data(), baseX, baseY, baseZ,
+        kSectionSize, kSectionSize, kSectionSize,
+        freq::kSpaghetti, static_cast<int>(m_impl->seed) + 8663);
+
+    m_impl->noodle->GenUniformGrid3D(
+        noodleField.data(), baseX, baseY, baseZ,
+        kSectionSize, kSectionSize, kSectionSize,
+        freq::kNoodle, static_cast<int>(m_impl->seed) + 9377);
+
+    // FastNoise2 writes x fastest, then y, then z -- the same order localIndex() uses
+    // for y and x but not for z, so the two indices are computed separately rather than
+    // assumed equal.
+    for (i32 z = 0; z < kSectionSize; ++z) {
+        for (i32 y = 0; y < kSectionSize; ++y) {
+            const i32 worldY = baseY + y;
+            if (worldY < kCaveMinY || worldY > kCaveMaxY) {
+                continue;
+            }
+
+            for (i32 x = 0; x < kSectionSize; ++x) {
+                const usize voxel = localIndex(x, y, z);
+                if (solid[voxel] == 0) {
+                    continue; // Already air; nothing to carve.
+                }
+
+                const usize noiseIndex =
+                    (static_cast<usize>(z) * kSectionSize + static_cast<usize>(y))
+                        * kSectionSize
+                    + static_cast<usize>(x);
+
+                // A ridged field peaks at 1 along a surface through the volume. Taking
+                // the blocks *near* that peak yields a tunnel whose width is set by the
+                // threshold -- narrow for noodle, wider for spaghetti.
+                const f32 spaghetti = 1.0f - spaghettiField[noiseIndex];
+                const f32 noodle = 1.0f - noodleField[noiseIndex];
+
+                if (spaghetti < cave::kSpaghettiWidth || noodle < cave::kNoodleWidth) {
+                    solid[voxel] = 0;
                 }
             }
         }

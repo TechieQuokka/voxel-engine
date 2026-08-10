@@ -1,0 +1,99 @@
+# voxel-engine
+
+A voxel engine written from scratch in C++20 and OpenGL 4.6, targeting a Minecraft-like
+world at an extreme render distance. No game engine, no rendering framework — the
+renderer, chunk system, mesher, job system and terrain pipeline are all in this
+repository.
+
+Linux only, GCC only. That is a deliberate constraint, not a limitation to work around:
+it removes a portability layer that would otherwise shape every decision below.
+
+## What it does today
+
+Streaming terrain generated from a FastNoise2 density-function graph, meshed with
+binary greedy meshing, drawn with **one** `glMultiDrawArrays` call per frame.
+
+| | |
+|---|---|
+| Render distance 16 | p99 frame time **0.85 ms** (no caves) / **6.0 ms** (with caves) |
+| Render distance 24 | p99 **2.14 ms** (no caves) |
+| Draw calls per frame | 1 |
+| Section storage | palette-compressed, 4 bits/voxel typical, uniform sections free |
+| Threads | 6 workers for generation and meshing, 1 upload thread, main thread never blocks |
+
+Measured on an RTX 3060, release + LTO, flying at 40 blocks/s so streaming is included.
+
+## Build
+
+Requires GCC 13+, CMake 3.25+, and `python3` with `jinja2` (glad generates its loader at
+configure time). Every other dependency is fetched and pinned by CPM.
+
+```bash
+cmake --preset release
+cmake --build --preset release
+./build/release/src/app/minecraft
+```
+
+`WASD` to move, `Space`/`LeftShift` up and down, `LeftControl` to sprint, mouse to look,
+`Escape` to release the cursor and again to quit.
+
+```bash
+ctest --preset debug                       # 142 test cases
+cmake --preset asan && ctest --preset asan  # address + undefined
+./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
+./build/release/src/app/minecraft --capture /tmp/shot.ppm
+```
+
+## How it is built
+
+| | |
+|---|---|
+| Sections | 32³, palette-compressed with 1/2/4/8-bit indices |
+| World height | 384 blocks, Y from -64 to 320, 12 sections per column |
+| Meshing | binary greedy — bitwise face culling over 32-bit occupancy columns |
+| Geometry | **no vertex buffers**; 64-bit quads in an SSBO, expanded from `gl_VertexID` |
+| Per-draw data | none — sections find their origin via `gl_DrawID` |
+| Depth | reversed-Z with an infinite far plane, so the frustum has five planes |
+| Terrain | density functions on a 4×8×4 interpolation grid, then surface rules, then carvers |
+| Errors | exceptions only at init and load boundaries; `Result<T, E>` everywhere else |
+
+Dependency direction is enforced at link time rather than documented: `mc_render` does
+not link `mc_worldgen`, and glad, GLFW and FastNoise2 are all linked `PRIVATE` so their
+types cannot appear in any public header.
+
+## Documentation
+
+- **[docs/DESIGN.md](docs/DESIGN.md)** — every architectural decision and the reasoning
+  behind it, plus the measured result of each phase. This is the substantial document.
+- **[docs/HANDOFF.md](docs/HANDOFF.md)** — how to pick the work back up cold: commands,
+  repository map, and the mistakes that cost real time.
+
+The design document keeps its wrong turns rather than quietly editing them, because the
+corrections are usually more useful than the conclusions. Three examples:
+
+- Section 4.1 argued that noise throughput was the bottleneck and sized a budget for
+  1.26 billion per-voxel density evaluations. Minecraft evaluates its density function on
+  a coarse grid and interpolates — 3,969 samples per column instead of 393,216. The
+  library choice survived; the reasoning did not.
+- Greedy meshing was implemented twice. The first version produced correct output and ran
+  *slower* than the naive mesher, because its merge step still walked all 196,608 plane
+  cells to find the ~4,800 holding a face. Building the bitmask is not the optimization;
+  never touching the empty cells is.
+- The frame-time benchmark was wrong twice over — the camera flew along its view
+  direction and sank out of the bottom of the world, and it advanced by a fixed timestep
+  while rendering at 5,000 FPS, so streaming could never keep up and the visible set
+  emptied. It now reports how far it actually flew and how much work is outstanding,
+  because a benchmark needs its own sanity check.
+
+## Scope
+
+Terrain generation and rendering. There is no inventory, crafting, mob AI, redstone or
+multiplayer, and none is planned — the goal is the render distance, not the game.
+
+Phases 0 through 3 are complete; Phase 4 (terrain generation) is in progress. Remaining:
+indirect draw with GPU culling, four-level LOD, brickmap ray marching for the far field,
+and occlusion culling.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
