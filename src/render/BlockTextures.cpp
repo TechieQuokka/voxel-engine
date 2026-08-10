@@ -1,9 +1,8 @@
 #include "render/BlockTextures.hpp"
 
 #include "core/Log.hpp"
-#include "world/BlockRegistry.hpp"
+#include "world/BlockTable.hpp"
 
-#include <array>
 #include <cmath>
 #include <vector>
 
@@ -90,23 +89,31 @@ void generateGrassSide(std::vector<u8>& out, u32 layer, u32 dirtArgb, u32 grassA
 } // namespace
 
 BlockTextures::BlockTextures() {
-    const BlockRegistry& registry = BlockRegistry::instance();
-
-    const u32 dirtArgb = registry[kDirtBlock].debugColor;
-    const u32 grassArgb = registry[kGrassBlock].debugColor;
-
     std::vector<u8> pixels(static_cast<usize>(kSize) * kSize * kTextureLayerCount * 4, 0);
 
-    generateGrain(pixels, static_cast<u32>(TextureLayer::Stone),
-                  registry[kStoneBlock].debugColor, 20.0f, 1u);
-    generateGrain(pixels, static_cast<u32>(TextureLayer::Dirt), dirtArgb, 18.0f, 2u);
-    generateGrain(pixels, static_cast<u32>(TextureLayer::GrassTop), grassArgb, 16.0f, 3u);
-    generateGrassSide(pixels, static_cast<u32>(TextureLayer::GrassSide), dirtArgb, grassArgb);
-    generateGrain(pixels, static_cast<u32>(TextureLayer::Sand),
-                  registry[kSandBlock].debugColor, 10.0f, 5u);
+    // One pass over the layer table, in table order -- an entry's position in
+    // kLayers is its array layer, so nothing here assigns an index. Adding a layer
+    // is an entry in that table and no edit at all in this file, which is the
+    // fourth place a new block type used to have to be written down.
+    //
+    // The switch is deliberately unguarded by a default: a new TextureRecipe then
+    // fails to compile here rather than silently generating a blank layer.
+    for (usize i = 0; i < kLayers.size(); ++i) {
+        const LayerInfo& layer = kLayers[i];
+        const auto index = static_cast<u32>(i);
 
-    // The debugColor values are sRGB-encoded, which is what an authored PNG
-    // would be too, so the texture must declare itself as such.
+        switch (layer.recipe) {
+        case TextureRecipe::Grain:
+            generateGrain(pixels, index, layer.argb, layer.roughness, layer.seed);
+            break;
+        case TextureRecipe::GrassSide:
+            generateGrassSide(pixels, index, layer.argb, layer.argbSecondary);
+            break;
+        }
+    }
+
+    // The colours are sRGB-encoded, which is what an authored PNG would be too, so
+    // the texture must declare itself as such.
     m_texture = rhi::TextureArray::create(kSize, kTextureLayerCount, pixels,
                                           rhi::ColorSpace::Srgb8A8);
 
