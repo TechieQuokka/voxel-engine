@@ -83,6 +83,7 @@ void writePpm(const std::filesystem::path& path,
 
 Engine::Engine(Options options) : m_options(std::move(options)) {
     m_thirdPerson = m_options.thirdPerson;
+    m_flying = m_options.flying;
     m_window = std::make_unique<Window>(Window::Config{
         .width = 1280,
         .height = 720,
@@ -138,13 +139,18 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
     // origin, 91 a few hundred blocks away -- so a fixed camera height starts the
     // engine underground, and what that looks like on screen is not obviously a
     // spawn bug.
-    constexpr f32 kEyeHeightAboveGround = 12.0f;
     const i32 groundY = m_generator->surfaceHeight(0, 0);
-    m_camera.setPosition({0.0f, static_cast<f32>(groundY) + kEyeHeightAboveGround, 0.0f});
+    // Feet on the block above the surface, eye at head height -- so the first frame
+    // is what standing there looks like, not what hovering above it does.
+    m_camera.setPosition({0.5f,
+                          static_cast<f32>(groundY + 1) + CharacterRenderer::kEyeHeight,
+                          0.5f});
     m_camera.setOrientation(0.6f, -0.18f);
+    m_onGround = true;
     updateProjection();
 
-    logInfo("Spawn: ground at y={}, camera at y={:.0f}", groundY, m_camera.position().y);
+    logInfo("Spawn: ground at y={}, standing with eye at y={:.2f}", groundY,
+            m_camera.position().y);
 
     // The outermost loaded ring is never meshed -- neighboursReady() refuses it --
     // so the darkening has to bottom out before it, or the world would visibly end.
@@ -660,19 +666,18 @@ void Engine::updateCamera(f64 deltaTime) {
                         static_cast<f32>(-m_input->mouseDeltaY()) * kMouseSensitivity);
     }
 
+    if (m_input->wasPressed(Key::F)) {
+        m_flying = !m_flying;
+        m_verticalVelocity = 0.0f;
+        logInfo("Movement: {}", m_flying ? "flying" : "walking");
+    }
+
     const vec3 startPosition = m_camera.position();
 
-    vec3 delta{0.0f};
-    if (m_input->isDown(Key::W)) { delta += m_camera.forward(); }
-    if (m_input->isDown(Key::S)) { delta -= m_camera.forward(); }
-    if (m_input->isDown(Key::D)) { delta += m_camera.right(); }
-    if (m_input->isDown(Key::A)) { delta -= m_camera.right(); }
-    if (m_input->isDown(Key::Space)) { delta += Camera::up(); }
-    if (m_input->isDown(Key::LeftShift)) { delta -= Camera::up(); }
-
-    if (math::dot(delta, delta) > 0.0f) {
-        const f32 speed = m_input->isDown(Key::LeftControl) ? m_moveSpeed * 4.0f : m_moveSpeed;
-        m_camera.move(math::normalize(delta) * speed * dt);
+    if (m_flying) {
+        updateFly(dt);
+    } else {
+        updateWalk(dt);
     }
 
     // Drive the walk cycle from how far the player actually went, so the limbs are
@@ -687,6 +692,100 @@ void Engine::updateCamera(f64 deltaTime) {
 
     const f32 target = distance > 1e-4f ? 1.0f : 0.0f;
     m_walkAmount += (target - m_walkAmount) * std::min(1.0f, dt * 12.0f);
+}
+
+std::optional<f32> Engine::groundBelow(f32 x, f32 z, f32 fromY) const {
+    const auto blockX = static_cast<i32>(std::floor(x));
+    const auto blockZ = static_cast<i32>(std::floor(z));
+
+    const i32 start = std::min(kWorldMaxY - 1, static_cast<i32>(std::floor(fromY)));
+    const i32 stop = std::max(kWorldMinY, start - kGroundSearchDepth);
+
+    for (i32 y = start; y >= stop; --y) {
+        if (m_world->blockAt(BlockPos{blockX, y, blockZ}) != kAirBlock) {
+            return static_cast<f32>(y + 1); // Stand on top of it.
+        }
+    }
+    return std::nullopt;
+}
+
+void Engine::updateWalk(f32 dt) {
+    vec3 feet = m_camera.position() - Camera::up() * CharacterRenderer::kEyeHeight;
+
+    // Input is flattened onto the ground plane. This is the whole difference
+    // between walking and flying: looking up must not lift you off the floor.
+    vec3 forward = m_camera.forward();
+    vec3 right = m_camera.right();
+    forward.y = 0.0f;
+    right.y = 0.0f;
+    if (math::dot(forward, forward) > 1e-6f) { forward = math::normalize(forward); }
+    if (math::dot(right, right) > 1e-6f) { right = math::normalize(right); }
+
+    vec3 wish{0.0f};
+    if (m_input->isDown(Key::W)) { wish += forward; }
+    if (m_input->isDown(Key::S)) { wish -= forward; }
+    if (m_input->isDown(Key::D)) { wish += right; }
+    if (m_input->isDown(Key::A)) { wish -= right; }
+
+    if (math::dot(wish, wish) > 0.0f) {
+        const f32 speed = m_input->isDown(Key::LeftControl)  ? kSprintSpeed
+                          : m_input->isDown(Key::LeftShift) ? kSneakSpeed
+                                                            : kWalkSpeed;
+        const vec3 target = feet + math::normalize(wish) * speed * dt;
+
+        // Accepted or refused whole, by asking how high the ground is where the
+        // step would land. Anything within a step is walked up; anything taller is
+        // a wall. No swept volume, so a corner can be cut -- worth knowing before
+        // trusting this for anything but looking around.
+        const auto ground = groundBelow(target.x, target.z, feet.y + kStepHeight);
+        if (ground.has_value() && *ground - feet.y <= kStepHeight) {
+            feet.x = target.x;
+            feet.z = target.z;
+            if (m_onGround && *ground > feet.y) {
+                feet.y = *ground; // Step up onto it rather than bumping into it.
+            }
+        }
+    }
+
+    if (m_onGround && m_input->isDown(Key::Space)) {
+        m_verticalVelocity = kJumpVelocity;
+        m_onGround = false;
+    }
+
+    m_verticalVelocity = std::max(m_verticalVelocity - kGravity * dt, -kTerminalVelocity);
+    feet.y += m_verticalVelocity * dt;
+
+    const auto ground = groundBelow(feet.x, feet.z, feet.y + 0.01f);
+    if (!ground.has_value()) {
+        // Nothing under us -- almost always a column that has not streamed in yet.
+        // Hold height rather than falling through the world while it arrives, which
+        // is the same call followGround makes in the benchmark.
+        feet.y -= m_verticalVelocity * dt;
+        m_verticalVelocity = 0.0f;
+    } else if (feet.y <= *ground) {
+        feet.y = *ground;
+        m_verticalVelocity = 0.0f;
+        m_onGround = true;
+    } else {
+        m_onGround = false;
+    }
+
+    m_camera.setPosition(feet + Camera::up() * CharacterRenderer::kEyeHeight);
+}
+
+void Engine::updateFly(f32 dt) {
+    vec3 delta{0.0f};
+    if (m_input->isDown(Key::W)) { delta += m_camera.forward(); }
+    if (m_input->isDown(Key::S)) { delta -= m_camera.forward(); }
+    if (m_input->isDown(Key::D)) { delta += m_camera.right(); }
+    if (m_input->isDown(Key::A)) { delta -= m_camera.right(); }
+    if (m_input->isDown(Key::Space)) { delta += Camera::up(); }
+    if (m_input->isDown(Key::LeftShift)) { delta -= Camera::up(); }
+
+    if (math::dot(delta, delta) > 0.0f) {
+        const f32 speed = m_input->isDown(Key::LeftControl) ? m_moveSpeed * 4.0f : m_moveSpeed;
+        m_camera.move(math::normalize(delta) * speed * dt);
+    }
 }
 
 void Engine::captureAndExit() {

@@ -37,8 +37,10 @@ int main(int argc, char** argv) {
             probeOptions.columns = std::atoi(args[++i]);
         } else if (arg == "--capture" && i + 1 < args.size()) {
             options.capturePath = args[++i];
-        } else if (arg == "--third-person") {
-            options.thirdPerson = true;
+        } else if (arg == "--first-person") {
+            options.thirdPerson = false;
+        } else if (arg == "--fly") {
+            options.flying = true;
         } else if (arg == "--mesh-benchmark") {
             options.meshBenchmark = true;
         } else if (arg == "--warm-up") {
@@ -56,7 +58,7 @@ int main(int argc, char** argv) {
             mc::logError("Unknown argument: {}", arg);
             mc::logError("Usage: minecraft [--capture <path.ppm>] [--mesh-benchmark]"
                          " [--render-distance N] [--warm-up] [--bench-seconds S]"
-                         " [--probe [--probe-columns N]] [--third-person]");
+                         " [--probe [--probe-columns N]] [--first-person] [--fly]");
             return EXIT_FAILURE;
         }
     }

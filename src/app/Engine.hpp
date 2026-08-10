@@ -45,10 +45,13 @@ public:
         /// Square radius in chunk columns. Phase 3's exit criterion is 16.
         i32 renderDistance = 16;
 
-        /// Start in third person, so the character is visible. F5 toggles it at
-        /// runtime; this exists so `--capture` can show the model, which it
-        /// otherwise never could -- a single frame has nobody to press F5.
-        bool thirdPerson = false;
+        /// Third person by default, so the character is visible without pressing
+        /// anything. F5 toggles it at runtime.
+        bool thirdPerson = true;
+
+        /// Start in fly mode rather than walking. Walking cannot reach a cave, so
+        /// anything inspecting the underground wants this.
+        bool flying = false;
 
         /// Streams the whole region in before the first frame and logs how long it
         /// took, instead of filling in over several seconds. For measurement.
@@ -91,6 +94,17 @@ private:
     /// startup and on every resize, so the two cannot drift apart.
     void updateProjection();
     void updateCamera(f64 deltaTime);
+
+    /// Walking: horizontal input only, gravity, and a step the player can climb.
+    void updateWalk(f32 dt);
+    /// Free flight: the original debug camera, kept because walking cannot get
+    /// underground and the caves are the most interesting thing down there.
+    void updateFly(f32 dt);
+
+    /// Height a player standing at (x, z) would have their feet at, taking the
+    /// highest solid block at or below `fromY`. Empty when the column has not
+    /// streamed in yet, or there is nothing solid within reach.
+    std::optional<f32> groundBelow(f32 x, f32 z, f32 fromY) const;
 
     /// Points `m_renderCamera` at wherever the frame should be seen from: the
     /// player's eye in first person, a few blocks behind it in third.
@@ -181,7 +195,33 @@ private:
     std::unique_ptr<Generator> m_generator;
 
     Camera m_camera;
+    /// Fly mode only. Walking speeds are fixed constants -- a player does not have
+    /// a speed slider, and one that varies stops reading as walking.
     f32 m_moveSpeed = 24.0f;
+
+    // Walking. Deliberately a very small amount of physics: gravity, a ground
+    // height, and a maximum step. There is no collision volume and no horizontal
+    // sweep -- a move is accepted or refused whole, by comparing the ground height
+    // at the destination with the ground height here. That is enough to walk over
+    // terrain and be stopped by a cliff, and it is not enough to stand on the side
+    // of an overhang, which is a thing this engine cannot currently do.
+    bool m_flying = false;
+    bool m_onGround = false;
+    f32 m_verticalVelocity = 0.0f;
+
+    /// Minecraft's own: 4.317 walking, 5.612 sprinting, and a jump that clears one
+    /// block. Reproduced rather than picked, because "feels like walking" is
+    /// mostly this number being right.
+    static constexpr f32 kWalkSpeed = 4.317f;
+    static constexpr f32 kSprintSpeed = 5.612f;
+    static constexpr f32 kSneakSpeed = 1.3f;
+    static constexpr f32 kGravity = 28.0f;
+    static constexpr f32 kJumpVelocity = 8.5f;
+    static constexpr f32 kTerminalVelocity = 60.0f;
+    /// One block plus a little, so terraced terrain is walked rather than jumped.
+    static constexpr f32 kStepHeight = 1.05f;
+    /// How far down to look for something to stand on before giving up.
+    static constexpr i32 kGroundSearchDepth = 96;
 
     /// The camera the frame is actually drawn from.
     ///

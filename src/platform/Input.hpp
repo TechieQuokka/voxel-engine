@@ -13,7 +13,7 @@ enum class Key : u32 {
     W, A, S, D,
     Space, LeftShift, LeftControl,
     Escape,
-    F1, F3, F5,
+    F, F1, F3, F5,
     Count,
 };
 
