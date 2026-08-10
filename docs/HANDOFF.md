@@ -16,20 +16,18 @@ practical details needed to pick the work back up cold.
 Measurements are in DESIGN.md 7.5 (Phase 3), 7.6 (Phase 4) and 7.7 (the benchmark);
 vanilla's numbers, and which of them could not be confirmed, are in RESEARCH.md.
 
-**Start here when resuming:** the next piece is lighting, ahead of 4d. Caves exist and
-there is no light propagation, so underground is uniformly lit — which is the most
-visible thing wrong with the engine today, and more so now that there is ore down there
-to look at.
+**Start here when resuming: 4d — biomes.** Lighting is done; the remaining Phase 4
+step is biome selection, and it has an unresolved input recorded in section 6 that
+wants settling before any code.
 
-**Do the Quad bit re-layout as part of it.** The two are entangled and the order matters:
+The two open items most worth doing before 4d, in either order:
 
-- As it stands only bits 57–63 are free, which buys **one flat 4-bit level per quad**.
-  Smooth per-corner light needs 4x4 = 16 bits and does not fit.
-- `material` is 16 bits for what is now 26 texture layers. Narrowing it to 8 frees
-  49–56, and AO plus light can then fold into a single per-corner brightness at 33–48 —
-  smooth lighting, quad still 64 bits, 7 bits still spare.
-- The cost of that fold is losing `setAoStrength()` as a runtime toggle, since AO stops
-  being a separable field.
+- **Light does not cross column borders.** A cave lit through an opening one column
+  over stays dark, and the boundary is a straight vertical edge. Fixing it needs a
+  light-changed signal threaded into the same dirty-mask and pin machinery meshing
+  uses, so it is a phase rather than a patch. Section 6 has the shape of it.
+- **The `ChunkRenderer` buffer hazard in section 8**, which Phase 5 will otherwise
+  inherit.
 
 | Commit | Contents |
 |---|---|
@@ -51,6 +49,8 @@ to look at.
 | `e6c0a3a` | Bedrock and deepslate, and `--probe` to check underground work with |
 | `b4faa6e` | Phase 4c — stone variants, gravel and seven ores on one blob feature |
 | `dd1438c` | A character, on a second render path (outside the documented scope) |
+| `79c4723` | Bring the handoff up to date with 4c, the probe and the character |
+| `742a0c6` | Sky light, and the Quad bit re-layout that made smooth lighting fit |
 
 Working tree is clean. **Published publicly** at the `origin` remote as of
 2026-08-10; the earlier local-only rule was lifted by the user at that point.
@@ -59,8 +59,9 @@ What runs today: **FastNoise2 terrain with caves and ores** — continents, eros
 ridged peaks and valleys, a 3D warp for overhangs, cheese caverns on the density grid,
 spaghetti and noodle tunnels carved per block, a surface pass that grasses the top of
 the terrain (and only the terrain — not cave ceilings), a bedrock floor, a deepslate
-band that fades in from Y 8 to Y 0, and blob features placing granite, diorite,
-andesite, tuff, gravel and seven ores. **26 block types**, up from five. It streams
+band that fades in from Y 8 to Y 0, blob features placing granite, diorite, andesite,
+tuff, gravel and seven ores, and **sky light**, so caves are actually dark.
+**26 block types**, up from five. It streams
 infinitely and draws the whole visible set with **one** `glMultiDrawArrays`. Generation
 and meshing run on a 6-worker pool, uploads on their own thread, and the main thread
 only ever submits.
@@ -68,20 +69,24 @@ only ever submits.
 A character is drawn at the player position on a second render path; `F5` toggles third
 person. It is outside the documented scope — see section 6.
 
-| Distance 16 | No caves | Caves | Caves + ores |
-|---|---|---|---|
-| Frame p99 | 0.85 ms | 6.00 ms | **5.93 ms** |
-| Quads drawn | 260 k | 4.1 M | **4.15 M** |
-| Arena used | 8 MiB | 112 MiB | **112 MiB** |
-| Warm-up, 1,089 columns | — | 2.29 s | **2.99 s** |
-| Sections with an empty mesh | 2,509 of 4,967 | **0** | **0** |
+| Distance 16 | No caves | Caves | + ores | + sky light |
+|---|---|---|---|---|
+| Frame p99 | 0.85 ms | 6.00 ms | 5.93 ms | **5.91 ms** |
+| Quads drawn | 260 k | 4.1 M | 4.15 M | **4.18 M** |
+| Arena used | 8 MiB | 112 MiB | 112 MiB | **113 MiB** |
+| Warm-up, 1,089 columns | — | 2.29 s | 2.99 s | **3.58 s** |
+| Sections with an empty mesh | 2,509 of 4,967 | **0** | **0** | **0** |
 
-**Quote the last column** — caves and ores are both on by default, so 5.93 ms is what the
-engine does today. Ores cost essentially nothing to draw (+0.6 % quads, where an ore
-block breaks a merge against the rock around it); the 0.7 s of warm-up is the 3x3
-feature replay described in section 6. Distance 24 has not been measured since caves
-landed and would be close to the budget. The earlier columns are kept only because the
-gap between them is the argument for Phase 8.
+**Quote the last column** — everything in it is on by default, so 5.91 ms is what the
+engine does today. Neither ores nor light cost anything measurable to *draw*: ores add
+0.6 % quads and light 0.7 %, both because they fragment a merge only where they change.
+Both cost generation time instead — the 3x3 feature replay and the light flood fill.
+Distance 24 has not been measured since caves landed and would be close to the budget.
+The earlier columns are kept only because the gap between them is the argument for
+Phase 8.
+
+Sky light costs **24 KiB per column**, about 26 MiB at distance 16, because 87.5 % of
+sections are uniform and allocate nothing. The naive figure was over 400 MiB.
 
 The last interactive verification — 31 seconds of flying at vsync-locked 60 FPS with no
 dropped frames and no GL messages — was taken **before** caves landed, and is now three
@@ -102,7 +107,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (142 cases, doctest)
+# Test  (151 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
@@ -190,17 +195,18 @@ src/platform/           GLFW lives here and nowhere else
 src/rhi/                GL abstraction; no GL type in any header
   Device, Buffer, Shader, Texture, VertexArray
 src/world/              pure data; knows nothing about rendering
-  Coords (+ Face enum, ChunkPosHash), Palette, Section,
+  Coords (+ Face enum, ChunkPosHash), Palette, LightArray, Section,
   Chunk (12-section column), Neighbourhood (3x3x3 view), World (chunk map)
   BlockTable   — **every block type and texture layer; edit this to add a block**
   BlockRegistry— lookup over that table, and nothing else
+  SkyLight     — the daylight flood fill, per column
 src/worldgen/           knows world, nothing above it; FastNoise2 is PRIVATE
   DensityField — the 4x8x4 interpolation grid (no FastNoise2, so it is testable)
   DensityGraph — the noise router; the only file that includes FastNoise2
-  Generator    — the pipeline: noise, carvers, surface, features (order matters)
+  Generator    — the pipeline: noise, carvers, surface, features, light (order matters)
   FeatureTable — the blob features: stone variants, gravel, ores
   Features     — the placer; seamless across columns by replaying the 3x3
-  TerrainProbe — --probe; counts what generation produced
+  TerrainProbe — --probe; counts what generation produced, block and light
 src/mesh/               both meshers take a SectionNeighbourhood
   Quad (64-bit packed), ChunkMesh, CulledMesher, BinaryGreedyMesher
 src/render/
@@ -295,6 +301,17 @@ Learned the hard way; all of them cost real time.
   rock. The counts in `FeatureTable.hpp` are calibrated against measured density and
   carry their scaling factor. Coal, iron and copper needed no correction, which is what
   says the x4 column scaling itself is right.
+- **A flood fill seeded everywhere is not a flood fill, it is a scan.** The first sky
+  light pass pushed every daylit cell into the queue -- a quarter of a million per
+  column, nearly all of them surrounded by cells already at full brightness with
+  nothing to give. Seeding only the cells in the step between a column's terrain height
+  and a taller neighbour's is exactly equivalent and is the difference between
+  affordable and not.
+- **Light has to be part of the mesher's merge key.** Merging across a light boundary
+  stretches one corner's brightness over both faces and draws a hard edge of the wrong
+  shade across a cave wall — much more visible than the merge that was lost. The key is
+  a mask rather than a shift now, because the optional field (AO) is no longer the
+  lowest one.
 - **A block type is one line in `world/BlockTable.hpp` and must stay that way.** It used
   to be four edits across three files, two of them index correspondences kept by hand,
   and getting one wrong compiled and ran and put the wrong texture on a block. If you
@@ -341,17 +358,28 @@ pipeline was researched first, and two findings shaped the plan: the interpolati
 (see the correction to DESIGN.md 4.1) and the fact that generation is an *ordered*
 pipeline — `biomes → noise → surface → carvers → features → light`.
 
-**Next: lighting**, ahead of 4d. Caves exist and light propagation does not, so
-underground is uniformly lit, which is the most visible thing wrong with the engine.
-Two channels, sky and block, 0–15, `max(sky, block)` at render time.
+**Lighting is done, and it landed better than this section predicted.** The prediction
+was that AO and light would have to fold into one per-corner brightness, costing
+`setAoStrength()`. Moving `material` to the top of the word instead — seven bits, for a
+table of 26 layers — freed 41..56 for four 4-bit corners of light with AO untouched at
+33..40. Smooth lighting, quad still 64 bits, AO still separable, no bits wasted.
 
-The bit budget is the first decision and section 1 has it: 7 free bits buy one flat
-level per quad, and smooth per-corner light needs `material` narrowed from 16 bits to 8
-first. **The storage question is the second, and it is not small.** Two 4-bit channels
-over a 32³ section is 32 KiB, which is 384 KiB per column and over 400 MiB at distance
-16 — more than the voxels themselves. It needs the same uniform-collapse trick `Palette`
-uses, and most sections do qualify: everything above ground is sky 15 throughout and
-everything deep is 0. Settle that before writing a propagation loop.
+Storage was the question that mattered and `LightArray` answers it the way `Palette`
+does: 87.5 % of sections are uniform and allocate nothing, so a channel that would cost
+over 400 MiB at distance 16 costs 26.
+
+**Sky only.** Block light is the same propagation over a second array, but nothing in
+the world emits light — no torches, and lava is not a block type — so it would be a
+uniformly zero array everywhere.
+
+**The seam is the thing to fix next.** Propagation is column-local, so a cave lit
+through an opening one column over stays dark, with a straight vertical boundary. The
+vertical fill is exact and depends on nothing but the column's own heightmap, so open
+sky and the surface are unaffected; the error is confined to cave interiors within
+about fifteen blocks of a border. Fixing it means propagating between columns once
+neighbours are loaded, and then re-meshing what changed — which is a light-changed
+signal into the same dirty-mask and pin machinery meshing already uses. Getting that
+wrong corrupts meshes rather than merely dimming them, so it is a phase of its own.
 
 **What 4b actually cost**, now measured rather than predicted — every number here was a
 guess in the previous version of this section:
