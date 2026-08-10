@@ -82,6 +82,7 @@ void writePpm(const std::filesystem::path& path,
 } // namespace
 
 Engine::Engine(Options options) : m_options(std::move(options)) {
+    m_thirdPerson = m_options.thirdPerson;
     m_window = std::make_unique<Window>(Window::Config{
         .width = 1280,
         .height = 720,
@@ -97,6 +98,7 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
 
     m_input = std::make_unique<Input>(*m_window);
     m_chunkRenderer.emplace();
+    m_character.emplace();
     m_meshStore.emplace(meshArenaBytesFor(m_options.renderDistance));
 
     m_world = std::make_unique<World>(m_options.renderDistance);
@@ -599,7 +601,7 @@ bool Engine::neighboursReady(ChunkPos pos) const {
 void Engine::buildVisibleSet() {
     MC_PROFILE_SCOPE_N("Engine::buildVisibleSet");
 
-    const Frustum frustum(m_camera.viewProjectionMatrix());
+    const Frustum frustum(m_renderCamera.viewProjectionMatrix());
 
     m_chunkRenderer->beginFrame();
     ChunkRenderer::Stats& stats = m_chunkRenderer->stats();
@@ -648,10 +650,17 @@ void Engine::updateCamera(f64 deltaTime) {
         }
     }
 
+    if (m_input->wasPressed(Key::F5)) {
+        m_thirdPerson = !m_thirdPerson;
+        logInfo("Camera: {} person", m_thirdPerson ? "third" : "first");
+    }
+
     if (m_input->cursorCaptured()) {
         m_camera.rotate(static_cast<f32>(m_input->mouseDeltaX()) * kMouseSensitivity,
                         static_cast<f32>(-m_input->mouseDeltaY()) * kMouseSensitivity);
     }
+
+    const vec3 startPosition = m_camera.position();
 
     vec3 delta{0.0f};
     if (m_input->isDown(Key::W)) { delta += m_camera.forward(); }
@@ -665,6 +674,19 @@ void Engine::updateCamera(f64 deltaTime) {
         const f32 speed = m_input->isDown(Key::LeftControl) ? m_moveSpeed * 4.0f : m_moveSpeed;
         m_camera.move(math::normalize(delta) * speed * dt);
     }
+
+    // Drive the walk cycle from how far the player actually went, so the limbs are
+    // in step with the ground rather than with the clock -- which also means they
+    // stop dead when the player does.
+    vec3 travelled = m_camera.position() - startPosition;
+    travelled.y = 0.0f;
+    const f32 distance = math::length(travelled);
+
+    constexpr f32 kRadiansPerBlock = 2.4f;
+    m_walkPhase += distance * kRadiansPerBlock;
+
+    const f32 target = distance > 1e-4f ? 1.0f : 0.0f;
+    m_walkAmount += (target - m_walkAmount) * std::min(1.0f, dt * 12.0f);
 }
 
 void Engine::captureAndExit() {
@@ -899,11 +921,38 @@ void Engine::run() {
 void Engine::renderFrame() {
     MC_PROFILE_SCOPE_N("renderFrame");
 
+    updateRenderCamera();
+
     const vec3& sky = skyColorLinear();
     m_device->clear(sky.x, sky.y, sky.z, 1.0f);
 
     buildVisibleSet();
-    m_chunkRenderer->draw(*m_device, m_camera, *m_meshStore);
+    m_chunkRenderer->draw(*m_device, m_renderCamera, *m_meshStore);
+
+    // After the terrain, so the character is depth-tested against a filled buffer
+    // rather than against nothing. Only in third person: in first person the model
+    // is around the eye and would fill the screen with the inside of a head.
+    if (m_thirdPerson) {
+        const vec3 feet = m_camera.position() - Camera::up() * CharacterRenderer::kEyeHeight;
+        m_character->draw(*m_device, m_renderCamera, feet, m_camera.forward(),
+                          m_walkPhase, m_walkAmount);
+    }
+}
+
+void Engine::updateRenderCamera() {
+    m_renderCamera = m_camera;
+    if (!m_thirdPerson) {
+        return;
+    }
+
+    // Straight back along the view direction, with no collision test against the
+    // terrain -- so the view can end up inside a hill. Pulling the camera in on a
+    // ray cast is what Minecraft does and what this wants next; it needs a voxel
+    // raycast the engine does not have yet, and guessing one here would be a worse
+    // answer than a documented limitation.
+    constexpr f32 kThirdPersonDistance = 4.0f;
+    m_renderCamera.setPosition(m_camera.position()
+                               - m_camera.forward() * kThirdPersonDistance);
 }
 
 } // namespace mc

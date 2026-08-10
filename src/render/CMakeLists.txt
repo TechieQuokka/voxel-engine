@@ -1,6 +1,7 @@
 add_library(mc_render STATIC
   BlockTextures.cpp
   Camera.cpp
+  CharacterRenderer.cpp
   ChunkRenderer.cpp
   Frustum.cpp
   SectionMeshStore.cpp

@@ -7,6 +7,7 @@
 #include "platform/Input.hpp"
 #include "platform/Window.hpp"
 #include "render/Camera.hpp"
+#include "render/CharacterRenderer.hpp"
 #include "render/ChunkRenderer.hpp"
 #include "render/SectionMeshStore.hpp"
 #include "rhi/Device.hpp"
@@ -43,6 +44,11 @@ public:
 
         /// Square radius in chunk columns. Phase 3's exit criterion is 16.
         i32 renderDistance = 16;
+
+        /// Start in third person, so the character is visible. F5 toggles it at
+        /// runtime; this exists so `--capture` can show the model, which it
+        /// otherwise never could -- a single frame has nobody to press F5.
+        bool thirdPerson = false;
 
         /// Streams the whole region in before the first frame and logs how long it
         /// took, instead of filling in over several seconds. For measurement.
@@ -85,6 +91,10 @@ private:
     /// startup and on every resize, so the two cannot drift apart.
     void updateProjection();
     void updateCamera(f64 deltaTime);
+
+    /// Points `m_renderCamera` at wherever the frame should be seen from: the
+    /// player's eye in first person, a few blocks behind it in third.
+    void updateRenderCamera();
 
     ChunkPos cameraColumn() const;
 
@@ -165,12 +175,28 @@ private:
     // chance to create the device and load the GL entry points.
     std::optional<ChunkRenderer> m_chunkRenderer;
     std::optional<SectionMeshStore> m_meshStore;
+    std::optional<CharacterRenderer> m_character;
 
     std::unique_ptr<World> m_world;
     std::unique_ptr<Generator> m_generator;
 
     Camera m_camera;
     f32 m_moveSpeed = 24.0f;
+
+    /// The camera the frame is actually drawn from.
+    ///
+    /// Equal to `m_camera` in first person. In third person it is pulled back along
+    /// the view direction, and only this one moves -- `m_camera` stays the player's
+    /// eye, because that is what streaming centres on and what the character is
+    /// drawn from. Two cameras rather than one moving camera, so "where the player
+    /// is" and "where the frame is seen from" cannot drift apart.
+    Camera m_renderCamera;
+
+    bool m_thirdPerson = false;
+    /// Advances with distance travelled, not with time, so the limbs stop when the
+    /// player does rather than marching on the spot.
+    f32 m_walkPhase = 0.0f;
+    f32 m_walkAmount = 0.0f;
 
     /// Frame counter, and the clock the mesh store's deferred reuse runs on.
     u64 m_frame = 0;
