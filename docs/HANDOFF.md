@@ -11,8 +11,13 @@ pick the work back up cold.
 
 ## 1. Where things stand
 
-**Phases 0 through 3 are complete. Phase 4 is in progress — 4a done, 4b next.**
-Measurements are in DESIGN.md 7.5 (Phase 3) and 7.6 (Phase 4).
+**Phases 0 through 3 are complete. Phase 4 is in progress — 4a and 4b done.**
+Measurements are in DESIGN.md 7.5 (Phase 3), 7.6 (Phase 4) and 7.7 (the benchmark).
+
+**Start here when resuming:** the next piece is lighting, ahead of 4c and 4d. Caves
+exist now and there is no light propagation, so underground is uniformly lit — which is
+the most visible thing wrong with the engine today. `Quad` bits 57–63 are free and AO
+already sits at 33–40, so a 4-bit light level fits beside it without widening the quad.
 
 | Commit | Contents |
 |---|---|
@@ -26,6 +31,9 @@ Measurements are in DESIGN.md 7.5 (Phase 3) and 7.6 (Phase 4).
 | `17bfb20` | Phase 3d/3e — one draw call for the visible set, five-plane frustum |
 | `8e60532` | Phase 3f — streaming onto the worker pool; Phase 3 complete |
 | `5df5ca6` | Record the Phase 3f commit in the handoff table |
+| `111bf53` | Phase 4a — FastNoise2 terrain on a 4x8x4 interpolation grid |
+| `d669f31` | Fix the benchmark, which was measuring the wrong thing twice (DESIGN.md 7.7) |
+| `c63810e` | Phase 4b — noise caves; README and MIT licence; published publicly |
 
 Working tree is clean. **Published publicly** at the `origin` remote as of
 2026-08-10; the earlier local-only rule was lifted by the user at that point.
