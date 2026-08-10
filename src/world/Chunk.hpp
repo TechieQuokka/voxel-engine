@@ -72,6 +72,24 @@ public:
     /// when a neighbour appears and the boundary faces have to be reconsidered.
     void markAllDirty();
 
+    /// Keeps the column alive while something outside holds pointers into it.
+    ///
+    /// A meshing job borrows `const Section*` from up to nine columns -- its own and
+    /// its eight horizontal neighbours -- and holds them across frames. If the camera
+    /// moves far enough in the meantime, the World would unload one of those columns
+    /// and the job would read freed memory. A pin says "not yet".
+    ///
+    /// A counter rather than a flag, because one column is a neighbour of nine
+    /// sections and can therefore be pinned by nine jobs at once. The state enum
+    /// covers the other direction: a column being *written* is Generating.
+    void pin() noexcept { m_pins.fetch_add(1, std::memory_order_acquire); }
+    void unpin() noexcept {
+        const u32 previous = m_pins.fetch_sub(1, std::memory_order_release);
+        MC_ASSERT_MSG(previous > 0, "unpinned a column that was not pinned");
+        (void)previous;
+    }
+    bool pinned() const noexcept { return m_pins.load(std::memory_order_acquire) != 0; }
+
     usize memoryUsage() const;
 
 private:
@@ -82,6 +100,7 @@ private:
     std::array<Section, kSectionCount> m_sections;
     std::atomic<ChunkState> m_state{ChunkState::Empty};
     std::atomic<u16> m_dirty{0};
+    std::atomic<u32> m_pins{0};
 };
 
 static_assert(Chunk::kSectionCount <= 16, "the dirty mask is 16 bits wide");

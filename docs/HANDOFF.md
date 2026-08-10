@@ -11,7 +11,7 @@ pick the work back up cold.
 
 ## 1. Where things stand
 
-**Phases 0, 1 and 2 are complete. Phase 3 is in progress — 3a, 3b and 3c done, 3d
+**Phases 0, 1 and 2 are complete. Phase 3 is in progress — 3a through 3e done, 3f
 next.** The sub-step table and the measurements are in DESIGN.md 7.5.
 
 | Commit | Contents |
@@ -22,14 +22,16 @@ next.** The sub-step table and the measurements are in DESIGN.md 7.5.
 | `9945f21` | Cleanup pass before Phase 3 (DESIGN.md 7.4) |
 | `0d73b2b` | Phase 3a — lock-free MPMC queue and worker pool |
 | `1c84b5e` | Phase 3b — chunk columns, world streaming, placeholder generator |
+| `7c29082` | Phase 3c — neighbour-aware boundary culling and AO |
 
 Working tree is clean. **The repository is local only — never push, never create
 a remote.**
 
-What runs today: still the Phase 2 scene on screen — one 32³ section, greedy
-meshed, textured, 60 FPS with a free-flying camera. The Phase 3 machinery
-(job pool, chunk streaming, neighbour-aware meshing) is built and tested but is
-**not wired into the Engine yet**; that happens in 3d and 3f.
+What runs today: streaming terrain at render distance 16, drawn with **one**
+`glMultiDrawArrays` per frame and hierarchical frustum culling. Median frame time is
+0.35 ms — but p99 is 29.7 ms, because generation and meshing still run on the main
+thread. 3f moves them onto the worker pool, which is the whole remaining gap to the
+exit criterion. See DESIGN.md 7.5.
 
 ---
 
@@ -44,7 +46,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (111 cases, doctest)
+# Test  (132 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue or JobSystem.
@@ -54,9 +56,13 @@ setarch $(uname -m) -R ./build/tsan/tests/mc_tests   # see the ASLR note below
 # Run
 ./build/debug/src/app/minecraft
 
-# Render one frame headlessly and exit
+# Render one frame headlessly and exit (warms the whole region up first)
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
 convert /tmp/shot.ppm /tmp/shot.png     # ImageMagick is installed
+
+# Frame-time distribution: vsync off, no cursor capture, camera flies forward.
+# The only way to measure the exit criterion -- vsync makes every frame read 16.7 ms.
+./build/release/src/app/minecraft --render-distance 16 --bench-frames 900
 
 # Re-run the mesher comparison (off by default; it meshes a few hundred times)
 ./build/release/src/app/minecraft --mesh-benchmark
@@ -102,7 +108,7 @@ cmake/CompilerWarnings.cmake
 
 src/core/               no dependencies
   Types, Math (only file including glm), Result<T,E>, BitPack,
-  Log, Assert, Profile (Tracy macros), Paths,
+  Log, Assert, Profile (Tracy macros), Paths, RangeAllocator,
   MpmcQueue (Vyukov bounded lock-free), JobSystem (worker pool)
 src/platform/           GLFW lives here and nowhere else
   Window, Input, Clock
@@ -116,7 +122,8 @@ src/worldgen/           knows world, nothing above it
 src/mesh/               both meshers take a SectionNeighbourhood
   Quad (64-bit packed), ChunkMesh, CulledMesher, BinaryGreedyMesher
 src/render/
-  Camera, ChunkRenderer, BlockTextures
+  Camera, Frustum (5 planes -- no far plane), BlockTextures,
+  SectionMeshStore (one persistently mapped arena), ChunkRenderer (one multi-draw)
 src/app/
   main, Engine
 
@@ -163,6 +170,13 @@ Learned the hard way; all of them cost real time.
   TSan's shadow mapping expects. Run it through
   `setarch $(uname -m) -R`. `ctest --preset tsan` hits the same wall, so the
   binary gets run directly.
+- **`gl_VertexID` is absolute in OpenGL**, unlike Vulkan's `firstVertex` behaviour:
+  it already includes the `first` argument of the draw. That is what lets
+  `gl_VertexID / 6` index the shared quad arena with no base offset — and it means
+  adding one "helpfully" would break every section but the first.
+- **The frustum has five planes.** With an infinite reversed-Z projection the far
+  plane's row is `(0, 0, 0, near)`, a zero normal; normalizing it divides by zero and
+  the result rejects the entire world. See `render/Frustum.cpp`.
 - CMake needs `LANGUAGES C CXX`; GLFW and glad are C.
 - Ninja is not installed; presets use Unix Makefiles.
 
@@ -173,29 +187,25 @@ Learned the hard way; all of them cost real time.
 **Goal:** job system, chunk streaming, frustum culling.
 **Exit criterion:** render distance 16 with a stable frame time.
 
-Sub-steps and measurements are tracked in DESIGN.md 7.5. **3a, 3b and 3c are
+Sub-steps and measurements are tracked in DESIGN.md 7.5. **3a through 3e are
 done.** What remains:
 
-**3d — multi-chunk rendering.** `ChunkRenderer` holds exactly one static buffer;
-it needs per-section buffers or a shared arena, and this is where `rhi::Buffer`
-grows persistent mapping and triple buffering — the interface was shaped for it.
-Two things come due at the same time:
+**3f — wire the job pool in.** Generation and meshing onto the worker pool, plus the
+upload thread from DESIGN.md 3.13. Ends with a Tracy capture. Deliberately last:
+getting streaming right single-threaded first means a later bug is either a streaming
+bug or a race, not ambiguously both.
 
-- **Stop looking up uniform locations per draw.** `Shader::setUniform` calls
-  `glGetUniformLocation` on every call by design (the header says so), which is
-  free at one draw call and is not at thousands, because `u_sectionOrigin` varies
-  per section. A UBO, or per-section data in the quad SSBO.
-- `u_fadeDistance` should come from the render distance rather than its default.
+**The upload thread needs no GL context of its own**, contrary to what this file said
+earlier. That was the wrong conclusion: the arena is persistently and coherently
+mapped, so writing to it is a plain memcpy into process memory and issues no GL
+command at all. Any thread may do it. The only GL requirement is one
+`rhi::Buffer::barrierAfterClientWrites()` per frame on the context-owning thread —
+coherence removes the need to flush, not the need to order.
 
-**3e — `render/Frustum`** and hierarchical culling: chunk column first, then
-section. **The projection is infinite reversed-Z**, so plane extraction does not
-follow the textbook form, and `Camera` still has no tests — add them alongside.
-
-**3f — wire the job pool in.** Generation and meshing onto the worker pool, plus
-the upload thread from DESIGN.md 3.13, which needs a second GL context sharing
-objects with the main one. Ends with a Tracy capture. Deliberately last: getting
-streaming right single-threaded first means a later bug is either a streaming bug
-or a race, not ambiguously both.
+The hazard 3f has to handle instead is lifetime: a meshing job borrows
+`const Section*` from up to nine columns and holds them across frames, so the World
+must not unload one underneath it. That is what `Chunk::pin()` is for, and
+`updateLoadedRegion` already retains pinned columns.
 
 Phase 4 is terrain generation with FastNoise2, replacing the body of
 `worldgen/Generator`. Note that **the AO merge measurement should be repeated

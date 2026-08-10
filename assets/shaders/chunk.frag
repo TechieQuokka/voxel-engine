@@ -11,6 +11,8 @@ layout(binding = 0) uniform sampler2DArray u_blockTextures;
 uniform vec3 u_cameraPosition;
 uniform float u_aoStrength;
 uniform float u_fadeDistance;
+/// Linear, like everything else here. Matches the clear colour.
+uniform vec3 u_fogColor;
 
 out vec4 o_fragColor;
 
@@ -47,14 +49,20 @@ void main() {
 
     vec3 shaded = albedo.rgb * faceShading(v_normal) * ao;
 
-    // Cheap distance darkening so depth reads correctly without a fog system.
-    // The floor is the linear equivalent of 0.35 sRGB, but the ramp between it
-    // and 1.0 is now linear in light rather than in perception, so distance
-    // darkening sets in somewhat harder than it did. A real fog pass -- a mix
-    // toward a sky colour, not a multiply -- replaces this when the far field
-    // arrives in Phase 7.
+    // Distance fog, as a mix toward the sky rather than a multiply toward black.
+    //
+    // The multiply was a stand-in and it stopped being defensible once shading moved
+    // to linear space: a linear ramp toward zero reads as terrain turning black at
+    // the render distance, which looks like a bug. Blending toward the sky colour is
+    // both what fog physically is -- light scattered in, not light removed -- and
+    // what makes the edge of the loaded region disappear instead of announcing
+    // itself. Phase 7 replaces the falloff with something depth-based; the operation
+    // is already the right one.
+    //
+    // Fog starts partway out rather than at the camera, or nearby terrain would be
+    // visibly washed out.
     float distance = length(v_worldPos - u_cameraPosition);
-    float fade = clamp(1.0 - distance / u_fadeDistance, srgbToLinear(0.35), 1.0);
+    float fog = smoothstep(u_fadeDistance * 0.55, u_fadeDistance, distance);
 
-    o_fragColor = vec4(shaded * fade, 1.0);
+    o_fragColor = vec4(mix(shaded, u_fogColor, fog), 1.0);
 }

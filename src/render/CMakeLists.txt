@@ -2,6 +2,8 @@ add_library(mc_render STATIC
   BlockTextures.cpp
   Camera.cpp
   ChunkRenderer.cpp
+  Frustum.cpp
+  SectionMeshStore.cpp
 )
 
 # Note the absence of mc_worldgen: the renderer has no business knowing how

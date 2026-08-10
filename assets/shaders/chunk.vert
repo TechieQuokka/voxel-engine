@@ -13,8 +13,18 @@ layout(std430, binding = 0) readonly buffer QuadBuffer {
     uvec2 b_quads[];
 };
 
+// Per-section data, indexed by gl_DrawID -- the draw's position in the
+// glMultiDrawArrays list. This is what removes per-draw uniforms entirely: the
+// whole visible set is one GL call, and each section still finds its own origin.
+// gl_DrawID is core in GLSL 4.60, so no extension directive is needed.
+//
+// xyz is the section's world-space corner in blocks. w is padding, because std430
+// aligns a vec3 to 16 bytes anyway and saying so is clearer than relying on it.
+layout(std430, binding = 1) readonly buffer SectionBuffer {
+    vec4 b_sectionOrigins[];
+};
+
 uniform mat4 u_viewProjection;
-uniform vec3 u_sectionOrigin;
 
 out vec3 v_normal;
 out vec3 v_worldPos;
@@ -74,8 +84,12 @@ const uint kCornerIds[6] = uint[6](0u, 1u, 2u, 0u, 2u, 3u);
 const float kAoLinear[4] = float[4](0.0, 0.090842, 0.401978, 1.0);
 
 void main() {
+    // gl_VertexID is absolute in OpenGL -- it already includes the draw's `first`
+    // -- so this indexes the shared quad arena directly, with no base offset.
     uint quadIndex = uint(gl_VertexID) / 6u;
     uint cornerIndex = uint(gl_VertexID) % 6u;
+
+    vec3 sectionOrigin = b_sectionOrigins[gl_DrawID].xyz;
 
     // Not named `packed`: that is a reserved keyword in GLSL.
     uvec2 quad = b_quads[quadIndex];
@@ -109,7 +123,7 @@ void main() {
     uint ao = (aoBits >> (2u * kCornerIds[cornerIndex])) & 0x3u;
     v_ao = kAoLinear[ao];
 
-    v_worldPos = u_sectionOrigin + localPos;
+    v_worldPos = sectionOrigin + localPos;
     v_normal = kNormals[face];
 
     gl_Position = u_viewProjection * vec4(v_worldPos, 1.0);

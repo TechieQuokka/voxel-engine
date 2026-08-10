@@ -33,8 +33,9 @@ World::LoadResult World::updateLoadedRegion(ChunkPos center) {
         if (isInRegion(pos, center)) {
             continue;
         }
-        if (chunk->state() == ChunkState::Generating) {
-            // A worker is writing into it. Leave it and reconsider next call.
+        if (chunk->state() == ChunkState::Generating || chunk->pinned()) {
+            // Either a worker is writing into it, or a meshing job is holding
+            // pointers into it. Leave it and reconsider next call.
             ++result.retained;
             continue;
         }
@@ -44,6 +45,7 @@ World::LoadResult World::updateLoadedRegion(ChunkPos center) {
         m_chunks.erase(pos);
     }
     result.unloaded = dropping.size();
+    result.unloadedPositions = std::move(dropping);
 
     // Create in order of increasing distance from the centre, so that when the
     // scheduler walks the map the nearest columns already exist. It does not

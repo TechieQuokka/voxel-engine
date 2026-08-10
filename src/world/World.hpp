@@ -33,6 +33,11 @@ public:
         /// Columns that fell outside the region but were left alone because a job
         /// still owns them. They get dropped on a later call.
         usize retained = 0;
+
+        /// Which columns went away. The renderer needs these by name, not by count,
+        /// to release their GPU meshes -- and their surviving neighbours have to be
+        /// remeshed, because their boundary faces were culled against them.
+        std::vector<ChunkPos> unloadedPositions;
     };
 
     /// Brings the loaded set in line with a square around `center`: creates what is

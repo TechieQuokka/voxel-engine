@@ -1,5 +1,6 @@
 #include "rhi/Device.hpp"
 
+#include "core/Assert.hpp"
 #include "core/Log.hpp"
 
 #include <glad/gl.h>
@@ -145,6 +146,16 @@ void Device::setBackfaceCulling(bool enabled) {
 
 void Device::drawTriangles(u32 vertexCount, u32 first) {
     glDrawArrays(GL_TRIANGLES, static_cast<GLint>(first), static_cast<GLsizei>(vertexCount));
+}
+
+void Device::multiDrawTriangles(std::span<const i32> firsts, std::span<const i32> counts) {
+    MC_ASSERT(firsts.size() == counts.size());
+    if (firsts.empty()) {
+        return;
+    }
+
+    glMultiDrawArrays(GL_TRIANGLES, firsts.data(), counts.data(),
+                      static_cast<GLsizei>(firsts.size()));
 }
 
 std::vector<u8> Device::readFramebufferRgba(int width, int height) {

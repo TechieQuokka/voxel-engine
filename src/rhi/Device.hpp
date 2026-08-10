@@ -3,6 +3,7 @@
 #include "core/Types.hpp"
 
 #include <cmath>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,21 @@ public:
     /// Attribute-less draw. Vertices are generated in the shader from
     /// gl_VertexID; a VertexArray must be bound.
     void drawTriangles(u32 vertexCount, u32 first = 0);
+
+    /// One GL call for many sections.
+    ///
+    /// `firsts` and `counts` are in vertices. Two properties make this work with
+    /// the quad SSBO and are worth stating, because both are easy to get wrong:
+    ///
+    /// - `gl_VertexID` in OpenGL is absolute, already including `first`, so
+    ///   `gl_VertexID / 6` indexes the shared arena directly with no base uniform.
+    /// - `gl_DrawID` gives the shader its index into this list, which is how
+    ///   per-section data is fetched without any per-draw uniform at all. It is
+    ///   core in 4.6 (ARB_shader_draw_parameters).
+    ///
+    /// Phase 5 replaces this with the indirect form; the shader side does not
+    /// change, because gl_DrawID means the same thing there.
+    void multiDrawTriangles(std::span<const i32> firsts, std::span<const i32> counts);
 
     /// Reads the default framebuffer back as RGBA8, top row first.
     ///

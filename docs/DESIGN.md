@@ -850,9 +850,9 @@ means a later bug is either a streaming bug or a race, and not ambiguously both.
 | 3a | `core/MpmcQueue`, `core/JobSystem` | done |
 | 3b | `world/Chunk`, `world/World`, `world/Neighbourhood`, `worldgen/Generator` | done |
 | 3c | Neighbour-aware boundary culling and AO | done |
-| 3d | Multi-chunk rendering, per-section data in an SSBO | |
-| 3e | `render/Frustum`, hierarchical culling | |
-| 3f | Job system wired in, upload thread, Tracy capture | |
+| 3d | Multi-chunk rendering, per-section data in an SSBO | done |
+| 3e | `render/Frustum`, hierarchical culling | done |
+| 3f | Job system wired in, upload thread, Tracy capture | next |
 
 **3a.** Vyukov bounded MPMC queue plus a semaphore-parked worker pool. Bounded is
 the point: an unbounded queue would let streaming enqueue more work than the pool
@@ -933,6 +933,63 @@ temporarily restricted to the centre section, and exactly those two tests failed
 while the other 109 passed. A first draft of the seam test had passed for the wrong
 reason: it used `quad.width()` where `PosY` merges x along `height`, which made its
 condition trivially true.
+
+**3d and 3e.** The whole visible set is drawn with **one** `glMultiDrawArrays` and
+**no per-draw uniforms at all**. Two OpenGL properties make that possible and both
+are easy to get wrong:
+
+- `gl_VertexID` is absolute — it already includes the draw's `first` — so
+  `gl_VertexID / 6` indexes the shared quad arena directly, with no base offset
+  passed in.
+- `gl_DrawID` gives each draw its index into the multi-draw list, which is how a
+  section finds its own origin in a second SSBO. This is why the per-section data is
+  laid out as an array indexed by draw: Phase 5 replaces the CPU-filled command list
+  with a GPU-filled indirect one and **the shader does not change**.
+
+Section meshes live in one persistently mapped arena, suballocated by
+`core/RangeAllocator` (first-fit, coalescing, no GL in it, so its edge cases are
+unit-testable). Freed ranges are withheld for three frames before reuse: a coherent
+mapping orders writes, it does not know what the GPU is still reading. Nothing is
+ever overwritten in place — an updated mesh always takes a fresh range — so three
+frames of delay is the whole of the synchronisation.
+
+The frustum has **five planes, not six.** The row of an infinite reversed-Z matrix
+that would give the far plane is `(0, 0, 0, near)` — a zero normal — so the textbook
+six-plane extraction normalizes it, divides by zero, and produces a plane that
+rejects the entire world. There is nothing too distant to draw, which is the point of
+the infinite projection. Culling is hierarchical: one test against a 32x384x32 column
+box rejects twelve section tests.
+
+Measured, release + LTO, RTX 3060, distance 16, 900 frames with vsync off and the
+camera flying forward at 40 blocks/s so streaming is included:
+
+| | |
+|---|---|
+| Warm-up (whole region, 1 thread) | 0.86 s — 1,089 columns, 3,812 sections |
+| Frame time | mean 1.17 ms, **median 0.35 ms**, p99 **29.7 ms**, max 33.2 ms |
+| Drawn, typical frame | 512 sections, 160,292 quads, **1 draw call** |
+| Culled, same frame | 782 columns + 2,344 sections |
+| Arena | 7 MiB used of 51 |
+
+**The exit criterion is not met, and the numbers say precisely why.** A median of
+0.35 ms means rendering 160,000 merged quads with hierarchical culling is nowhere
+near the budget — it is 2% of a 16.7 ms frame. Every millisecond of the p99 is the
+synchronous streaming: crossing a column boundary generates up to 16 columns
+(0.40 ms each) and meshes up to 32 sections (0.12 ms each) inside one frame. That is
+what 3f moves off the main thread, and it is worth having measured before fixing,
+because the obvious suspect — draw submission — turns out to be irrelevant.
+
+The arena is sized from that measurement rather than guessed: ~11 KiB of quads per
+column, taken to 48 KiB for margin, which is 51 MiB at distance 16. It was 192 MiB
+fixed, and since the arena is pinned memory whether used or not, scaling it to the
+render distance is not a micro-optimization.
+
+Distance fog changed from a multiply toward black to a `mix` toward the sky colour.
+The multiply was a Phase 1 stand-in and it stopped being defensible once shading
+moved to linear space: a linear ramp to zero reads as terrain turning black at the
+render distance, which looks like a bug. Blending toward the sky is what fog
+physically is — light scattered in, not light removed — and it makes the edge of the
+loaded region disappear rather than announce itself.
 
 ---
 

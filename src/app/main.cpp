@@ -1,6 +1,7 @@
 #include "app/Engine.hpp"
 #include "core/Log.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <exception>
 #include <span>
@@ -27,9 +28,21 @@ int main(int argc, char** argv) {
             options.capturePath = args[++i];
         } else if (arg == "--mesh-benchmark") {
             options.meshBenchmark = true;
+        } else if (arg == "--warm-up") {
+            options.warmUp = true;
+        } else if (arg == "--bench-frames" && i + 1 < args.size()) {
+            options.benchFrames = static_cast<mc::u32>(std::max(0, std::atoi(args[++i])));
+            options.warmUp = true; // Measure the steady state, not the fill.
+        } else if (arg == "--render-distance" && i + 1 < args.size()) {
+            options.renderDistance = std::atoi(args[++i]);
+            if (options.renderDistance < 0 || options.renderDistance > 64) {
+                mc::logError("--render-distance must be between 0 and 64");
+                return EXIT_FAILURE;
+            }
         } else {
             mc::logError("Unknown argument: {}", arg);
-            mc::logError("Usage: minecraft [--capture <path.ppm>] [--mesh-benchmark]");
+            mc::logError("Usage: minecraft [--capture <path.ppm>] [--mesh-benchmark]"
+                         " [--render-distance N] [--warm-up] [--bench-frames N]");
             return EXIT_FAILURE;
         }
     }

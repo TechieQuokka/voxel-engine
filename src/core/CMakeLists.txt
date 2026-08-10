@@ -3,6 +3,7 @@ add_library(mc_core STATIC
   JobSystem.cpp
   Log.cpp
   Paths.cpp
+  RangeAllocator.cpp
 )
 
 # src/ is on the include path so headers are included as "core/Log.hpp",
