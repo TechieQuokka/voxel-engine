@@ -4,8 +4,9 @@ Snapshot for resuming work. Written 2026-08-09; updated 2026-08-10 during
 Phase 4.
 
 Read `docs/DESIGN.md` for the full design and the reasoning behind every
-decision. This file is the short version plus the practical details needed to
-pick the work back up cold.
+decision, and `docs/RESEARCH.md` for the vanilla Minecraft numbers the remaining
+Phase 4 work is measured against. This file is the short version plus the
+practical details needed to pick the work back up cold.
 
 ---
 
@@ -173,6 +174,9 @@ src/app/
 assets/shaders/         chunk.vert, chunk.frag, triangle.*
 tests/                  doctest; links module libraries individually
 tsan.supp               third-party race suppressions, with usage in its header
+docs/DESIGN.md          the design and the reasoning; measurements in 7.x
+docs/HANDOFF.md         this file
+docs/RESEARCH.md        vanilla Minecraft block and ore parameters, with sources
 README.md               public-facing summary; keep its numbers in step with 7.5-7.7
 LICENSE                 MIT
 ```
@@ -296,15 +300,30 @@ guess in the previous version of this section:
 - Aquifers were **not** built. Flooded caves with a local water level independent of sea
   level are still open, and need a water block type first.
 
-**4c — ore features.** The parameter table is in the research notes: vein size, veins
-per chunk, triangle vs uniform distribution, and the air-exposure discard chance.
-**Scale the vein counts by 4** — they are per 16x16 Minecraft chunk, and a column here
-is 32x32. Adding ore block types is cheap: the palette already handles 16 types in 4
-bits and the texture array only needs more layers.
+**4c — ore features.** The parameter table is `docs/RESEARCH.md` 3, one row per ore
+batch: blocks per blob, tries per chunk, Y range, triangle vs uniform, and the
+air-exposure discard chance. The counts there are already scaled by 4 — vanilla's are
+per 16x16 chunk and a column here is 32x32. Two traps are written up beside the table:
+the vanilla JSON's `size` field is *not* a block count, and **emerald and the badlands
+gold batch are biome-gated, so neither can be finished in 4c** — they wait for 4d or
+ship knowingly wrong.
+
+Adding the block types is cheap on the mesher, which needs no change at all for
+opaque cubes, but **not free on storage**: the ores plus the tier-A terrain blocks in
+RESEARCH.md 1 are ~30 types, past what 4 bits holds, and an ore-bearing underground
+section plausibly carries 5–8 of them at once. That is the boundary between 16 KiB and
+32 KiB per section. Measure `Palette::paletteSize()` over a generated region before
+starting, not after.
 
 **4d — biomes** from the climate fields that `DensityGraph` already computes. Minecraft
 uses a 6-parameter space (temperature, humidity, continentalness, erosion, weirdness,
 depth); this engine has three of them today.
+
+**4d has an unresolved input.** The wiki publishes only `temperature` and `downfall`
+per biome, not the 6-parameter intervals that actually place them, and not a
+systematic surface/filler block table. RESEARCH.md 6 records the search that failed;
+the game's own worldgen data is where those numbers will have to come from. Settle
+that before planning 4d, or the phase starts on a guess.
 
 Phase 5 is indirect draw plus GPU culling. The shader side is already arranged for it:
 per-section data is an array indexed by `gl_DrawID`, which means the same thing under
