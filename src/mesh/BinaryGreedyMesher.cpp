@@ -5,6 +5,7 @@
 
 #include <array>
 #include <bit>
+#include <cstring>
 
 namespace mc {
 namespace {
@@ -12,8 +13,32 @@ namespace {
 constexpr i32 kN = kSectionSize; // 32
 static_assert(kN == 32, "the occupancy masks below are 32 bits wide");
 
+/// The opacity grid is padded by one voxel on every side, so a neighbour lookup
+/// is an array read rather than a branch on which section a coordinate falls in.
+///
+/// One layer is exactly enough, and that is worth stating because it is not
+/// obvious. Face culling only reaches one voxel along the normal. AO reaches one
+/// along the normal *and* one along each of the two tangents -- but the tangents
+/// are perpendicular to the normal, so those offsets never stack onto the normal's
+/// axis. Every sample therefore lands in [-1, 32] on each axis independently.
+constexpr i32 kPad = 1;
+constexpr i32 kPadded = kN + 2 * kPad; // 34
+
+constexpr usize paddedIndex(i32 x, i32 y, i32 z) {
+    MC_ASSERT(x >= -kPad && x < kN + kPad);
+    MC_ASSERT(y >= -kPad && y < kN + kPad);
+    MC_ASSERT(z >= -kPad && z < kN + kPad);
+    // Same axis order as localIndex(): y outermost, x innermost.
+    return static_cast<usize>(((y + kPad) * kPadded + (z + kPad)) * kPadded + (x + kPad));
+}
+
+constexpr usize kPaddedVolume =
+    static_cast<usize>(kPadded) * static_cast<usize>(kPadded) * static_cast<usize>(kPadded);
+
 /// [a][b] -> bitmask over the third axis.
 using Mask2D = std::array<std::array<u32, kN>, kN>;
+/// [a][b] -> 0 or 1, the occupancy of the voxel just outside the section.
+using Boundary2D = std::array<std::array<u8, kN>, kN>;
 
 /// Per-face plane geometry.
 ///
@@ -43,14 +68,24 @@ constexpr std::array<FacePlan, kFaceCount> kPlans{{
 ///
 /// thread_local rather than a parameter: meshing runs on a worker pool where
 /// each thread meshes one section at a time, so a per-thread buffer removes
-/// ~100 KiB of allocation per section without any ownership plumbing.
+/// ~300 KiB of allocation per section without any ownership plumbing.
 struct Scratch {
+    /// Materials, centre section only -- a face's material comes from the voxel
+    /// behind it, which is always in the centre.
     std::array<BlockId, kSectionVolume> blocks{};
-    std::array<bool, kSectionVolume> opaque{};
+
+    /// Opacity including the one-voxel shell of neighbours.
+    std::array<u8, kPaddedVolume> opaque{};
 
     Mask2D colX{}; ///< [y][z], bit x
     Mask2D colY{}; ///< [x][z], bit y
     Mask2D colZ{}; ///< [x][y], bit z
+
+    /// Occupancy of the neighbour voxel immediately below and above each column,
+    /// which is what turns "outside is air" into real boundary culling.
+    Boundary2D lowX{}, highX{};
+    Boundary2D lowY{}, highY{};
+    Boundary2D lowZ{}, highZ{};
 
     std::array<Mask2D, kFaceCount> faceMask{};
 
@@ -67,27 +102,92 @@ Scratch& scratch() {
     return instance;
 }
 
-constexpr bool inRange(i32 v) {
-    return v >= 0 && v < kN;
-}
-
 bool opaqueAt(const Scratch& s, i32 x, i32 y, i32 z) {
-    if (!inRange(x) || !inRange(y) || !inRange(z)) {
-        return false; // Outside an isolated section counts as air.
-    }
-    return s.opaque[localIndex(x, y, z)];
+    return s.opaque[paddedIndex(x, y, z)] != 0;
 }
 
-/// Reads the section once into flat arrays. Every later pass then works on
-/// contiguous memory instead of going through palette indirection.
-void decodeSection(const Section& section, Scratch& s) {
-    MC_PROFILE_SCOPE_N("decodeSection");
+/// The padded coordinate range one neighbour offset covers.
+constexpr std::pair<i32, i32> rangeFor(i32 offset) {
+    if (offset < 0) {
+        return {-kPad, 0};
+    }
+    if (offset > 0) {
+        return {kN, kN + kPad};
+    }
+    return {0, kN};
+}
+
+/// Reads the neighbourhood once into flat arrays. Every later pass then works on
+/// contiguous memory instead of going through palette indirection, and boundary
+/// handling stops being a special case anywhere else in the file.
+void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
+    MC_PROFILE_SCOPE_N("decodeNeighbourhood");
 
     const BlockRegistry& registry = BlockRegistry::instance();
-    for (usize i = 0; i < kSectionVolume; ++i) {
-        const BlockId block = section.getByIndex(i);
-        s.blocks[i] = block;
-        s.opaque[i] = registry.isOpaque(block);
+    const Section* center = hood.center();
+    MC_ASSERT_MSG(center != nullptr, "meshing a neighbourhood with no centre section");
+
+    // Zero first, so a null or all-air neighbour costs nothing at all beyond this
+    // memset -- which is the common case, since most of a column is sky.
+    std::memset(s.opaque.data(), 0, s.opaque.size());
+
+    for (i32 y = 0; y < kN; ++y) {
+        for (i32 z = 0; z < kN; ++z) {
+            for (i32 x = 0; x < kN; ++x) {
+                const usize local = localIndex(x, y, z);
+                const BlockId block = center->getByIndex(local);
+                s.blocks[local] = block;
+                s.opaque[paddedIndex(x, y, z)] = registry.isOpaque(block) ? u8{1} : u8{0};
+            }
+        }
+    }
+
+    // The shell: 34^3 - 32^3 = 6,536 voxels, filled from up to 26 neighbours. The
+    // uniform and null cases are handled per neighbour rather than per voxel,
+    // because both are far more common than a partially filled neighbour.
+    for (i32 dz = -1; dz <= 1; ++dz) {
+        for (i32 dy = -1; dy <= 1; ++dy) {
+            for (i32 dx = -1; dx <= 1; ++dx) {
+                if (dx == 0 && dy == 0 && dz == 0) {
+                    continue;
+                }
+
+                const Section* section = hood.at(dx, dy, dz);
+                if (section == nullptr) {
+                    continue; // Already zero: reads as air.
+                }
+
+                const auto [xBegin, xEnd] = rangeFor(dx);
+                const auto [yBegin, yEnd] = rangeFor(dy);
+                const auto [zBegin, zEnd] = rangeFor(dz);
+
+                if (section->isUniform()) {
+                    if (!registry.isOpaque(section->uniformBlock())) {
+                        continue; // Already zero.
+                    }
+                    for (i32 y = yBegin; y < yEnd; ++y) {
+                        for (i32 z = zBegin; z < zEnd; ++z) {
+                            for (i32 x = xBegin; x < xEnd; ++x) {
+                                s.opaque[paddedIndex(x, y, z)] = 1;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                for (i32 y = yBegin; y < yEnd; ++y) {
+                    for (i32 z = zBegin; z < zEnd; ++z) {
+                        for (i32 x = xBegin; x < xEnd; ++x) {
+                            const BlockId block = section->get(blockToLocalCoord(x),
+                                                               blockToLocalCoord(y),
+                                                               blockToLocalCoord(z));
+                            s.opaque[paddedIndex(x, y, z)] =
+                                registry.isOpaque(block) ? u8{1} : u8{0};
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -101,7 +201,7 @@ void buildOccupancy(Scratch& s) {
     for (i32 y = 0; y < kN; ++y) {
         for (i32 z = 0; z < kN; ++z) {
             for (i32 x = 0; x < kN; ++x) {
-                if (!s.opaque[localIndex(x, y, z)]) {
+                if (!opaqueAt(s, x, y, z)) {
                     continue;
                 }
                 const auto ux = static_cast<u32>(x);
@@ -113,37 +213,55 @@ void buildOccupancy(Scratch& s) {
             }
         }
     }
+
+    // One value per plane cell, read from the shell decoded above.
+    for (i32 a = 0; a < kN; ++a) {
+        for (i32 b = 0; b < kN; ++b) {
+            const auto ua = static_cast<usize>(a);
+            const auto ub = static_cast<usize>(b);
+
+            s.lowX[ua][ub] = opaqueAt(s, -1, a, b) ? u8{1} : u8{0};
+            s.highX[ua][ub] = opaqueAt(s, kN, a, b) ? u8{1} : u8{0};
+
+            s.lowY[ua][ub] = opaqueAt(s, a, -1, b) ? u8{1} : u8{0};
+            s.highY[ua][ub] = opaqueAt(s, a, kN, b) ? u8{1} : u8{0};
+
+            s.lowZ[ua][ub] = opaqueAt(s, a, b, -1) ? u8{1} : u8{0};
+            s.highZ[ua][ub] = opaqueAt(s, a, b, kN) ? u8{1} : u8{0};
+        }
+    }
 }
 
 /// The core of binary greedy meshing: 32 faces resolved per instruction.
 ///
 /// A face exists at bit i when the voxel there is solid and its neighbour along
 /// the axis is not. Shifting the column against itself answers that for all 32
-/// voxels at once. The shift brings in a zero at the far end, which is exactly
-/// the "outside is air" boundary rule; suppressing boundary faces is then a
-/// single extra mask.
-void buildFaceMasks(Scratch& s, bool emitBoundaryFaces) {
+/// voxels at once. The shift brings in a zero at the far end, which used to be
+/// the "outside is air" boundary rule; now the neighbour's real occupancy is
+/// shifted in there instead, so a chunk seam culls exactly like any interior face
+/// and no redundant wall of quads is emitted.
+void buildFaceMasks(Scratch& s) {
     MC_PROFILE_SCOPE_N("buildFaceMasks");
-
-    constexpr u32 kNoLastBit = 0x7FFFFFFFu;
-    constexpr u32 kNoFirstBit = 0xFFFFFFFEu;
-
-    const auto negTrim = emitBoundaryFaces ? 0xFFFFFFFFu : kNoFirstBit;
-    const auto posTrim = emitBoundaryFaces ? 0xFFFFFFFFu : kNoLastBit;
 
     for (usize a = 0; a < kN; ++a) {
         for (usize b = 0; b < kN; ++b) {
             const u32 cx = s.colX[a][b];
-            s.faceMask[static_cast<usize>(Face::NegX)][a][b] = cx & ~(cx << 1) & negTrim;
-            s.faceMask[static_cast<usize>(Face::PosX)][a][b] = cx & ~(cx >> 1) & posTrim;
+            s.faceMask[static_cast<usize>(Face::NegX)][a][b] =
+                cx & ~((cx << 1) | static_cast<u32>(s.lowX[a][b]));
+            s.faceMask[static_cast<usize>(Face::PosX)][a][b] =
+                cx & ~((cx >> 1) | (static_cast<u32>(s.highX[a][b]) << 31));
 
             const u32 cy = s.colY[a][b];
-            s.faceMask[static_cast<usize>(Face::NegY)][a][b] = cy & ~(cy << 1) & negTrim;
-            s.faceMask[static_cast<usize>(Face::PosY)][a][b] = cy & ~(cy >> 1) & posTrim;
+            s.faceMask[static_cast<usize>(Face::NegY)][a][b] =
+                cy & ~((cy << 1) | static_cast<u32>(s.lowY[a][b]));
+            s.faceMask[static_cast<usize>(Face::PosY)][a][b] =
+                cy & ~((cy >> 1) | (static_cast<u32>(s.highY[a][b]) << 31));
 
             const u32 cz = s.colZ[a][b];
-            s.faceMask[static_cast<usize>(Face::NegZ)][a][b] = cz & ~(cz << 1) & negTrim;
-            s.faceMask[static_cast<usize>(Face::PosZ)][a][b] = cz & ~(cz >> 1) & posTrim;
+            s.faceMask[static_cast<usize>(Face::NegZ)][a][b] =
+                cz & ~((cz << 1) | static_cast<u32>(s.lowZ[a][b]));
+            s.faceMask[static_cast<usize>(Face::PosZ)][a][b] =
+                cz & ~((cz >> 1) | (static_cast<u32>(s.highZ[a][b]) << 31));
         }
     }
 }
@@ -165,6 +283,11 @@ void voxelFromMask(const FacePlan& plan, i32 a, i32 b, i32 p, i32& x, i32& y, i3
 /// Standard voxel AO: each corner is darkened by the two edge neighbours and
 /// the diagonal one in the layer above the face. Two adjacent edges fully
 /// occlude regardless of the diagonal.
+///
+/// Every sample goes through the padded grid, so a face on a section boundary is
+/// occluded by the neighbouring section's blocks just as an interior one is. This
+/// is the half of neighbour awareness that is easy to forget and impossible to
+/// miss once seen: without it, every chunk seam carries a bright rim.
 u8 computeAo(const Scratch& s, const FacePlan& plan, i32 x, i32 y, i32 z) {
     const i32 bx = x + plan.nx;
     const i32 by = y + plan.ny;
@@ -201,20 +324,27 @@ void voxelFor(const FacePlan& plan, i32 p, i32 u, i32 v, i32& x, i32& y, i32& z)
 
 } // namespace
 
-void meshSectionGreedy(const Section& section,
+void meshSectionGreedy(const SectionNeighbourhood& hood,
                        ChunkMesh& out,
                        const GreedyMeshOptions& options) {
     MC_PROFILE_SCOPE_N("meshSectionGreedy");
 
     out.clear();
-    if (section.isEmpty()) {
+
+    const Section* center = hood.center();
+    MC_ASSERT_MSG(center != nullptr, "meshing a neighbourhood with no centre section");
+
+    // An all-air centre produces nothing whatever the neighbours hold: a face
+    // belongs to the solid voxel behind it, and there are none here. The check
+    // costs one comparison, because uniform sections carry no index array.
+    if (center->isEmpty()) {
         return;
     }
 
     Scratch& s = scratch();
-    decodeSection(section, s);
+    decodeNeighbourhood(hood, s);
     buildOccupancy(s);
-    buildFaceMasks(s, options.emitBoundaryFaces);
+    buildFaceMasks(s);
 
     const BlockRegistry& registry = BlockRegistry::instance();
     const u32 keyShift = options.aoAwareMerging ? 0u : 8u;
@@ -330,6 +460,14 @@ void meshSectionGreedy(const Section& section,
             }
         }
     }
+}
+
+void meshSectionGreedy(const Section& section,
+                       ChunkMesh& out,
+                       const GreedyMeshOptions& options) {
+    SectionNeighbourhood hood;
+    hood.set(0, 0, 0, &section);
+    meshSectionGreedy(hood, out, options);
 }
 
 } // namespace mc

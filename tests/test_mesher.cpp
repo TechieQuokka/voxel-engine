@@ -95,13 +95,20 @@ TEST_CASE("a fully solid section emits only its outer shell") {
     CHECK(mesh.quadCount() == kExpected);
 }
 
-TEST_CASE("boundary faces can be suppressed") {
-    Section section(kStoneBlock);
+TEST_CASE("solid neighbours hide the boundary faces") {
+    // With solid neighbours all round, a fully solid section is invisible.
+    const Section solid(kStoneBlock);
+    SectionNeighbourhood hood;
+    for (i32 dz = -1; dz <= 1; ++dz) {
+        for (i32 dy = -1; dy <= 1; ++dy) {
+            for (i32 dx = -1; dx <= 1; ++dx) {
+                hood.set(dx, dy, dz, &solid);
+            }
+        }
+    }
 
     ChunkMesh mesh;
-    meshSectionCulled(section, mesh, MeshOptions{.emitBoundaryFaces = false});
-
-    // With neighbours assumed solid, a fully solid section is invisible.
+    meshSectionCulled(hood, mesh);
     CHECK(mesh.empty());
 }
 

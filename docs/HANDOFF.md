@@ -11,7 +11,7 @@ pick the work back up cold.
 
 ## 1. Where things stand
 
-**Phases 0, 1 and 2 are complete. Phase 3 is in progress — 3a and 3b done, 3c
+**Phases 0, 1 and 2 are complete. Phase 3 is in progress — 3a, 3b and 3c done, 3d
 next.** The sub-step table and the measurements are in DESIGN.md 7.5.
 
 | Commit | Contents |
@@ -19,18 +19,17 @@ next.** The sub-step table and the measurements are in DESIGN.md 7.5.
 | `9c60ddd` | Phase 0 — project skeleton, GL 4.6 context, triangle |
 | `207fd7d` | Phase 1 — palette-compressed sections, culled meshing, camera |
 | `8180945` | Phase 2 — binary greedy meshing, block texture array |
+| `9945f21` | Cleanup pass before Phase 3 (DESIGN.md 7.4) |
+| `0d73b2b` | Phase 3a — lock-free MPMC queue and worker pool |
+| `1c84b5e` | Phase 3b — chunk columns, world streaming, placeholder generator |
 
-**The repository is local only — never push, never create a remote.**
+Working tree is clean. **The repository is local only — never push, never create
+a remote.**
 
-On top of those commits there is an **uncommitted cleanup pass** (see DESIGN.md
-7.4): the two meshers now agree that `Quad::material` is a texture layer, sRGB is
-configured properly end to end, the meshing benchmark moved behind
-`--mesh-benchmark`, and the duplicated FOV / near-plane / fade-distance constants
-were consolidated. 53 tests pass, `-Werror` clean.
-
-What runs today: a single 32³ section is generated, meshed with binary greedy
-meshing, textured from an array texture with ambient occlusion, and drawn at
-60 FPS with a free-flying camera.
+What runs today: still the Phase 2 scene on screen — one 32³ section, greedy
+meshed, textured, 60 FPS with a free-flying camera. The Phase 3 machinery
+(job pool, chunk streaming, neighbour-aware meshing) is built and tested but is
+**not wired into the Engine yet**; that happens in 3d and 3f.
 
 ---
 
@@ -45,7 +44,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (106 cases, doctest)
+# Test  (111 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue or JobSystem.
@@ -98,7 +97,7 @@ These are the user's standing instructions, not suggestions.
 
 ```
 CMakeLists.txt          root; dependencies pinned via CPM
-CMakePresets.json       debug / asan / release / release-tracy
+CMakePresets.json       debug / asan / tsan / release / release-tracy
 cmake/CompilerWarnings.cmake
 
 src/core/               no dependencies
@@ -114,7 +113,7 @@ src/world/              pure data; knows nothing about rendering
   Chunk (12-section column), Neighbourhood (3x3x3 view), World (chunk map)
 src/worldgen/           knows world, nothing above it
   Generator — placeholder heightmap; FastNoise2 replaces its body in Phase 4
-src/mesh/
+src/mesh/               both meshers take a SectionNeighbourhood
   Quad (64-bit packed), ChunkMesh, CulledMesher, BinaryGreedyMesher
 src/render/
   Camera, ChunkRenderer, BlockTextures
@@ -169,47 +168,39 @@ Learned the hard way; all of them cost real time.
 
 ---
 
-## 6. Next: Phase 3
+## 6. Phase 3 — in progress
 
 **Goal:** job system, chunk streaming, frustum culling.
 **Exit criterion:** render distance 16 with a stable frame time.
 
-Expected work:
+Sub-steps and measurements are tracked in DESIGN.md 7.5. **3a, 3b and 3c are
+done.** What remains:
 
-1. `core/JobSystem` and `core/MpmcQueue` — worker pool on `std::jthread`,
-   lock-free queues. **The main thread must never block** on generation,
-   meshing, or upload.
-2. `world/Chunk` (a column of 12 sections) and `world/World` (the chunk map plus
-   load/unload around the camera).
-3. **Neighbour-aware boundary culling — and neighbour-aware AO.** Both meshers
-   currently emit boundary faces because a section is meshed in isolation, so
-   `emitBoundaryFaces` gets replaced by real neighbour lookups; otherwise every
-   chunk seam renders a redundant wall of quads.
+**3d — multi-chunk rendering.** `ChunkRenderer` holds exactly one static buffer;
+it needs per-section buffers or a shared arena, and this is where `rhi::Buffer`
+grows persistent mapping and triple buffering — the interface was shaped for it.
+Two things come due at the same time:
 
-   The part that is easy to miss: **AO needs neighbours too, and it needs 26 of
-   them, not 6.** `opaqueAt()` in `BinaryGreedyMesher.cpp` returns false for
-   anything outside the section and `computeAo()` reads it for the two edge
-   neighbours *and the diagonal* — so it samples edge- and corner-adjacent
-   sections. Fixing face culling without fixing AO leaves a bright seam around
-   every chunk. Plan the neighbour accessor for the 3×3×3 block from the start.
-4. `render/Frustum` and hierarchical frustum culling: chunk column first, then
-   section. **Note that the projection is infinite reversed-Z** — plane
-   extraction from it does not follow the textbook form, and `Camera` has no
-   tests yet, so add them alongside `Frustum`.
-5. Multi-chunk rendering. `ChunkRenderer` currently holds exactly one static
-   buffer; it needs per-section buffers or a shared arena. This is also where
-   `rhi::Buffer` should grow persistent mapping and triple buffering — the
-   interface was shaped for it.
-6. **Stop looking up uniform locations per draw.** `Shader::setUniform` calls
-   `glGetUniformLocation` on every call by design (the header says so), which is
-   free at one draw call and is not at thousands: `u_sectionOrigin` varies per
-   section. Phase 3 is where that promise comes due — a UBO, or per-section data
-   in the quad SSBO. `u_fadeDistance` should come from the render distance at the
-   same time.
+- **Stop looking up uniform locations per draw.** `Shader::setUniform` calls
+  `glGetUniformLocation` on every call by design (the header says so), which is
+  free at one draw call and is not at thousands, because `u_sectionOrigin` varies
+  per section. A UBO, or per-section data in the quad SSBO.
+- `u_fadeDistance` should come from the render distance rather than its default.
 
-Phase 4 is terrain generation with FastNoise2. Note that **the AO merge
-measurement should be repeated in Phase 4**: the 13.5-point figure comes from
-smooth heightmap terrain, and caves and overhangs will make AO vary far more.
+**3e — `render/Frustum`** and hierarchical culling: chunk column first, then
+section. **The projection is infinite reversed-Z**, so plane extraction does not
+follow the textbook form, and `Camera` still has no tests — add them alongside.
+
+**3f — wire the job pool in.** Generation and meshing onto the worker pool, plus
+the upload thread from DESIGN.md 3.13, which needs a second GL context sharing
+objects with the main one. Ends with a Tracy capture. Deliberately last: getting
+streaming right single-threaded first means a later bug is either a streaming bug
+or a race, not ambiguously both.
+
+Phase 4 is terrain generation with FastNoise2, replacing the body of
+`worldgen/Generator`. Note that **the AO merge measurement should be repeated
+then**: the 13.5-point figure comes from smooth heightmap terrain, and caves and
+overhangs will make AO vary far more.
 
 ---
 

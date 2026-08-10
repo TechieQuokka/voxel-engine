@@ -849,7 +849,7 @@ means a later bug is either a streaming bug or a race, and not ambiguously both.
 |---|---|---|
 | 3a | `core/MpmcQueue`, `core/JobSystem` | done |
 | 3b | `world/Chunk`, `world/World`, `world/Neighbourhood`, `worldgen/Generator` | done |
-| 3c | Neighbour-aware boundary culling and AO | next |
+| 3c | Neighbour-aware boundary culling and AO | done |
 | 3d | Multi-chunk rendering, per-section data in an SSBO | |
 | 3e | `render/Frustum`, hierarchical culling | |
 | 3f | Job system wired in, upload thread, Tracy capture | |
@@ -889,6 +889,50 @@ Three things worth keeping:
   through the palette one voxel at a time and that is the thing to fix.
 - **Gathering a neighbourhood costs 0.050 us per section**, against ~180 us to mesh
   one. Nine hash lookups shared down the y axis, and nothing needs caching.
+
+**3c.** Both meshers now take a `SectionNeighbourhood` instead of a lone `Section`,
+and `emitBoundaryFaces` is gone — it was a flag standing in for neighbours that did
+not exist yet, and the situation it described is now expressed by supplying them.
+
+The opacity grid inside the mesher is padded to 34³, so a neighbour lookup is an
+array read rather than a branch on which section a coordinate falls in. One layer of
+padding is exactly enough, which is worth stating because it is not obvious: face
+culling reaches one voxel along the normal, and AO reaches one along the normal *and*
+one along each tangent, but the tangents are perpendicular to the normal, so those
+offsets never stack onto the normal's axis.
+
+Boundary culling then falls out of the existing bit trick. The shift in
+`cx & ~(cx << 1)` used to bring in a zero at the end of the column, which *was* the
+"outside is air" rule; the neighbour's real occupancy is shifted in there instead.
+The shell is filled per neighbour rather than per voxel, so a null or uniform-air
+neighbour costs nothing beyond the initial memset — the common case, since most of a
+column is sky.
+
+Measured on a distance-8 world, 892 non-empty interior columns' sections (interior
+only, so every one has all 26 neighbours), release + LTO:
+
+| | Isolated | With neighbours |
+|---|---|---|
+| Quads | 229,263 | 205,628 (**-10.3%**) |
+| Covered area, unit faces | 4,879,812 | 562,181 (**-88.5%**) |
+| Meshing | 164.8 us/section | 115.8 us/section (**-29.7%**) |
+
+**Quad count is the wrong metric for this change, and the gap is instructive.** A
+seam wall is a flat 32x32 plane, which greedy meshing already collapses into one or
+two quads — so counting quads makes the redundant geometry look like a rounding
+error while it is in fact 88% of the drawn surface. That is 8.7x the fill rate, on
+surfaces that are by construction invisible.
+
+Meshing also got *faster*, not slower. The extra shell decode is more than repaid by
+the scatter and merge passes having 88% less surface to walk. This is the same lesson
+as Phase 2's: the cost is in touching cells, so the work that avoids touching them
+pays for itself.
+
+Both AO tests were verified by sabotage — neighbour sampling in `computeAo` was
+temporarily restricted to the centre section, and exactly those two tests failed
+while the other 109 passed. A first draft of the seam test had passed for the wrong
+reason: it used `quad.width()` where `PosY` merges x along `height`, which made its
+condition trivially true.
 
 ---
 

@@ -31,22 +31,21 @@ constexpr std::array<FaceDef, kFaceCount> kFaces{{
     {Face::PosZ, 0, 0, +1, 0, 0, 1},
 }};
 
-constexpr bool inSection(i32 x, i32 y, i32 z) {
-    return x >= 0 && x < kSectionSize
-        && y >= 0 && y < kSectionSize
-        && z >= 0 && z < kSectionSize;
-}
-
 } // namespace
 
-void meshSectionCulled(const Section& section, ChunkMesh& out, const MeshOptions& options) {
+void meshSectionCulled(const SectionNeighbourhood& hood,
+                       ChunkMesh& out,
+                       const MeshOptions& /*options*/) {
     MC_PROFILE_SCOPE_N("meshSectionCulled");
 
     out.clear();
 
+    const Section* center = hood.center();
+    MC_ASSERT_MSG(center != nullptr, "meshing a neighbourhood with no centre section");
+
     // An all-air section produces nothing, and this check costs one comparison
     // because uniform sections carry no index array at all.
-    if (section.isEmpty()) {
+    if (center->isEmpty()) {
         return;
     }
 
@@ -55,21 +54,19 @@ void meshSectionCulled(const Section& section, ChunkMesh& out, const MeshOptions
     for (i32 y = 0; y < kSectionSize; ++y) {
         for (i32 z = 0; z < kSectionSize; ++z) {
             for (i32 x = 0; x < kSectionSize; ++x) {
-                const BlockId block = section.get(x, y, z);
+                const BlockId block = center->get(x, y, z);
                 if (!blocks.isOpaque(block)) {
                     continue;
                 }
 
                 for (const FaceDef& def : kFaces) {
-                    const i32 nx = x + def.dx;
-                    const i32 ny = y + def.dy;
-                    const i32 nz = z + def.dz;
-
-                    const bool hidden =
-                        inSection(nx, ny, nz)
-                            ? blocks.isOpaque(section.get(nx, ny, nz))
-                            : !options.emitBoundaryFaces;
-                    if (hidden) {
+                    // The neighbourhood answers uniformly whether the neighbour is
+                    // inside this section or across a boundary, so there is no
+                    // in-section special case left. Coordinates outside the 3x3x3
+                    // block, and sections that are not loaded, read as air.
+                    const BlockId neighbour =
+                        hood.blockAt(x + def.dx, y + def.dy, z + def.dz);
+                    if (blocks.isOpaque(neighbour)) {
                         continue;
                     }
 
@@ -88,6 +85,14 @@ void meshSectionCulled(const Section& section, ChunkMesh& out, const MeshOptions
             }
         }
     }
+}
+
+void meshSectionCulled(const Section& section,
+                       ChunkMesh& out,
+                       const MeshOptions& options) {
+    SectionNeighbourhood hood;
+    hood.set(0, 0, 0, &section);
+    meshSectionCulled(hood, out, options);
 }
 
 } // namespace mc

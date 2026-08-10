@@ -170,8 +170,8 @@ ChunkMesh Engine::reportMeshingComparison() {
     }};
 
     const std::array<GreedyMeshOptions, 2> configs{{
-        {.emitBoundaryFaces = true, .ambientOcclusion = true, .aoAwareMerging = true},
-        {.emitBoundaryFaces = true, .ambientOcclusion = true, .aoAwareMerging = false},
+        {.ambientOcclusion = true, .aoAwareMerging = true},
+        {.ambientOcclusion = true, .aoAwareMerging = false},
     }};
 
     Clock clock;
