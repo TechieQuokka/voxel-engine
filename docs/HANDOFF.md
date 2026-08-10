@@ -16,9 +16,13 @@ practical details needed to pick the work back up cold.
 Measurements are in DESIGN.md 7.5 (Phase 3), 7.6 (Phase 4) and 7.7 (the benchmark);
 vanilla's numbers, and which of them could not be confirmed, are in RESEARCH.md.
 
-**Start here when resuming: 4d — biomes.** Lighting is done; the remaining Phase 4
-step is biome selection, and it has an unresolved input recorded in section 6 that
-wants settling before any code.
+**Start here when resuming: read section 9 first.** There is an open question about
+what this project is for, raised by the user on 2026-08-10 and not yet answered, and
+it decides whether the next step is 4d at all.
+
+If the answer is "engine, as documented", the remaining Phase 4 step is **4d —
+biomes**, which has an unresolved input recorded in section 6 that wants settling
+before any code.
 
 The two open items most worth doing before 4d, in either order:
 
@@ -51,6 +55,8 @@ The two open items most worth doing before 4d, in either order:
 | `dd1438c` | A character, on a second render path (outside the documented scope) |
 | `79c4723` | Bring the handoff up to date with 4c, the probe and the character |
 | `742a0c6` | Sky light, and the Quad bit re-layout that made smooth lighting fit |
+| `5b124e2` | Record the lighting work in the handoff |
+| `2b961da` | Walking instead of flying; the character shown by default |
 
 Working tree is clean. **Published publicly** at the `origin` remote as of
 2026-08-10; the earlier local-only rule was lifted by the user at that point.
@@ -88,9 +94,16 @@ Phase 8.
 Sky light costs **24 KiB per column**, about 26 MiB at distance 16, because 87.5 % of
 sections are uniform and allocate nothing. The naive figure was over 400 MiB.
 
-The last interactive verification — 31 seconds of flying at vsync-locked 60 FPS with no
-dropped frames and no GL messages — was taken **before** caves landed, and is now three
-phases stale.
+**Interactively verified on 2026-08-10**, twice, after everything above landed: two
+sessions of 43 and 51 seconds, vsync-locked 60 FPS throughout (min 59.8, median 59.9),
+no dropped frames, no GL debug messages, clean exit both times. That replaces the old
+note about a pre-cave flight, which was three phases stale.
+
+**Neither session ever pressed `F` or `F5`** — both keys log when they are, and the logs
+are empty. So neither of them saw a cave, an ore, deepslate, or the sky light: all of
+that is underground, and walking cannot get there. Both sessions saw the surface only,
+which is why the world looked unchanged from before any of this work. Worth knowing
+before deciding what to build next; section 9 is about that.
 
 No aquifers, biomes or lighting yet. Lighting comes first — see the resume pointer above.
 
@@ -142,16 +155,30 @@ convert /tmp/shot.ppm /tmp/shot.png     # ImageMagick is installed
 # counts them. This is the only honest check on anything underground; see section 5.
 ./build/release/src/app/minecraft --probe --probe-columns 24
 
-# Start in third person, so a capture can show the character (a single frame has
-# nobody to press F5).
-./build/release/src/app/minecraft --third-person --capture /tmp/shot.ppm
+# Start flying rather than walking, which is the only way to get underground.
+./build/release/src/app/minecraft --fly
+
+# First person, if the character is in the way of what is being looked at.
+./build/release/src/app/minecraft --first-person --capture /tmp/shot.ppm
 ```
 
 **Always measure on the `release` preset.** Debug is `-O0`; timings from it are
 meaningless.
 
-Controls: `WASD` move, `Space`/`LeftShift` up/down, `LeftControl` sprint, mouse
-look, `F5` toggles third person, `Escape` releases the cursor and then quits.
+**Controls.** Walking and third person are the defaults.
+
+| Key | Walking (default) | Flying (`F`) |
+|---|---|---|
+| `WASD` | walk, 4.317 blocks/s | move along the view direction |
+| `LeftControl` | sprint, 5.612 | 4x speed |
+| `LeftShift` | sneak, 1.3 | descend |
+| `Space` | jump, clears one block | ascend |
+| `F` | switch to flying | switch to walking |
+| `F5` | first person / third person | same |
+| `Escape` | release cursor, then quit | same |
+
+**Walking cannot reach a cave**, so anything to do with ores, deepslate or sky light
+needs `F` first — or `--fly`, which starts in it.
 
 ### Why `--capture` exists
 
@@ -468,6 +495,8 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
 
 ## 8. Still open
 
+- **What this project is for.** The largest open item by far, and unanswered. See
+  section 9.
 - **`ChunkRenderer`'s section-origin buffer is overwritten while the GPU may be reading
   it.** `rhi/Buffer.hpp` states the contract — the caller must not overwrite a range the
   GPU may still be reading — and `SectionMeshStore` honours it with `kReuseDelayFrames`.
@@ -495,3 +524,75 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   exist.** Adding a formatter now would reformat the whole tree in one commit, so
   it is a deliberate decision rather than a chore — either add them and take that
   commit, or drop them from the document.
+
+---
+
+## 9. The open question: engine, or game
+
+Raised by the user on 2026-08-10, after playing the engine twice. **Unanswered.**
+Everything about what to build next depends on it, which is why it is written down
+rather than left in a conversation.
+
+### What happened
+
+The user asked for "all Minecraft objects" to be researched. That research was
+scoped — deliberately, and it said so in its first paragraph and in RESEARCH.md 1 —
+to the 60-80 block types the *terrain generator* places, on the grounds that
+DESIGN.md ends this project at terrain generation. Mobs, items and structures were
+excluded explicitly.
+
+Twenty-one block types later, the user played and reported seeing nothing new. Both
+things were true at once:
+
+- The work was real and is measured throughout this document.
+- **Every one of those block types is underground.** Bedrock, deepslate, the four
+  stone variants, gravel and all seven ores generate below the surface, and the
+  surface blocks are still the same three. From a standing camera the world is
+  identical to what it was before Phase 4c.
+
+The user then asked about flower farming, building, crafting and hunting. None of
+that exists, and none of it was in scope.
+
+**The research was not wrong; the scope was narrower than the question.** That is
+the thing to be honest about when picking this up: a correct answer to the wrong
+question still leaves the user with a world they cannot do anything in.
+
+### What "fun" would actually require
+
+| Wanted | Needs | Size |
+|---|---|---|
+| Flowers, grass, trees | tier E vegetation — **non-cube geometry, so a second mesher path**: no greedy merge, back-face culling off, alpha test | medium |
+| Building | **block placement and breaking** — voxel raycast, world edit, remesh, relight | medium |
+| Crafting, weapons | inventory, item types, recipe data, and a UI layer that does not exist | large |
+| Hunting | entities, AI, pathfinding, health, combat, drops | large |
+| Keeping any of it | world persistence — already listed in section 8 as *"whether it is in scope at all"* | medium |
+
+The bottom three are a game, not a renderer. Comparable in size to everything in
+this repository so far, or larger.
+
+### The recommendation, if the answer is "make it playable"
+
+**Block placement and breaking, first.** The reasoning, in order of weight:
+
+1. It is the only item on that list that is engine work, and it is the prerequisite
+   for every other one. Building needs it; harvesting a flower needs it.
+2. It reuses machinery that already exists — the dirty mask, remeshing,
+   `Palette::set`, and the light recompute — rather than adding a subsystem.
+3. **A voxel raycast falls out of it, and that is already needed.** The third-person
+   camera clips through terrain for exactly the want of one (section 6), and it is
+   what a "which block am I pointing at" cursor needs too.
+4. It is the shortest path to the player actually *seeing* the last three commits'
+   work: dig down and the caves, ores and darkness are right there. Two play
+   sessions have now failed to reach any of it.
+
+Vegetation second — it fills the surface, but it is a new mesher path and planting a
+flower without (1) still leaves nothing to harvest with.
+
+### What has to change either way
+
+If the answer is "game", **DESIGN.md's scope statement is wrong and has to be
+rewritten first**, along with the phase roadmap. Right now every document and the
+link structure of the code agree that this is a renderer that stops at terrain
+generation, and that agreement is worth something — it should be changed on purpose,
+in one commit, rather than eroded by adding game features to a document that denies
+they are in scope.
