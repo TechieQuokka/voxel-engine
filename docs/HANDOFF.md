@@ -83,6 +83,7 @@ Three older items are still open and still worth doing, in any order:
 | `c504948` | Widen the scope to include interaction, on purpose and in one commit |
 | `70b2359` | Phase 9 — voxel raycast, block placement and breaking; you can dig |
 | `2275242` | Trees, per-block break time with cracks, and the 0.6 step height fix |
+| `a204b83` | Phases 13/14 — mining swing, item drops, inventory, HUD |
 
 Working tree is clean. **Published publicly** at the `origin` remote as of
 2026-08-10; the earlier local-only rule was lifted by the user at that point.
