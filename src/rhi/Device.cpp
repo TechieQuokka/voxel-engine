@@ -134,6 +134,19 @@ void Device::setDepthTest(bool enabled) {
     }
 }
 
+void Device::setAlphaBlending(bool enabled) {
+    if (enabled) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    } else {
+        glDisable(GL_BLEND);
+    }
+}
+
+void Device::setDepthWrite(bool enabled) {
+    glDepthMask(enabled ? GL_TRUE : GL_FALSE);
+}
+
 void Device::setBackfaceCulling(bool enabled) {
     if (enabled) {
         glEnable(GL_CULL_FACE);

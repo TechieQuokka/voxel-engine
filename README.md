@@ -12,7 +12,7 @@ it removes a portability layer that would otherwise shape every decision below.
 
 Streaming terrain generated from a FastNoise2 density-function graph, meshed with
 binary greedy meshing, drawn with **one** `glMultiDrawArrays` call per frame — with
-caves, ores, sky light, and a world you can dig into and build on.
+caves, ores, sky light, trees, and a world you can dig into and build on.
 
 | | |
 |---|---|
@@ -36,16 +36,22 @@ cmake --build --preset release
 ```
 
 You start walking, in third person. `WASD` to move, `Space` to jump, `LeftControl` to
-sprint, `LeftShift` to sneak, mouse to look. **Left click breaks the highlighted block,
-right click places one, and `1`-`9` choose what to place** — reach is 5 blocks and
-bedrock is unbreakable. `F` switches to flying, `F5` to first person, `Escape` releases
-the cursor and again quits.
+sprint, `LeftShift` to sneak, mouse to look. A full block has to be jumped, not walked
+up — vanilla's 0.6-block step height.
+
+**Hold left click to break the highlighted block, right click to place one, `1`-`9` to
+choose what to place.** Reach is 5 blocks, cracks spread across the block while you
+mine it, and the time is vanilla's hardness — 0.75 s for dirt, 2.25 s for stone,
+6.75 s for an ore in deepslate. Bedrock is unbreakable.
+
+`F` switches to flying, `F5` to first person, `Escape` releases the cursor and again
+quits.
 
 Dig down. The caves, ores and darkness are the point, and they are not visible from the
 surface.
 
 ```bash
-ctest --preset debug                       # 142 test cases
+ctest --preset debug                       # 176 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
@@ -109,9 +115,14 @@ tracks remain, independent of each other:
 
 - **Performance** — indirect draw with GPU culling, four-level LOD, brickmap ray marching
   for the far field, occlusion culling. This is what the render-distance target needs.
-- **Interaction** — block placement and breaking (**done**), vegetation, persistence.
+- **Interaction** — block placement and breaking (**done**), trees (**done**), the
+  rest of vegetation, persistence, and then the subsystems the remaining wants need:
+  block updates for falling sand and flowing water, entities for item drops, a UI
+  layer for an inventory.
 
-Inventory, crafting and entities are not planned.
+Entities and an inventory are on that list now, as the subsystems item drops and a
+hotbar need — not as a commitment to build a game on top of them. Crafting, mobs and
+combat remain unplanned.
 
 ## Dependencies
 

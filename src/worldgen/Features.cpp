@@ -190,7 +190,148 @@ void placeBlob(Chunk& target, const BlobSpec& spec, u32 seed, ChunkPos source,
     }
 }
 
+/// World Y of the topmost non-air block in a column of the chunk, or kWorldMinY - 1
+/// when there is nothing.
+i32 surfaceOf(const Chunk& column, i32 localX, i32 localZ) {
+    for (i32 y = kWorldMaxY - 1; y >= kWorldMinY; --y) {
+        const Section* section = column.sectionAt(blockToSectionCoord(y));
+        if (section == nullptr) {
+            continue;
+        }
+        if (section->isEmpty()) {
+            // Skip the whole section rather than 32 reads of a known answer. Most of
+            // a column above the surface is exactly this.
+            y = sectionIndexToWorldY(sectionIndexInColumn(blockToSectionCoord(y)));
+            continue;
+        }
+        if (section->get(localX, blockToLocalCoord(y), localZ) != kAirBlock) {
+            return y;
+        }
+    }
+    return kWorldMinY - 1;
+}
+
+void setLocal(Chunk& column, i32 localX, i32 worldY, i32 localZ, BlockId block) {
+    Section* section = column.sectionAt(blockToSectionCoord(worldY));
+    if (section != nullptr) {
+        section->set(localX, blockToLocalCoord(worldY), localZ, block);
+    }
+}
+
+/// Plants one tree, entirely inside `column`.
+///
+/// No 3x3 replay and no cross-column writes: see the note on TreeSpec for why trees
+/// are the one feature that cannot be seamless, and what the band along each edge
+/// costs.
+void placeTree(Chunk& column, const TreeSpec& spec, u32 seed, u32 feature, u32 attempt) {
+    const ChunkPos pos = column.position();
+    const i32 radius = spec.canopyRadius;
+
+    // The plantable window, inset so the canopy cannot reach the column wall.
+    const i32 span = kSectionSize - 2 * radius;
+    if (span <= 0) {
+        return;
+    }
+
+    const i32 localX = radius
+                     + static_cast<i32>(hashKey(seed, pos.x, pos.z, feature, attempt, 0u)
+                                        % static_cast<u32>(span));
+    const i32 localZ = radius
+                     + static_cast<i32>(hashKey(seed, pos.x, pos.z, feature, attempt, 1u)
+                                        % static_cast<u32>(span));
+
+    // Trees grow on grass and nothing else. That one test also keeps them out of
+    // caves for free: the surface pass grasses the top of the terrain and explicitly
+    // not cave ceilings, so a cave roof is stone and fails here.
+    const i32 groundY = surfaceOf(column, localX, localZ);
+    if (!isValidWorldY(groundY)) {
+        return;
+    }
+    const Section* groundSection = column.sectionAt(blockToSectionCoord(groundY));
+    if (groundSection == nullptr
+        || groundSection->get(localX, blockToLocalCoord(groundY), localZ) != kGrassBlock) {
+        return;
+    }
+
+    const i32 height = spec.minHeight
+                     + static_cast<i32>(hashKey(seed, pos.x, pos.z, feature, attempt, 2u)
+                                        % static_cast<u32>(spec.maxHeight - spec.minHeight + 1));
+    const i32 base = groundY + 1;
+    if (!isValidWorldY(base + height + 1)) {
+        return;
+    }
+
+    // Leaves first, logs second, so the trunk overwrites the leaf column rather than
+    // the other way round.
+    //
+    // Vanilla oak's canopy is two wide layers then two narrow ones, with the corners
+    // of the wide layers knocked out at random. That corner rule is most of why a
+    // canopy reads as foliage instead of as a cube.
+    for (i32 layer = 0; layer < 5; ++layer) {
+        const i32 leafY = base + height - 3 + layer;
+        if (!isValidWorldY(leafY)) {
+            continue;
+        }
+        const i32 leafRadius = layer <= 1 ? radius : 1;
+
+        for (i32 dz = -leafRadius; dz <= leafRadius; ++dz) {
+            for (i32 dx = -leafRadius; dx <= leafRadius; ++dx) {
+                const bool corner = std::abs(dx) == leafRadius && std::abs(dz) == leafRadius;
+                if (corner) {
+                    // Always gone from the topmost layer, a coin flip below it.
+                    if (layer == 4) {
+                        continue;
+                    }
+                    if (unitOf(hashKey(seed, pos.x * kSectionSize + localX + dx,
+                                       pos.z * kSectionSize + localZ + dz, feature,
+                                       static_cast<u32>(leafY), 3u)) < 0.5f) {
+                        continue;
+                    }
+                }
+
+                const i32 x = localX + dx;
+                const i32 z = localZ + dz;
+                Section* section = column.sectionAt(blockToSectionCoord(leafY));
+                if (section == nullptr) {
+                    continue;
+                }
+                if (section->get(x, blockToLocalCoord(leafY), z) != kAirBlock) {
+                    continue; // Never carve into terrain to make room.
+                }
+                section->set(x, blockToLocalCoord(leafY), z, spec.leaves);
+            }
+        }
+    }
+
+    for (i32 dy = 0; dy < height; ++dy) {
+        setLocal(column, localX, base + dy, localZ, spec.log);
+    }
+}
+
 } // namespace
+
+void FeaturePlacer::placeTrees(Chunk& chunk) const {
+    const ChunkPos pos = chunk.position();
+
+    for (u32 feature = 0; feature < kTreeFeatures.size(); ++feature) {
+        const TreeSpec& spec = kTreeFeatures[feature];
+
+        // Offset the feature index past the blob features so a tree and a blob with
+        // the same index cannot share a hash stream and place in lockstep.
+        const auto key = static_cast<u32>(kBlobFeatures.size()) + feature;
+
+        const auto whole = static_cast<u32>(spec.triesPerColumn);
+        for (u32 attempt = 0; attempt < whole; ++attempt) {
+            placeTree(chunk, spec, m_seed, key, attempt);
+        }
+
+        const f32 fraction = spec.triesPerColumn - static_cast<f32>(whole);
+        if (fraction > 0.0f
+            && unitOf(hashKey(m_seed, pos.x, pos.z, key, whole, 6u)) < fraction) {
+            placeTree(chunk, spec, m_seed, key, whole);
+        }
+    }
+}
 
 void FeaturePlacer::placeFrom(Chunk& target, ChunkPos source) const {
     for (u32 feature = 0; feature < kBlobFeatures.size(); ++feature) {
@@ -219,6 +360,11 @@ void FeaturePlacer::place(Chunk& chunk) const {
             placeFrom(chunk, ChunkPos{centre.x + dx, centre.z + dz});
         }
     }
+
+    // After the blobs, so a tree stands on whatever rock the blobs left and not the
+    // other way round -- and because a tree needs the surface pass to have grassed
+    // the ground it tests for.
+    placeTrees(chunk);
 }
 
 } // namespace mc

@@ -19,19 +19,21 @@ at once is not a contradiction. See DESIGN.md 7 for the phase plan and 7.8 for 9
 Measurements are in DESIGN.md 7.5 (Phase 3), 7.6 (Phase 4) and 7.7 (the benchmark);
 vanilla's numbers, and which of them could not be confirmed, are in RESEARCH.md.
 
-**Phase 9 — block placement and breaking — is done.** You can dig. That was settled
-on 2026-08-11 along with the scope question in section 9, and DESIGN.md and README.md
-were rewritten to match *before* the feature work started rather than after.
+**Phase 9 — block placement and breaking — is done, and so is the follow-up batch in
+DESIGN.md 7.9**: trees, per-block break times with a crack overlay, and a walking fix.
+You can dig, and it takes as long as it should.
 
-**The single most valuable thing to do next is play it and report back.** Not because
-the code is unverified — 16 new tests cover the raycast and the edit path, and it
-renders and benchmarks clean — but because nothing in this project has ever been
-verified by a person clicking on it, and the last three phases of underground work
-were invisible for exactly that reason. Dig down. The caves, ores and darkness are
-finally reachable.
+**Playing it is what produced 7.9, and it is still the highest-value thing to do.**
+The first session lasted 83 seconds and every one of the four items that came out of
+it — trees, break time, item drops, the step height — was something no test would
+have caught. The step height in particular had been wrong since walking landed: 1.05
+instead of vanilla's 0.6, so every block was walked up instead of jumped. Thirty
+seconds of play found it.
 
-After that, the interaction track continues with **Phase 10 — vegetation** (a second
-mesher path; RESEARCH.md 5.4 is the technical brief) and **Phase 11 — persistence**.
+**Next is a subsystem, not a feature.** Water, falling sand and item drops were all
+asked for and all deferred, because each needs one of three things this engine does
+not have: block updates (12), entities (13), a UI layer (14). They are phases in
+DESIGN.md 7 now, in the order their dependencies force.
 
 **4d — biomes** is the last Phase 4 step and is no longer next. It still has the
 unresolved input recorded in section 6, which wants settling before any code.
@@ -82,26 +84,29 @@ spaghetti and noodle tunnels carved per block, a surface pass that grasses the t
 the terrain (and only the terrain — not cave ceilings), a bedrock floor, a deepslate
 band that fades in from Y 8 to Y 0, blob features placing granite, diorite, andesite,
 tuff, gravel and seven ores, and **sky light**, so caves are actually dark.
-**26 block types**, up from five. It streams
+**28 block types**, up from five -- oak logs and leaves are the newest, and there are
+now **trees** on the surface. It streams
 infinitely and draws the whole visible set with **one** `glMultiDrawArrays`. Generation
 and meshing run on a 6-worker pool, uploads on their own thread, and the main thread
 only ever submits.
 
-**The world can be edited.** Left click breaks, right click places, `1`-`9` pick the
-block, and a wireframe box shows what is under the crosshair. Breaking and placing go
-through the existing dirty mask, so nothing was added to the streaming pipeline.
+**The world can be edited.** Hold left to break, right click to place, `1`-`9` pick
+the block. A wireframe box shows what is under the crosshair and cracks spread across
+it while it is being mined -- break time is vanilla hardness, 0.75 s for dirt up to
+6.75 s for a deepslate ore. Breaking and placing go through the existing dirty mask,
+so nothing was added to the streaming pipeline.
 
 A character is drawn at the player position on a second render path; `F5` toggles third
 person, and the camera now pulls in when terrain is behind it rather than clipping
 through — a second use of Phase 9's raycast.
 
-| Distance 16 | No caves | Caves | + ores | + sky light | + editing |
-|---|---|---|---|---|---|
-| Frame p99 | 0.85 ms | 6.00 ms | 5.93 ms | 5.91 ms | **6.4–8.0** |
-| Quads drawn | 260 k | 4.1 M | 4.15 M | 4.18 M | **4.20 M** |
-| Arena used | 8 MiB | 112 MiB | 112 MiB | 113 MiB | **112 MiB** |
-| Warm-up, 1,089 columns | — | 2.29 s | 2.99 s | 3.58 s | **3.40 s** |
-| Sections with an empty mesh | 2,509 of 4,967 | **0** | **0** | **0** | **0** |
+| Distance 16 | No caves | Caves | + ores | + sky light | + editing | + trees |
+|---|---|---|---|---|---|---|
+| Frame p99 | 0.85 ms | 6.00 ms | 5.93 ms | 5.91 ms | 6.4–8.0 | **7.55** |
+| Quads drawn | 260 k | 4.1 M | 4.15 M | 4.18 M | 4.20 M | **4.33 M** |
+| Arena used | 8 MiB | 112 MiB | 112 MiB | 113 MiB | 112 MiB | **115 MiB** |
+| Warm-up, 1,089 columns | — | 2.29 s | 2.99 s | 3.58 s | 3.40 s | **3.52 s** |
+| Sections with an empty mesh | 2,509 of 4,967 | **0** | **0** | **0** | **0** | **0** |
 
 **Read the last column carefully; it is the one place in this document where a number
 got worse and the honest answer is "cannot tell".** The p99 figure is a *range over
@@ -113,10 +118,13 @@ proof of no regression either** — it says the benchmark cannot resolve a chang
 small on this machine. Settling it means running the same binary several times before
 and after, which has not been done.
 
-Warm-up genuinely improved, 3.58 s to 3.40 s, and not by intent: teaching the light
-store pass to detect changes meant it stopped clearing each mixed section and then
-re-expanding the nibble array on the first non-zero write. Comparing in place
-allocates nothing.
+Warm-up moved twice and both moves are understood. It *improved* 3.58 s to 3.40 s
+when light learned to detect changes -- the store pass stopped clearing each mixed
+section and re-expanding the nibble array on the first write, and comparing in place
+allocates nothing. It then went back up to 3.52 s when trees landed, which is the
+0.12 s they cost to place. Trees add 3 % to the quad count and 3 MiB of arena: leaves
+are opaque cubes that fragment a merge wherever they meet air, which is everywhere
+along a canopy.
 
 Neither ores nor light cost anything measurable to *draw*: ores add 0.6 % quads and
 light 0.7 %, both because they fragment a merge only where they change. Both cost
@@ -162,7 +170,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (168 cases, doctest)
+# Test  (176 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
@@ -219,12 +227,18 @@ meaningless.
 | `F` | switch to flying | switch to walking |
 | `F5` | first person / third person | same |
 | `Escape` | release cursor, then quit | same |
-| **Left mouse** | **break the highlighted block** | same |
+| **Left mouse** | **hold to break the highlighted block** | same |
 | **Right mouse** | **place the held block against it** | same |
 | **`1`-`9`** | **pick what to place** | same |
 
-Reach is 5 blocks. A left click with the cursor released re-captures it instead of
-breaking anything, so `Escape` then click does not dig a hole.
+Reach is 5 blocks. **Breaking is held, not clicked** -- cracks spread across the block
+while the button is down, and the time is vanilla's hardness: 0.75 s for dirt, 2.25 s
+for stone, 4.5 s for an ore, 6.75 s for one in deepslate. Letting go or looking away
+abandons the progress, which is vanilla's rule and what stops a player chipping four
+blocks at once by sweeping the crosshair. Placing stays a single click.
+
+A left click with the cursor released re-captures it instead of breaking anything, so
+`Escape` then click does not dig a hole.
 
 **Bedrock cannot be broken** — it is the world's floor, and vanilla refuses for the
 same reason.
@@ -281,12 +295,14 @@ src/world/              pure data; knows nothing about rendering
   BlockRegistry— lookup over that table, and nothing else
   SkyLight     — the daylight flood fill, per column; reports what it changed
   Raycast      — voxel DDA; aiming, and the third-person camera's collision
+  BlockTable also carries **hardness**, which is what break time comes from
 src/worldgen/           knows world, nothing above it; FastNoise2 is PRIVATE
   DensityField — the 4x8x4 interpolation grid (no FastNoise2, so it is testable)
   DensityGraph — the noise router; the only file that includes FastNoise2
   Generator    — the pipeline: noise, carvers, surface, features, light (order matters)
-  FeatureTable — the blob features: stone variants, gravel, ores
-  Features     — the placer; seamless across columns by replaying the 3x3
+  FeatureTable — the blob features (stone variants, gravel, ores) and the trees
+  Features     — the placer; blobs are seamless by replaying the 3x3, trees are
+                 inset instead and cannot cross a column -- see TreeSpec
   TerrainProbe — --probe; counts what generation produced, block and light
 src/mesh/               both meshers take a SectionNeighbourhood
   Quad (64-bit packed), ChunkMesh, CulledMesher, BinaryGreedyMesher
@@ -294,7 +310,7 @@ src/render/
   Camera, Frustum (5 planes -- no far plane), BlockTextures,
   SectionMeshStore (one persistently mapped arena), ChunkRenderer (one multi-draw),
   CharacterRenderer (the second render path; not voxels),
-  SelectionRenderer (the block outline; 24 vertices, no buffer at all)
+  SelectionRenderer (the block outline and the breaking cracks; no buffer at all)
 src/app/
   main, Engine (streaming pipeline: submit-only frame loop, upload thread)
 
@@ -340,7 +356,12 @@ Learned the hard way; all of them cost real time.
   `<brace-enclosed initializer list>`") points at the default argument, not at
   the field. This is why `Engine(Options)` takes its argument unconditionally.
 - **`Device::clear` takes linear colours, not sRGB** — `GL_FRAMEBUFFER_SRGB` is
-  enabled. Use `rhi::srgbToLinear`. See DESIGN.md 6.9 for the whole rule.
+  enabled. Use `rhi::srgbToLinear`. See DESIGN.md 6.9 for the whole rule. **This has
+  now caught three separate pieces of code**, most recently the crack overlay, whose
+  "near-black" `12/255` came out mid-grey because that value is linear and encodes to
+  about `0.24` sRGB. Anything writing a colour constant straight into a fragment
+  output or a non-sRGB texture has to be given the *linear* number: `2/255` was what
+  the cracks actually wanted.
 - **ThreadSanitizer will not start on this kernel without disabling ASLR.** It
   dies with `FATAL: ThreadSanitizer: unexpected memory mapping`, which looks like
   a bug in the binary and is not — the kernel's `vm.mmap_rnd_bits` is wider than
@@ -601,6 +622,15 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   *inside* the noise stage on their own grid (RESEARCH.md 4), the mesher only knows the
   `isOpaque` yes/no and would need water-against-water culling, and translucency needs a
   second draw pass. Three changes that have to land together.
+- **Three subsystems are missing, and most of what is still wanted needs one of
+  them.** Block updates (a block changing tells its neighbours) is what falling sand
+  and flowing water both wait on; entities is what item drops wait on; a UI layer is
+  what an inventory waits on. DESIGN.md 7 lists them as phases 12, 13 and 14. Water
+  additionally needs the mesher and draw-pass work in RESEARCH.md 5.3, so it is not
+  one phase.
+- **Trees leave a two-block band along every column edge with no trees in it.** The
+  deliberate cost of trees not crossing columns; see `TreeSpec` and DESIGN.md 7.9.
+  Fixing it properly means a chunk-status pipeline like vanilla's.
 - **Placing a block is refused only where the player stands, and the test is crude.**
   A two-block column at the feet with no width, matching the walk code's own shape.
   Since walking has no collision volume either, the two are at least consistent — but

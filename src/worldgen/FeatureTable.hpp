@@ -152,4 +152,52 @@ inline constexpr std::array kBlobFeatures{
              0.8f, 1, 10, -63, -4, -59, HeightDistribution::Triangle, 0.5f},
 };
 
+/// A tree.
+///
+/// **Not a `BlobSpec`, and the difference is not the shape.** A blob's geometry is a
+/// pure function of (seed, column, feature, attempt), so a column can work out where
+/// its neighbour's blobs went without asking. A tree stands *on the ground*, so its
+/// height depends on the terrain at its trunk -- and when column T replays column S's
+/// trees, T has no way to know how high S's ground is. That is a world read across a
+/// border, which is exactly the ordering dependency the streaming design refuses.
+///
+/// So trees do not cross columns at all: a trunk must sit far enough from the edge
+/// that its whole canopy fits inside its own column. **The cost is a band of
+/// `canopyRadius` blocks along each column edge where no tree ever grows**, which at
+/// radius 2 in a 32-wide column leaves 28x28 of it plantable. It is a real artefact
+/// -- there is a faint grid of tree-free strips -- and it is the same kind of
+/// deliberate compromise as the air-exposure rule treating outside the column as
+/// solid. The alternative is a chunk-status pipeline like vanilla's, which is a much
+/// larger thing than trees.
+struct TreeSpec {
+    std::string_view name;
+
+    BlockId log = kAirBlock;
+    BlockId leaves = kAirBlock;
+
+    /// Attempts per column. Not every attempt plants: most land on stone, sand or a
+    /// slope and are rejected.
+    f32 triesPerColumn = 0.0f;
+
+    /// Trunk height in logs. Vanilla oak is 4 to 6.
+    i32 minHeight = 4;
+    i32 maxHeight = 6;
+
+    /// Horizontal reach of the widest leaf layer, and therefore the width of the
+    /// no-tree band along each column edge.
+    i32 canopyRadius = 2;
+};
+
+/// Trees, such as there are. One species, because there are no biomes to tell a
+/// birch forest from an oak one -- see the note on emerald above, which is the same
+/// argument.
+///
+/// Five attempts per 32x32 column is roughly one per vanilla 16x16 chunk before
+/// rejections, which lands between vanilla's plains and its sparse forest. Without
+/// biomes the density has to be one number everywhere, so it is deliberately on the
+/// thin side: uniform thick forest reads worse than uniform light woodland.
+inline constexpr std::array kTreeFeatures{
+    TreeSpec{"oak", blockIdOf("oak_log"), blockIdOf("oak_leaves"), 5.0f, 4, 6, 2},
+};
+
 } // namespace mc

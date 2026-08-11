@@ -37,6 +37,13 @@ enum class TextureRecipe : u8 {
     /// Grain in the host rock's colour, with a scatter of blobs in a second colour.
     /// Every ore is this, twice: once over stone and once over deepslate.
     Ore,
+    /// Concentric growth rings in a second colour, for the cut end of a log. The
+    /// one thing that makes a log read as a log rather than as a brown cube.
+    Rings,
+    /// Vertical streaks rather than isotropic noise, for bark. Grain would give a
+    /// log the same texture as dirt, and the grain direction is most of what says
+    /// which way the trunk runs.
+    Bark,
 };
 
 struct LayerInfo {
@@ -95,6 +102,13 @@ inline constexpr std::array kLayers{
     LayerInfo{"deepslate_lapis_ore",  TextureRecipe::Ore, 0xFF4F4F55u, 0xFF1B57B5u, 13.0f, 31u},
     LayerInfo{"diamond_ore",          TextureRecipe::Ore, 0xFF8C8C8Cu, 0xFF5DECF5u, 20.0f, 32u},
     LayerInfo{"deepslate_diamond_ore", TextureRecipe::Ore, 0xFF4F4F55u, 0xFF5DECF5u, 13.0f, 33u},
+
+    // Trees. The leaf colour is deliberately darker and bluer than grass_top: a
+    // canopy that matches the ground it sits on reads as a flat green smear from any
+    // distance, and separating them by value is what gives a tree a silhouette.
+    LayerInfo{"oak_log_top",  TextureRecipe::Rings, 0xFF9C7A4Bu, 0xFF6B5230u, 6.0f, 40u},
+    LayerInfo{"oak_log_side", TextureRecipe::Bark,  0xFF6B5433u, 0xFF4E3D24u, 14.0f, 41u},
+    LayerInfo{"oak_leaves",   TextureRecipe::Grain, 0xFF3F7A2Eu, 0u,          22.0f, 42u},
 };
 
 inline constexpr u16 kTextureLayerCount = static_cast<u16>(kLayers.size());
@@ -145,13 +159,23 @@ struct BlockInfo {
     /// replaced the beach would be visible from the sky, and one that replaced
     /// gravel would let a blob eat a feature placed before it.
     bool stoneLike = false;
+
+    /// Vanilla hardness. Sourced from the game's own block report -- see
+    /// RESEARCH.md 8, which also records the drop and tool data that is *not* here.
+    ///
+    /// **Negative means unbreakable**, which is bedrock and only bedrock. Vanilla
+    /// spells it -1 for the same reason: there is no hardness large enough to mean
+    /// "never", so it is a separate case wearing a number.
+    ///
+    /// Break time comes out of this in `breakSeconds` below. Nothing else reads it.
+    f32 hardness = 0.0f;
 };
 
 /// A block that draws the same layer on all six faces, which is most of them.
 consteval BlockInfo uniformBlock(std::string_view name, std::string_view layer,
-                                 char glyph, bool stoneLike = false) {
+                                 char glyph, f32 hardness, bool stoneLike = false) {
     const u16 index = layerOf(layer);
-    return BlockInfo{name, true, index, index, index, glyph, stoneLike};
+    return BlockInfo{name, true, index, index, index, glyph, stoneLike, hardness};
 }
 
 /// Block types, in BlockId order. The index of an entry *is* its BlockId.
@@ -159,45 +183,59 @@ consteval BlockInfo uniformBlock(std::string_view name, std::string_view layer,
 /// Air must stay first: `kAirBlock` is 0 in core/Types.hpp, where the mesher and
 /// the palette both need it without knowing this table exists. The static_assert
 /// below is what keeps the two from drifting.
+/// Hardness values are vanilla's, from the game's own block report. RESEARCH.md 8
+/// carries the table and the sources; `breakSeconds` below turns them into time.
 inline constexpr std::array kBlocks{
     BlockInfo{"air", false, layerOf("stone"), layerOf("stone"), layerOf("stone"), '.'},
 
-    uniformBlock("stone", "stone", '#', true),
-    uniformBlock("dirt", "dirt", 'd'),
+    uniformBlock("stone", "stone", '#', 1.5f, true),
+    uniformBlock("dirt", "dirt", 'd', 0.5f),
     // Grass is the reason a face carries a layer rather than a block id: one block
     // type, three different textures.
     BlockInfo{"grass", true, layerOf("grass_top"), layerOf("grass_side"),
-                             layerOf("dirt"), 'g'},
-    uniformBlock("sand", "sand", 's'),
+                             layerOf("dirt"), 'g', false, 0.6f},
+    uniformBlock("sand", "sand", 's', 0.5f),
 
-    uniformBlock("bedrock", "bedrock", 'B'),
-    uniformBlock("deepslate", "deepslate", 'D', true),
+    // -1 is vanilla's spelling of "never". See BlockInfo::hardness.
+    uniformBlock("bedrock", "bedrock", 'B', -1.0f),
+    uniformBlock("deepslate", "deepslate", 'D', 3.0f, true),
 
-    uniformBlock("granite", "granite", 'r', true),
-    uniformBlock("diorite", "diorite", 'o', true),
-    uniformBlock("andesite", "andesite", 'a', true),
-    uniformBlock("tuff", "tuff", 't', true),
-    uniformBlock("gravel", "gravel", 'v'),
+    uniformBlock("granite", "granite", 'r', 1.5f, true),
+    uniformBlock("diorite", "diorite", 'o', 1.5f, true),
+    uniformBlock("andesite", "andesite", 'a', 1.5f, true),
+    uniformBlock("tuff", "tuff", 't', 1.5f, true),
+    uniformBlock("gravel", "gravel", 'v', 0.6f),
 
     // Ores. Each is two block types, because replacing deepslate has to yield the
     // deepslate variant -- the ore keeps its speckle colour and takes the host
     // rock's. Uppercase glyphs so a cross-section shows ore against rock at a
     // glance; the deepslate variant shares its letter with the stone one, since
     // which rock it sits in is already obvious from the depth.
-    uniformBlock("coal_ore", "coal_ore", 'C'),
-    uniformBlock("deepslate_coal_ore", "deepslate_coal_ore", 'C'),
-    uniformBlock("iron_ore", "iron_ore", 'I'),
-    uniformBlock("deepslate_iron_ore", "deepslate_iron_ore", 'I'),
-    uniformBlock("copper_ore", "copper_ore", 'U'),
-    uniformBlock("deepslate_copper_ore", "deepslate_copper_ore", 'U'),
-    uniformBlock("gold_ore", "gold_ore", 'G'),
-    uniformBlock("deepslate_gold_ore", "deepslate_gold_ore", 'G'),
-    uniformBlock("redstone_ore", "redstone_ore", 'R'),
-    uniformBlock("deepslate_redstone_ore", "deepslate_redstone_ore", 'R'),
-    uniformBlock("lapis_ore", "lapis_ore", 'L'),
-    uniformBlock("deepslate_lapis_ore", "deepslate_lapis_ore", 'L'),
-    uniformBlock("diamond_ore", "diamond_ore", 'X'),
-    uniformBlock("deepslate_diamond_ore", "deepslate_diamond_ore", 'X'),
+    // Every overworld ore is hardness 3, and every deepslate variant is 4.5 -- the
+    // deep rock is what is hard, not the metal in it.
+    uniformBlock("coal_ore", "coal_ore", 'C', 3.0f),
+    uniformBlock("deepslate_coal_ore", "deepslate_coal_ore", 'C', 4.5f),
+    uniformBlock("iron_ore", "iron_ore", 'I', 3.0f),
+    uniformBlock("deepslate_iron_ore", "deepslate_iron_ore", 'I', 4.5f),
+    uniformBlock("copper_ore", "copper_ore", 'U', 3.0f),
+    uniformBlock("deepslate_copper_ore", "deepslate_copper_ore", 'U', 4.5f),
+    uniformBlock("gold_ore", "gold_ore", 'G', 3.0f),
+    uniformBlock("deepslate_gold_ore", "deepslate_gold_ore", 'G', 4.5f),
+    uniformBlock("redstone_ore", "redstone_ore", 'R', 3.0f),
+    uniformBlock("deepslate_redstone_ore", "deepslate_redstone_ore", 'R', 4.5f),
+    uniformBlock("lapis_ore", "lapis_ore", 'L', 3.0f),
+    uniformBlock("deepslate_lapis_ore", "deepslate_lapis_ore", 'L', 4.5f),
+    uniformBlock("diamond_ore", "diamond_ore", 'X', 3.0f),
+    uniformBlock("deepslate_diamond_ore", "deepslate_diamond_ore", 'X', 4.5f),
+
+    // -- trees ----------------------------------------------------------------
+    // Leaves are an opaque cube here, which is what makes trees cost nothing to
+    // render. Vanilla's leaves are a full cube too and merely let light through;
+    // "fast graphics" draws them exactly like this. Cross-quad geometry is what
+    // grass and flowers need, and that is Phase 10 -- see RESEARCH.md 5.4.
+    BlockInfo{"oak_log", true, layerOf("oak_log_top"), layerOf("oak_log_side"),
+                               layerOf("oak_log_top"), 'T', false, 2.0f},
+    uniformBlock("oak_leaves", "oak_leaves", 'l', 0.2f),
 };
 
 /// Resolves a block name to its BlockId. Same reasoning as `layerOf`.
@@ -218,10 +256,38 @@ inline constexpr BlockId kGrassBlock     = blockIdOf("grass");
 inline constexpr BlockId kSandBlock      = blockIdOf("sand");
 inline constexpr BlockId kBedrockBlock   = blockIdOf("bedrock");
 inline constexpr BlockId kDeepslateBlock = blockIdOf("deepslate");
+inline constexpr BlockId kOakLogBlock    = blockIdOf("oak_log");
+inline constexpr BlockId kOakLeavesBlock = blockIdOf("oak_leaves");
 
 /// True for the rock a blob feature may replace. See BlockInfo::stoneLike.
 constexpr bool isStoneLike(BlockId id) {
     return id < kBlocks.size() && kBlocks[id].stoneLike;
+}
+
+/// Bedrock, and anything else ever given a negative hardness.
+constexpr bool isUnbreakable(BlockId id) {
+    return id < kBlocks.size() && kBlocks[id].hardness < 0.0f;
+}
+
+/// How long `id` takes to break bare-handed, in seconds. Zero for air, and for
+/// anything unbreakable -- callers are expected to ask `isUnbreakable` first.
+///
+/// Vanilla computes damage per tick as `speed / hardness / (canHarvest ? 30 : 100)`
+/// and breaks the block when that reaches 1. At bare-hand speed 1.0 that is
+/// `hardness * 1.5` seconds when the block can be harvested and `hardness * 5` when
+/// it cannot -- the second branch being the game's way of saying "you need a
+/// pickaxe", since it also drops nothing.
+///
+/// **This engine takes the harvestable branch for everything, deliberately.** With
+/// no tools the other branch is not "harder", it is a dead end: bare-handed stone in
+/// vanilla is 7.5 seconds for nothing at all. Tools arrive later as the `speed`
+/// multiplier this formula already has room for, and none of the hardness numbers in
+/// the table change when they do.
+constexpr f32 breakSeconds(BlockId id) {
+    if (id >= kBlocks.size() || isUnbreakable(id)) {
+        return 0.0f;
+    }
+    return kBlocks[id].hardness * 1.5f;
 }
 
 static_assert(blockIdOf("air") == kAirBlock,

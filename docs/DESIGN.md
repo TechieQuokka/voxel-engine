@@ -722,6 +722,19 @@ and 9 is the next thing being built.
 | 9 **(done)** | Voxel raycast; block placement and breaking | A player can dig from the surface into a cave |
 | 10 | Vegetation — non-cube geometry, second mesher path | Flowers and grass on the surface |
 | 11 | Persistence — chunk save format | An edited world survives a restart |
+| 12 | Block updates — neighbour notification and scheduled ticks | Sand falls when its support goes |
+| 13 | Entities — the first thing in the world that is not a voxel | A broken block drops an item |
+| 14 | Inventory and a UI layer | That item can be picked up and placed again |
+
+**Trees landed early, in 7.9, and did not wait for Phase 10.** Vegetation is priced
+as a second mesher path because grass and flowers are cross-quads; a log and a leaf
+are cubes, so a tree costs two block types and a feature and nothing else. The phase
+still exists for everything that is genuinely not a cube.
+
+Phases 12 to 14 are the subsystems this engine does not have, listed in the order
+their dependencies force: falling sand and flowing water need block updates; item
+drops need entities; picking an item up needs somewhere to put it. Water spans 12 and
+the mesher work in RESEARCH.md 5.3, which is why it is not a phase of its own here.
 
 Phase 9 was deliberately first of the three, and both halves of that argument held.
 It reused the dirty mask, the remeshing path, `Palette::set` and the light recompute
@@ -1328,6 +1341,88 @@ needed a voxel raycast the engine did not have. It has one now, and the fix is f
 lines: cast backwards from the eye, stop short of what is hit. This is the second
 caller of the raycast and the reason Phase 9 was ordered ahead of vegetation — the
 prerequisite argument was not hypothetical.
+
+---
+
+### 7.9 Trees, break time, and a walking fix
+
+Four items raised after the first real play session, grouped because none of them
+needs a subsystem that does not exist. That was the selection rule, not the theme.
+
+#### Walking a full block was wrong, and it was one constant
+
+`kStepHeight` was 1.05, so every rise in the world was walked up automatically. That
+is not how Minecraft behaves: **vanilla steps up at most 0.6 of a block**, which
+covers slabs and stairs and nothing else, and stepping a whole block without jumping
+is a *mod*. Since every block here is full height, 0.6 means no rise is ever walked
+and all of them are jumped — which is what the real game feels like and what was
+reported as missing. The jump already cleared it: 8.5 m/s against 28 m/s² peaks at
+1.29 blocks.
+
+Worth recording as a category. This was not a missing feature, it was a fidelity bug
+that had been in since walking landed, and it took a player thirty seconds to feel
+something that no test would ever have caught.
+
+#### Trees are much cheaper than "vegetation"
+
+RESEARCH.md 5.4 priced vegetation as a second mesher path — no greedy merge,
+back-face culling off, alpha testing on. **That price is for grass and flowers,
+which are cross-quads. It is not the price of a tree.** Logs and leaves are cubes.
+Making leaves opaque, exactly as vanilla's "fast graphics" does, means trees cost:
+two block types, three texture layers, one feature. No mesher change, no new render
+path, no streaming change.
+
+The one real cost is a seam, and it is a different seam from the blob features':
+
+> A blob's geometry is a pure function of (seed, column, feature, attempt), so a
+> column can work out where its neighbour's blobs went without asking anyone. **A
+> tree stands on the ground**, so its height depends on terrain at the trunk — and
+> when column T replays column S's trees, T has no way to know how high S's ground
+> is. That is a world read across a border, which is the ordering dependency the
+> whole streaming design exists to avoid.
+
+So trees do not cross columns: a trunk is inset far enough that its canopy fits
+inside its own column. **The cost is a two-block band along each column edge where no
+tree grows**, leaving 28x28 of each 32x32 column plantable. It is a real artefact —
+a faint grid of tree-free strips — and it is the same class of deliberate compromise
+as the air-exposure rule treating outside the column as solid. The alternative is
+vanilla's chunk-status pipeline, which is a much larger thing than trees.
+
+Measured at 4.6 trees per column, about 62 leaves each, which is sparse woodland —
+between vanilla's plains and its forest. Without biomes the density has to be one
+number everywhere, so it is deliberately on the thin side: uniform thick forest reads
+worse than uniform light woodland.
+
+#### Breaking takes time, and the overlay is most of the work
+
+Hardness is one field per block, sourced from the game's own data (RESEARCH.md 8).
+The formula and the decision not to gate on tools are both there; the short version
+is that reproducing vanilla exactly would make every ore unobtainable, because bare
+hands cannot harvest them at all.
+
+**The crack overlay is the part that mattered.** Holding a button for four seconds
+with no feedback is worse than an instant break — the player cannot distinguish
+"mining" from "nothing is happening". Ten destroy stages, generated procedurally like
+every other texture here, drawn as a blended cube over the target. Two details:
+
+- The stages are **cumulative**: branch *k* follows the same path at every stage and
+  a stage merely draws more branches, so cracks spread rather than being reshuffled
+  ten times. Ten unrelated patterns read as flicker, not damage.
+- The first version wrote the crack colour as `12/255` thinking it near-black, and it
+  came out mid-grey, because `GL_FRAMEBUFFER_SRGB` encodes on write and that value is
+  *linear*. `2/255` is the dark this wanted. Same rule as `Device::clear`, third time
+  it has caught someone — see 6.9.
+
+Progress resets whenever the crosshair leaves the block, which is vanilla's rule and
+what stops a player chipping four blocks at once by sweeping across them.
+
+#### What this did not touch
+
+Water, falling sand and item drops were all asked for at the same time and are all
+absent, on purpose. Each needs one of the three subsystems this engine does not have
+— block updates, entities, a UI layer — and mixing "one constant" with "build an
+entity system" in one change would have meant neither landing cleanly. Section 8
+lists them.
 
 ---
 

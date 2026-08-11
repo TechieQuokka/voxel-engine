@@ -52,6 +52,18 @@ public:
     void clear(f32 r, f32 g, f32 b, f32 a);
 
     void setDepthTest(bool enabled);
+
+    /// Straight alpha blending, `src.a` over the destination.
+    ///
+    /// Off for everything the engine draws except the breaking overlay. Real
+    /// translucency -- water -- needs a sorted second pass as well, so turning this
+    /// on is not by itself enough for it. See RESEARCH.md 5.3.
+    void setAlphaBlending(bool enabled);
+
+    /// Whether draws write depth. Test and write are separate switches because an
+    /// overlay wants to be *occluded* by the world while not occluding anything
+    /// itself.
+    void setDepthWrite(bool enabled);
     /// Back faces are culled when enabled; quad winding is defined by the
     /// tangent basis in chunk.vert.
     void setBackfaceCulling(bool enabled);

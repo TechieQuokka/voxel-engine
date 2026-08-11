@@ -30,8 +30,14 @@ public:
     void place(Chunk& chunk) const;
 
 private:
-    /// Replays one column's features, writing only what lands inside `target`.
+    /// Replays one column's blob features, writing only what lands inside `target`.
     void placeFrom(Chunk& target, ChunkPos source) const;
+
+    /// Plants this column's own trees. **No 3x3 replay**, unlike the blobs: a tree
+    /// stands on the ground, so its height is a world read that a neighbour cannot
+    /// make across a border. Trees are inset far enough from the column edge that
+    /// they never cross one. See the note on `TreeSpec`.
+    void placeTrees(Chunk& chunk) const;
 
     u32 m_seed;
 };

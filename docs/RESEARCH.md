@@ -1,7 +1,7 @@
 # Research notes: the block catalogue
 
 Written 2026-08-10, between Phase 4b and 4c. Sourced from the Minecraft Wiki
-against Java Edition 1.21; every URL used is listed in section 7.
+against Java Edition 1.21; every URL used is listed in section 9.
 
 `DESIGN.md` 7.6 and `HANDOFF.md` 6 both refer to "the research notes" for the ore
 parameter table. This is that file — the table did not exist in the repository
@@ -241,17 +241,90 @@ Recorded so that nobody re-derives these from a bad source later.
   barrier noise, the fluid-level selection, or how aquifers and carvers interact.
   Implementing 4b's missing aquifers will need a source beyond the wiki — the
   decompiled `NoiseChunk`/`Aquifer` code is the realistic option.
-- **Per-biome surface and filler blocks as a systematic table.** The wiki's Biome
+- ~~**Per-biome surface and filler blocks as a systematic table.**~~ The wiki's Biome
   article is qualitative ("deserts have sand dunes with sandstone underneath") and
   publishes only `temperature` and `downfall`. It does **not** publish the six-
   parameter climate space (temperature, humidity, continentalness, erosion,
-  weirdness, depth) that actually places biomes. Phase 4d needs that table and this
-  research did not find it; the biome parameter list in the game's own worldgen data
-  is where it will have to come from.
+  weirdness, depth) that actually places biomes. **Resolved on 2026-08-11 — see
+  section 8.2.** The answer was the one guessed here, the game's own data, and it
+  turns out to be a supported tool rather than a decompilation job.
 
 ---
 
-## 7. Sources
+## 8. Block properties
+
+Researched 2026-08-11, when breaking a block stopped being instantaneous and needed
+a per-block time. Sources in 8.2, which is also where the answer to 6's last item is.
+
+### 8.1 Hardness, and what it becomes
+
+Vanilla computes mining as damage accumulated per tick:
+
+```
+damage = toolSpeed / hardness / (canHarvest ? 30 : 100)
+```
+
+and the block breaks when that reaches 1. At bare-hand speed 1.0 this is
+`hardness * 1.5` seconds when the block can be harvested and `hardness * 5` when it
+cannot — the second branch being how the game says *you need a pickaxe*, since a
+block mined that way also drops nothing at all.
+
+**This engine takes the harvestable branch for everything, deliberately.** With no
+tools the other branch is not "harder", it is a dead end: bare-handed stone in
+vanilla is 7.5 seconds for no drop. Tools arrive later as the `toolSpeed` multiplier
+the formula already has room for, and none of these numbers change when they do.
+
+| Block | Hardness | Seconds here | Vanilla bare hand |
+|---|---|---|---|
+| oak leaves | 0.2 | 0.30 | 0.30 |
+| dirt, sand | 0.5 | 0.75 | 0.75 |
+| grass block, gravel | 0.6 | 0.90 | 0.90 |
+| stone, granite, diorite, andesite, tuff | 1.5 | 2.25 | 7.50 (no drop) |
+| oak log | 2.0 | 3.00 | 3.00 |
+| deepslate, all seven stone ores | 3.0 | 4.50 | 15.0 (no drop) |
+| all seven deepslate ores | 4.5 | 6.75 | 22.5 (no drop) |
+| bedrock | −1 | never | never |
+
+The right-hand column is the argument for the decision: reproducing it exactly would
+make every ore in the game unobtainable and every stone block a fifteen-second wait
+for nothing.
+
+**−1 is vanilla's spelling of "never"**, and it is bedrock and only bedrock. It is a
+separate case wearing a number, because no finite hardness means unbreakable.
+
+### 8.2 Where the numbers came from, and the tool that unblocked 4d
+
+Two machine-readable sources, either of which answers this better than the wiki:
+
+- **[PrismarineJS/minecraft-data](https://github.com/PrismarineJS/minecraft-data)** —
+  language-independent JSON, MIT licensed, current to 1.21.10. `blocks.json` carries
+  `hardness`, `harvestTools`, `drops`, `diggable`, `transparent`, `emitLight`,
+  `filterLight`, `boundingBox`, `material`, `resistance` and `stackSize`.
+- **[The game's own data generator](https://minecraft.wiki/w/Tutorial:Running_the_data_generator)** —
+  `java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports` emits
+  block states, registries and **worldgen** as JSON. Authoritative, because it is the
+  game telling you rather than an editor writing it down.
+
+**The second one closes section 6's last open item.** That entry said the six-
+parameter biome climate table "is where it will have to come from" and treated it as
+a decompilation problem. It is not — `--reports` includes worldgen, so 4d's missing
+input is a supported command away rather than a reverse-engineering job.
+
+**Neither is taken as a dependency.** Thirty blocks times one number is small enough
+to transcribe once into `world/BlockTable.hpp`, where it belongs next to everything
+else about a block, and the repository keeps its rule that a block type is one line
+in one file. The sources are cited so the numbers can be rechecked.
+
+### 8.3 Drops and tools, researched but not built
+
+`drops` and `harvestTools` are in the data above and are deliberately **not** fields
+in `BlockInfo`. A dropped item needs an entity to be, and there is no entity system;
+a tool requirement needs a tool, which needs crafting. Adding either field now would
+be data nothing reads. They land with the phase that can use them.
+
+---
+
+## 9. Sources
 
 Minecraft Wiki, retrieved 2026-08-10:
 
@@ -266,3 +339,13 @@ Minecraft Wiki, retrieved 2026-08-10:
 - <https://minecraft.wiki/w/Biome>
 - Per-ore pages: `Coal_Ore`, `Iron_Ore`, `Copper_Ore`, `Gold_Ore`, `Redstone_Ore`,
   `Lapis_Lazuli_Ore`, `Diamond_Ore`, `Emerald_Ore`, `Gravel`, `Granite`
+
+Added 2026-08-11 for section 8, and for the walking fix:
+
+- <https://github.com/PrismarineJS/minecraft-data> — block properties as JSON, MIT
+- <https://minecraft.wiki/w/Tutorial:Running_the_data_generator> — `--reports`
+- <https://minecraft.wiki/w/Solid_block> — the 0.6 step height
+- <https://minecraft.wiki/w/Fluid> — fluid levels 0-7 and the spread weights, for
+  when water is built
+- <https://github.com/fogleman/Craft> and <https://github.com/luanti-org/luanti> —
+  the two existing implementations worth reading; see HANDOFF.md 10

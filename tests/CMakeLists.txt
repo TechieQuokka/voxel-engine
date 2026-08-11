@@ -24,6 +24,8 @@ add_executable(mc_tests
   test_greedy_mesher.cpp
   test_raycast.cpp
   test_world_edit.cpp
+  test_block_table.cpp
+  test_trees.cpp
 )
 
 target_link_libraries(mc_tests PRIVATE

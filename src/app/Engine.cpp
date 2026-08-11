@@ -718,14 +718,54 @@ void Engine::breakTargetBlock() {
     if (!m_target.has_value()) {
         return;
     }
+    applyEdit(m_target->block, kAirBlock);
+}
 
-    // Bedrock is the world's floor and the reason you cannot fall out of the bottom
-    // of it. Vanilla makes it unbreakable for the same reason.
-    if (m_world->blockAt(m_target->block) == kBedrockBlock) {
+void Engine::updateBreaking(f32 dt) {
+    const bool holding = m_input->isDown(MouseButton::Left) && m_input->cursorCaptured();
+
+    // Abandon the swing if the button came up, the crosshair left the block, or the
+    // block stopped being breakable under it. Any of those resets to zero rather
+    // than pausing: partial progress that survives looking away would let a player
+    // chip at four blocks at once by sweeping the crosshair between them.
+    const bool sameBlock = m_target.has_value() && m_breakingBlock.has_value()
+                        && m_target->block == *m_breakingBlock;
+
+    if (!holding || !m_target.has_value() || !sameBlock) {
+        m_breakingBlock = m_target.has_value() && holding
+                              ? std::optional<BlockPos>{m_target->block}
+                              : std::nullopt;
+        m_breakProgress = 0.0f;
+        if (!m_breakingBlock.has_value()) {
+            return;
+        }
+    }
+
+    const BlockId block = m_world->blockAt(*m_breakingBlock);
+    if (block == kAirBlock || isUnbreakable(block)) {
+        // Bedrock is the world's floor and the reason you cannot fall out of the
+        // bottom of it. Vanilla refuses for the same reason, and the crack overlay
+        // never appears on it because progress never advances.
+        m_breakProgress = 0.0f;
         return;
     }
 
-    applyEdit(m_target->block, kAirBlock);
+    const f32 seconds = breakSeconds(block);
+    if (seconds <= 0.0f) {
+        breakTargetBlock(); // Hardness zero: gone on contact.
+        m_breakingBlock.reset();
+        m_breakProgress = 0.0f;
+        return;
+    }
+
+    m_breakProgress += dt / seconds;
+    if (m_breakProgress < 1.0f) {
+        return;
+    }
+
+    breakTargetBlock();
+    m_breakingBlock.reset();
+    m_breakProgress = 0.0f;
 }
 
 void Engine::placeTargetBlock() {
@@ -751,7 +791,7 @@ void Engine::placeTargetBlock() {
     applyEdit(target, kHotbar[m_hotbarSlot]);
 }
 
-void Engine::updateInteraction() {
+void Engine::updateInteraction(f32 dt) {
     MC_PROFILE_SCOPE_N("Engine::updateInteraction");
 
     // Retry whatever was blocked last frame, before casting anything new. Draining
@@ -788,6 +828,8 @@ void Engine::updateInteraction() {
         if (m_input->wasPressed(MouseButton::Left)) {
             m_input->setCursorCaptured(true);
         }
+        m_breakingBlock.reset();
+        m_breakProgress = 0.0f;
         return;
     }
 
@@ -799,9 +841,11 @@ void Engine::updateInteraction() {
         }
     }
 
-    if (m_input->wasPressed(MouseButton::Left)) {
-        breakTargetBlock();
-    }
+    // Breaking is held, not clicked. Placing stays edge-triggered: vanilla repeats
+    // breaking on a timer and does not repeat placing at all, and a place-repeat at
+    // 60 Hz would lay sixty blocks a second along the view ray.
+    updateBreaking(dt);
+
     if (m_input->wasPressed(MouseButton::Right)) {
         placeTargetBlock();
     }
@@ -909,7 +953,9 @@ void Engine::captureAndExit() {
     // -- selection box included. Without this the one tool that can look at a frame
     // without a compositor is blind to the one thing drawn only when aiming at
     // something, which is exactly the thing worth checking.
-    updateInteraction();
+    //
+    // Zero dt: a capture is one frame out of time, and no break should advance in it.
+    updateInteraction(0.0f);
 
     renderFrame();
     const std::vector<u8> pixels = m_device->readFramebufferRgba(width, height);
@@ -952,7 +998,7 @@ void Engine::stepFrame(f64 deltaTime) {
 
     // Before submitting, so a block broken this frame is remeshed this frame rather
     // than sitting visibly intact until the next one.
-    updateInteraction();
+    updateInteraction(static_cast<f32>(deltaTime));
 
     updateLoadedRegion();
 
@@ -1177,10 +1223,19 @@ void Engine::renderFrame() {
     // enough to win against its own block's faces and nothing else -- so a wall
     // between the player and the target correctly hides it.
     if (m_target.has_value()) {
-        m_selection->draw(*m_device, m_renderCamera,
-                          vec3{static_cast<f32>(m_target->block.x),
-                               static_cast<f32>(m_target->block.y),
-                               static_cast<f32>(m_target->block.z)});
+        const vec3 origin{static_cast<f32>(m_target->block.x),
+                          static_cast<f32>(m_target->block.y),
+                          static_cast<f32>(m_target->block.z)};
+        m_selection->draw(*m_device, m_renderCamera, origin);
+
+        // Only while a break is actually running on *this* block. Progress is reset
+        // the moment the crosshair leaves it, so the cracks cannot be left behind on
+        // a block the player walked away from.
+        if (m_breakProgress > 0.0f && m_breakingBlock.has_value()
+            && *m_breakingBlock == m_target->block) {
+            m_selection->drawCracks(*m_device, m_renderCamera, origin,
+                                    SelectionRenderer::stageFor(m_breakProgress));
+        }
     }
 }
 

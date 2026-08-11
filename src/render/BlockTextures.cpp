@@ -125,6 +125,57 @@ void generateGrassSide(std::vector<u8>& out, u32 layer, u32 dirtArgb, u32 grassA
     }
 }
 
+/// The cut end of a log: concentric growth rings around an off-centre heart.
+///
+/// Off-centre on purpose. Rings centred in the tile give a bullseye, which reads as a
+/// target painted on the block; a real trunk's heart is never quite in the middle,
+/// and moving it two pixels is the whole difference.
+void generateRings(std::vector<u8>& out, u32 layer, u32 woodArgb, u32 ringArgb,
+                   f32 roughness, u32 seed) {
+    const Rgba wood = fromArgb(woodArgb);
+    const Rgba ring = fromArgb(ringArgb);
+
+    constexpr f32 kCenterX = 7.0f;
+    constexpr f32 kCenterY = 6.0f;
+
+    for (u32 y = 0; y < kSize; ++y) {
+        for (u32 x = 0; x < kSize; ++x) {
+            const f32 dx = static_cast<f32>(x) - kCenterX;
+            const f32 dy = static_cast<f32>(y) - kCenterY;
+            // The wobble is what stops the rings being perfect circles.
+            const f32 radius = std::sqrt(dx * dx + dy * dy) + noise(x, y, seed) * 0.9f;
+
+            const bool onRing = std::fmod(radius, 2.6f) < 1.15f;
+            const Rgba base = onRing ? ring : wood;
+            writePixel(out, layer, x, y, shade(base, noise(x, y, seed + 5u) * roughness));
+        }
+    }
+}
+
+/// Bark: streaks that run the height of the tile rather than isotropic noise.
+///
+/// A log's side sampled with plain grain looks like dirt. What says "trunk" is that
+/// the variation is vertical, so the noise is stretched hard along y -- neighbouring
+/// rows share a value and neighbouring columns do not.
+void generateBark(std::vector<u8>& out, u32 layer, u32 barkArgb, u32 grooveArgb,
+                  f32 roughness, u32 seed) {
+    const Rgba bark = fromArgb(barkArgb);
+    const Rgba groove = fromArgb(grooveArgb);
+
+    for (u32 x = 0; x < kSize; ++x) {
+        // One decision per column: is this a groove, and how dark is the whole streak.
+        const bool groovy = (hash2D(x, 0u, seed) % 5u) == 0u;
+        const f32 columnShade = noise(x, 0u, seed + 3u) * roughness;
+
+        for (u32 y = 0; y < kSize; ++y) {
+            const Rgba base = groovy ? groove : bark;
+            // y varies four times slower than x, which is the stretch.
+            const f32 n = noise(x, y / 4u, seed + 9u) * roughness * 0.5f;
+            writePixel(out, layer, x, y, shade(base, columnShade + n));
+        }
+    }
+}
+
 } // namespace
 
 BlockTextures::BlockTextures() {
@@ -151,6 +202,14 @@ BlockTextures::BlockTextures() {
         case TextureRecipe::Ore:
             generateOre(pixels, index, layer.argb, layer.argbSecondary,
                         layer.roughness, layer.seed);
+            break;
+        case TextureRecipe::Rings:
+            generateRings(pixels, index, layer.argb, layer.argbSecondary,
+                          layer.roughness, layer.seed);
+            break;
+        case TextureRecipe::Bark:
+            generateBark(pixels, index, layer.argb, layer.argbSecondary,
+                         layer.roughness, layer.seed);
             break;
         }
     }

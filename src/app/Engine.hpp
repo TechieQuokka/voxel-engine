@@ -117,7 +117,11 @@ private:
     /// meshing job. One call per frame, before streaming submits anything -- an edit
     /// dirties sections, and doing it after `submitMeshing` would hold the change for
     /// a frame for no reason.
-    void updateInteraction();
+    void updateInteraction(f32 dt);
+
+    /// Advances or abandons the current break. Holding the button on one block for
+    /// its full break time is what actually removes it.
+    void updateBreaking(f32 dt);
 
     /// Breaks `m_target`, or places the selected block against it. Both go through
     /// `applyEdit`, so both get the same retry behaviour.
@@ -238,8 +242,17 @@ private:
     static constexpr f32 kGravity = 28.0f;
     static constexpr f32 kJumpVelocity = 8.5f;
     static constexpr f32 kTerminalVelocity = 60.0f;
-    /// One block plus a little, so terraced terrain is walked rather than jumped.
-    static constexpr f32 kStepHeight = 1.05f;
+    /// Vanilla's step height, and the reason a full block has to be jumped.
+    ///
+    /// This was 1.05 and it felt wrong, because it *was* wrong: Minecraft steps up at
+    /// most 0.6 of a block without jumping, which covers slabs and stairs and nothing
+    /// else. Stepping a whole block automatically is a mod, not the game. Since every
+    /// block in this world is full height, 0.6 means no rise is ever walked up and
+    /// every one of them is a jump -- which is exactly how the real thing feels.
+    ///
+    /// The jump clears it with room to spare: 8.5 m/s against 28 m/s^2 peaks at
+    /// v^2/2g = 1.29 blocks.
+    static constexpr f32 kStepHeight = 0.6f;
     /// How far down to look for something to stand on before giving up.
     static constexpr i32 kGroundSearchDepth = 96;
 
@@ -272,6 +285,16 @@ private:
         u32 age = 0;
     };
     std::vector<PendingEdit> m_pendingEdits;
+
+    /// The block currently being mined, and how far through it the player is in
+    /// [0, 1).
+    ///
+    /// Held as a position rather than as a flag on `m_target` because the two can
+    /// disagree: looking away mid-swing has to abandon the progress, and coming back
+    /// has to start over. Vanilla does the same, and it is the rule that stops a
+    /// player chipping four blocks at once by sweeping the crosshair.
+    std::optional<BlockPos> m_breakingBlock;
+    f32 m_breakProgress = 0.0f;
 
     /// How far the player can reach, in blocks. Minecraft is 4.5 in survival and 5
     /// in creative; this has no survival mode to differ from.
