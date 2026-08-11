@@ -19,9 +19,11 @@ at once is not a contradiction. See DESIGN.md 7 for the phase plan and 7.8 for 9
 Measurements are in DESIGN.md 7.5 (Phase 3), 7.6 (Phase 4) and 7.7 (the benchmark);
 vanilla's numbers, and which of them could not be confirmed, are in RESEARCH.md.
 
-**Phase 9 — block placement and breaking — is done, and so is the follow-up batch in
-DESIGN.md 7.9**: trees, per-block break times with a crack overlay, and a walking fix.
-You can dig, and it takes as long as it should.
+**Phase 9 is done, and so are the two follow-up batches** in DESIGN.md 7.9 and 7.10:
+trees, per-block break times with a crack overlay, a walking fix, a mining swing in
+both camera modes, dropped items, an inventory and a HUD. **The loop is closed** --
+break a block, watch it drop, walk over it, see the count go up, place it and see the
+count go down.
 
 **Playing it is what produced 7.9, and it is still the highest-value thing to do.**
 The first session lasted 83 seconds and every one of the four items that came out of
@@ -30,10 +32,16 @@ have caught. The step height in particular had been wrong since walking landed: 
 instead of vanilla's 0.6, so every block was walked up instead of jumped. Thirty
 seconds of play found it.
 
-**Next is a subsystem, not a feature.** Water, falling sand and item drops were all
-asked for and all deferred, because each needs one of three things this engine does
-not have: block updates (12), entities (13), a UI layer (14). They are phases in
-DESIGN.md 7 now, in the order their dependencies force.
+**Two of the three missing subsystems are now built.** Entities (13) and the HUD (14)
+landed together. **Block updates (12) is the one still missing**, and it is what
+falling sand and flowing water both wait on -- "this block changed, tell its
+neighbours" is a concept the engine still does not have. Water needs the mesher and
+draw-pass work in RESEARCH.md 5.3 on top of it.
+
+**Crafting is the next thing that forces a redesign, not just an addition.** Items are
+`BlockId`s today; a stick is not a block, so the item/block split happens then and
+`Inventory` gets rewritten with it. That is recorded in DESIGN.md 7.10 rather than
+pre-built.
 
 **4d — biomes** is the last Phase 4 step and is no longer next. It still has the
 unresolved input recorded in section 6, which wants settling before any code.
@@ -85,29 +93,33 @@ spaghetti and noodle tunnels carved per block, a surface pass that grasses the t
 the terrain (and only the terrain — not cave ceilings), a bedrock floor, a deepslate
 band that fades in from Y 8 to Y 0, blob features placing granite, diorite, andesite,
 tuff, gravel and seven ores, and **sky light**, so caves are actually dark.
-**28 block types**, up from five -- oak logs and leaves are the newest, and there are
-now **trees** on the surface. It streams
+**29 block types**, up from five -- oak logs, leaves and cobblestone are the newest,
+and there are now **trees** on the surface. It streams
 infinitely and draws the whole visible set with **one** `glMultiDrawArrays`. Generation
 and meshing run on a 6-worker pool, uploads on their own thread, and the main thread
 only ever submits.
 
-**The world can be edited.** Hold left to break, right click to place, `1`-`9` pick
-the block. A wireframe box shows what is under the crosshair and cracks spread across
-it while it is being mined -- break time is vanilla hardness, 0.75 s for dirt up to
-6.75 s for a deepslate ore. Breaking and placing go through the existing dirty mask,
-so nothing was added to the streaming pipeline.
+**The world can be edited, and what you break you keep.** Hold left to break, right
+click to place, `1`-`9` pick the block. The arm swings while mining -- on the
+character in third person, on a first-person view model otherwise. A wireframe box
+shows what is under the crosshair and cracks spread across it as it is mined; break
+time is vanilla hardness, 0.75 s for dirt up to 6.75 s for a deepslate ore. Broken
+blocks **drop as spinning items**, fall, merge with nearby stacks and can be walked
+over to collect. The **hotbar** shows what is held and how many, and placing spends
+one. Breaking and placing go through the existing dirty mask, so nothing was added to
+the streaming pipeline.
 
 A character is drawn at the player position on a second render path; `F5` toggles third
 person, and the camera now pulls in when terrain is behind it rather than clipping
 through — a second use of Phase 9's raycast.
 
-| Distance 16 | No caves | Caves | + ores | + sky light | + editing | + trees |
-|---|---|---|---|---|---|---|
-| Frame p99 | 0.85 ms | 6.00 ms | 5.93 ms | 5.91 ms | 6.4–8.0 | **7.55** |
-| Quads drawn | 260 k | 4.1 M | 4.15 M | 4.18 M | 4.20 M | **4.33 M** |
-| Arena used | 8 MiB | 112 MiB | 112 MiB | 113 MiB | 112 MiB | **115 MiB** |
-| Warm-up, 1,089 columns | — | 2.29 s | 2.99 s | 3.58 s | 3.40 s | **3.52 s** |
-| Sections with an empty mesh | 2,509 of 4,967 | **0** | **0** | **0** | **0** | **0** |
+| Distance 16 | No caves | Caves | + ores | + sky light | + editing | + trees | + items |
+|---|---|---|---|---|---|---|---|
+| Frame p99 | 0.85 ms | 6.00 ms | 5.93 ms | 5.91 ms | 6.4–8.0 | 7.55 | **6.20** |
+| Quads drawn | 260 k | 4.1 M | 4.15 M | 4.18 M | 4.20 M | 4.33 M | **4.33 M** |
+| Arena used | 8 MiB | 112 MiB | 112 MiB | 113 MiB | 112 MiB | 115 MiB | **115 MiB** |
+| Warm-up, 1,089 columns | — | 2.29 s | 2.99 s | 3.58 s | 3.40 s | 3.52 s | **3.26 s** |
+| Sections with an empty mesh | 2,509 of 4,967 | **0** | **0** | **0** | **0** | **0** | **0** |
 
 **Read the last column carefully; it is the one place in this document where a number
 got worse and the honest answer is "cannot tell".** The p99 figure is a *range over
@@ -171,7 +183,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (176 cases, doctest)
+# Test  (185 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
@@ -231,6 +243,7 @@ meaningless.
 | **Left mouse** | **hold to break the highlighted block** | same |
 | **Right mouse** | **place the held block against it** | same |
 | **`1`-`9`** | **pick what to place** | same |
+| walk over an item | **pick it up** | same |
 
 Reach is 5 blocks. **Breaking is held, not clicked** -- cracks spread across the block
 while the button is down, and the time is vanilla's hardness: 0.75 s for dirt, 2.25 s
@@ -296,7 +309,10 @@ src/world/              pure data; knows nothing about rendering
   BlockRegistry— lookup over that table, and nothing else
   SkyLight     — the daylight flood fill, per column; reports what it changed
   Raycast      — voxel DDA; aiming, and the third-person camera's collision
-  BlockTable also carries **hardness**, which is what break time comes from
+  ItemEntities — dropped blocks: gravity, merging, despawn. The first non-voxel
+                 thing that exists in the world
+  Inventory    — one count per block type; not slots, deliberately
+  BlockTable also carries **hardness** and **drops**
 src/worldgen/           knows world, nothing above it; FastNoise2 is PRIVATE
   DensityField — the 4x8x4 interpolation grid (no FastNoise2, so it is testable)
   DensityGraph — the noise router; the only file that includes FastNoise2
@@ -311,7 +327,9 @@ src/render/
   Camera, Frustum (5 planes -- no far plane), BlockTextures,
   SectionMeshStore (one persistently mapped arena), ChunkRenderer (one multi-draw),
   CharacterRenderer (the second render path; not voxels),
-  SelectionRenderer (the block outline and the breaking cracks; no buffer at all)
+  SelectionRenderer (the block outline and the breaking cracks; no buffer at all),
+  ItemRenderer (every dropped item in one draw call),
+  HudRenderer (hotbar, counts, crosshair — the first screen-space layer)
 src/app/
   main, Engine (streaming pipeline: submit-only frame loop, upload thread)
 
@@ -421,6 +439,13 @@ Learned the hard way; all of them cost real time.
   and getting one wrong compiled and ran and put the wrong texture on a block. If you
   find yourself adding a `switch` on BlockId somewhere, add a field to the table
   instead — that is what `glyph` and `stoneLike` are.
+- **A collision test that samples the destination instead of sweeping the path will
+  tunnel, and the frame after a stall is when it happens.** `ItemEntities` asks "is
+  the block I am moving into solid", which is fine at 1/60 and wrong at any step
+  longer than a block -- a window drag, a breakpoint, the first frame. A test that
+  aged an item by 299 seconds in one tick found it falling out of the world instead.
+  Physics is substepped and clamped now; ageing still uses the real elapsed time.
+  Walking's ground probe has the same shape and the same latent issue.
 - **Reading a voxel from the main thread is a race unless the column is `Ready`.**
   `World::blockAt` looked like a pure lookup and was called every frame by walking's
   ground probe and the benchmark camera long before anything else used it. It is not
@@ -637,9 +662,12 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   Since walking has no collision volume either, the two are at least consistent — but
   a real capsule would refuse cases this lets through, and building a proper collider
   should fix both together rather than one of them.
-- **Breaking a block does not drop anything, and placing consumes nothing.** There is
-  no inventory, so the hotbar is nine infinite blocks. That is the right answer until
-  something needs to be collected; noted so it is not mistaken for an oversight.
+- **Items are `BlockId`s, and crafting will break that.** A stick is not a block.
+  The split, and the `Inventory` rewrite that comes with it, is deferred on purpose
+  -- see DESIGN.md 7.10.
+- **The inventory has no cap and no slots.** One `u32` per block type, so it cannot
+  fill up and nothing can be dropped by accident. A stack limit is a crafting-era
+  concern.
 - **No test covers `SectionMeshStore`.** It holds the trickiest lifetime logic in the
   engine — deferred reuse, the pending list, arena exhaustion — and `RangeAllocator`
   underneath it is unit-tested while the combination is not.

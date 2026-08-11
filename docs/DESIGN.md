@@ -723,18 +723,20 @@ and 9 is the next thing being built.
 | 10 | Vegetation — non-cube geometry, second mesher path | Flowers and grass on the surface |
 | 11 | Persistence — chunk save format | An edited world survives a restart |
 | 12 | Block updates — neighbour notification and scheduled ticks | Sand falls when its support goes |
-| 13 | Entities — the first thing in the world that is not a voxel | A broken block drops an item |
-| 14 | Inventory and a UI layer | That item can be picked up and placed again |
+| 13 **(done)** | Entities — the first thing in the world that is not a voxel | A broken block drops an item |
+| 14 **(done)** | Inventory and a HUD | That item can be picked up and placed again |
 
 **Trees landed early, in 7.9, and did not wait for Phase 10.** Vegetation is priced
 as a second mesher path because grass and flowers are cross-quads; a log and a leaf
 are cubes, so a tree costs two block types and a feature and nothing else. The phase
 still exists for everything that is genuinely not a cube.
 
-Phases 12 to 14 are the subsystems this engine does not have, listed in the order
-their dependencies force: falling sand and flowing water need block updates; item
-drops need entities; picking an item up needs somewhere to put it. Water spans 12 and
-the mesher work in RESEARCH.md 5.3, which is why it is not a phase of its own here.
+Phases 12 to 14 were the subsystems this engine did not have, listed in the order
+their dependencies force. **13 and 14 landed together** (7.10) because separately each
+is half a feature: a drop nobody can pick up is scenery, and an inventory with nothing
+to put in it is an empty array. **12 is the one still missing**, and it is what falling
+sand and flowing water both wait on. Water additionally needs the mesher and draw-pass
+work in RESEARCH.md 5.3, which is why it is not a phase of its own here.
 
 Phase 9 was deliberately first of the three, and both halves of that argument held.
 It reused the dirty mask, the remeshing path, `Palette::set` and the light recompute
@@ -1423,6 +1425,89 @@ absent, on purpose. Each needs one of the three subsystems this engine does not 
 — block updates, entities, a UI layer — and mixing "one constant" with "build an
 entity system" in one change would have meant neither landing cleanly. Section 8
 lists them.
+
+---
+
+### 7.10 Phases 13 and 14 — entities, drops, and a HUD
+
+Asked for after the second play session, and built together because separately each
+is half a feature: a drop nobody can pick up is scenery, and an inventory with
+nothing to put in it is an empty array.
+
+#### The mining swing, and why first person was the real work
+
+Third-person was nearly free. `CharacterRenderer` already had per-box pivots and a
+swing amplitude for the walk cycle, so the chop is one flag on the right arm's two
+boxes and a `mix` between the walk angle and an arc. Every other limb keeps walking,
+which is what mining while moving looks like.
+
+**First person needed a view model, and that is new.** The arm is built in world
+space against the camera basis rather than in a second view-space projection —
+placing it a fixed offset from the eye means it reuses the character shader, quad
+format and buffer exactly, with no second projection matrix to keep in step with the
+first. What it does need is `Device::clearDepth` before it draws, or standing against
+a wall buries the arm inside the terrain. Minecraft clears depth for the same reason.
+
+The swing is driven by **time, not by break progress**. Tying it to progress would
+run the animation at a different speed for dirt and for deepslate, and stop it dead
+on bedrock, which cannot be broken at all. The arm goes up whenever the button is
+down and something is in reach — swinging at bedrock and having nothing happen is
+correct feedback; not swinging reads as broken input.
+
+#### Items are block types, and that will not last
+
+A dropped item carries a `BlockId`. Breaking oak_log gives an oak_log, and everything
+placeable is everything collectable.
+
+**Crafting is what breaks this.** A stick is not a block and neither is a pickaxe, so
+the item/block split has to happen then. It is deferred rather than pre-built because
+an abstraction with one implementation is not an abstraction, and the shape the split
+should take will be obvious once there is a recipe to satisfy. The cost of deferring
+is a pass over `Inventory` and `ItemEntity` later; the cost of building it now is
+carrying a distinction nothing uses.
+
+Drops themselves are one field in `BlockTable` — a **name**, not a `BlockId`, because
+`blockIdOf` cannot be called inside the table it searches. A `static_assert` proves
+every name resolves, so the file keeps the property it exists for: a typo is a
+compile error rather than a block that silently drops nothing.
+
+#### A flat entity list, and the sweep that pays for it
+
+Minecraft keeps entities in the chunk they occupy. That is right once they have to be
+saved and ticked selectively, and it would mean threading entity lifetime through the
+pin and unload machinery for a few dozen objects. A flat list plus an explicit "drop
+anything whose column went away" sweep gets identical behaviour. The day this holds
+thousands of entities is the day to move it, and not before.
+
+**Physics is substepped, and a test is why.** The collision test asks whether the
+destination is solid rather than sweeping the path to it, so any step longer than a
+block tunnels straight through the floor — and a frame after a stall delivers exactly
+that. The despawn test passed a 299-second `dt` and the item fell out of the world
+instead of ageing, which is the same bug a window drag would have produced in play.
+Ageing now runs on real elapsed time while physics is clamped to four steps of 1/60.
+
+#### The HUD is not a UI framework
+
+Screen-space quads in NDC, no projection matrix, one draw call: hotbar slots, block
+icons, digits and the crosshair all go through one shader with a mode per quad. The
+digit font is ten hard-coded 3x5 bit patterns expanded into a texture array at
+startup, which keeps the rule that no binary asset ships with this repository.
+
+There is deliberately **no cursor mode, no hit testing and no window**. Those are what
+a slot-based inventory needs, and the count model exists precisely so they are not
+needed yet — see `Inventory`, which is one `u32` per block type and nothing else.
+That is enough for the whole loop that matters: break, watch it drop, pick it up,
+place it, watch the number go down.
+
+#### Measurements
+
+Warm-up 3.52 s to **3.26 s**, which is noise rather than an improvement — nothing in
+this change touches generation. Frame p99 **6.20 ms** against the 6.4-8.0 range
+measured for the previous batch, so again within the spread this benchmark can
+resolve and not evidence either way. Entities cost one pass over a list that is
+usually empty, and the HUD is one draw call of about thirty quads.
+
+185 tests, up from 176. asan clean.
 
 ---
 

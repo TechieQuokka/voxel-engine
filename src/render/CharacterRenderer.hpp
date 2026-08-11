@@ -42,8 +42,25 @@ public:
     /// `walkPhase` advances with distance travelled, not with time, so the limbs
     /// stop when the character does instead of marching on the spot. `walkAmount`
     /// in [0, 1] fades the swing in and out.
+    /// `swingPhase` advances with time while mining and `swingAmount` in [0, 1]
+    /// fades the chop in and out. The right arm follows the swing instead of the
+    /// walk cycle while it is up; every other limb keeps walking, which is what
+    /// mining while moving looks like.
     void draw(rhi::Device& device, const Camera& camera, const vec3& feetPosition,
-              const vec3& facing, f32 walkPhase, f32 walkAmount);
+              const vec3& facing, f32 walkPhase, f32 walkAmount,
+              f32 swingPhase, f32 swingAmount);
+
+    /// The first-person arm, at the bottom right of the view.
+    ///
+    /// **Built in world space against the camera basis, not in a separate view-space
+    /// projection.** Placing it a fixed offset from the eye and drawing it with the
+    /// ordinary view-projection means it reuses this class's shader, quad format and
+    /// buffer exactly, and needs no second projection matrix to keep in step with
+    /// the first. What it does need is a depth clear first, or the arm intersects
+    /// any wall the player stands against -- which is what `Device::clearDepth` is
+    /// for and what Minecraft does too.
+    void drawHand(rhi::Device& device, const Camera& camera, f32 swingPhase,
+                  f32 swingAmount);
 
     /// Height of the model in blocks, from feet to the top of the head. The camera
     /// uses it to put the eye in the head rather than at the feet.
@@ -69,6 +86,10 @@ private:
         /// 0 for the head and body; +1 and -1 for limbs, so left and right swing
         /// in opposition.
         f32 swing;
+        /// True for the two boxes of the right arm, which is the one that mines.
+        /// A flag rather than an index comparison so reordering the model cannot
+        /// silently animate an elbow.
+        bool rightArm;
         /// sRGB, decoded once at construction.
         u32 sideArgb;
         u32 topArgb;

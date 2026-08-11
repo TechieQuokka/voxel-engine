@@ -26,6 +26,7 @@ add_executable(mc_tests
   test_world_edit.cpp
   test_block_table.cpp
   test_trees.cpp
+  test_items.cpp
 )
 
 target_link_libraries(mc_tests PRIVATE

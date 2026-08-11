@@ -9,10 +9,14 @@
 #include "render/Camera.hpp"
 #include "render/CharacterRenderer.hpp"
 #include "render/ChunkRenderer.hpp"
+#include "render/HudRenderer.hpp"
+#include "render/ItemRenderer.hpp"
 #include "render/SectionMeshStore.hpp"
 #include "render/SelectionRenderer.hpp"
 #include "rhi/Device.hpp"
 #include "world/BlockTable.hpp"
+#include "world/Inventory.hpp"
+#include "world/ItemEntities.hpp"
 #include "world/Raycast.hpp"
 #include "world/World.hpp"
 #include "worldgen/Generator.hpp"
@@ -123,6 +127,9 @@ private:
     /// its full break time is what actually removes it.
     void updateBreaking(f32 dt);
 
+    /// Advances the mining swing, and eases it in and out.
+    void updateSwing(f32 dt, bool swinging);
+
     /// Breaks `m_target`, or places the selected block against it. Both go through
     /// `applyEdit`, so both get the same retry behaviour.
     void breakTargetBlock();
@@ -214,6 +221,8 @@ private:
     std::optional<SectionMeshStore> m_meshStore;
     std::optional<CharacterRenderer> m_character;
     std::optional<SelectionRenderer> m_selection;
+    std::optional<ItemRenderer> m_itemRenderer;
+    std::optional<HudRenderer> m_hud;
 
     std::unique_ptr<World> m_world;
     std::unique_ptr<Generator> m_generator;
@@ -295,6 +304,30 @@ private:
     /// player chipping four blocks at once by sweeping the crosshair.
     std::optional<BlockPos> m_breakingBlock;
     f32 m_breakProgress = 0.0f;
+
+    /// The mining swing. Phase advances with time while the arm is up; amount eases
+    /// in and out so starting or stopping a dig does not pop the limb.
+    ///
+    /// Driven by time rather than by break progress, deliberately: a swing tied to
+    /// progress would run at a different speed for dirt and for deepslate, and would
+    /// stop dead on a block that cannot be broken at all.
+    f32 m_swingPhase = 0.0f;
+    f32 m_swingAmount = 0.0f;
+
+    /// Minecraft's swing is six ticks. Kept because the speed is most of what makes
+    /// the motion read as chopping rather than waving.
+    static constexpr f32 kSwingPeriod = 0.3f;
+
+    /// Dropped blocks, and what the player is carrying.
+    ItemEntities m_items;
+    Inventory m_inventory;
+
+    /// Shared spin clock for every dropped item, so a pile turns together.
+    f32 m_itemSpin = 0.0f;
+
+    /// How close the player has to be to pick something up. Vanilla is one block
+    /// from the item's centre, plus the player's own width.
+    static constexpr f32 kPickupRadius = 1.4f;
 
     /// How far the player can reach, in blocks. Minecraft is 4.5 in survival and 5
     /// in creative; this has no survival mode to differ from.

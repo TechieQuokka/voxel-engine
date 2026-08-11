@@ -101,6 +101,8 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
     m_chunkRenderer.emplace();
     m_character.emplace();
     m_selection.emplace();
+    m_itemRenderer.emplace();
+    m_hud.emplace();
     m_meshStore.emplace(meshArenaBytesFor(m_options.renderDistance));
 
     m_world = std::make_unique<World>(m_options.renderDistance);
@@ -718,11 +720,54 @@ void Engine::breakTargetBlock() {
     if (!m_target.has_value()) {
         return;
     }
-    applyEdit(m_target->block, kAirBlock);
+
+    // Read what was there *before* the edit: after it the block is air, and air
+    // drops nothing.
+    const BlockId broken = m_world->blockAt(m_target->block);
+
+    if (!applyEdit(m_target->block, kAirBlock)) {
+        return; // Not loaded, or outside the world. Nothing was removed, so nothing drops.
+    }
+
+    const BlockId drop = dropOf(broken);
+    if (drop == kAirBlock) {
+        return; // Leaves, and anything else that yields nothing.
+    }
+
+    // At the centre of the block that was removed, which is where the space now is.
+    m_items.spawn(vec3{static_cast<f32>(m_target->block.x) + 0.5f,
+                       static_cast<f32>(m_target->block.y) + 0.5f,
+                       static_cast<f32>(m_target->block.z) + 0.5f},
+                  drop, 1);
+}
+
+void Engine::updateSwing(f32 dt, bool swinging) {
+    constexpr f32 kTwoPi = 6.2831853f;
+
+    if (swinging) {
+        m_swingPhase += dt * kTwoPi / kSwingPeriod;
+        // Wrapped rather than left to grow: at 60 FPS over a long session this would
+        // reach the range where a float's precision makes the swing visibly jerky.
+        if (m_swingPhase > kTwoPi) {
+            m_swingPhase -= kTwoPi;
+        }
+    }
+
+    const f32 target = swinging ? 1.0f : 0.0f;
+    m_swingAmount += (target - m_swingAmount) * std::min(1.0f, dt * 14.0f);
+    if (!swinging && m_swingAmount < 0.01f) {
+        m_swingAmount = 0.0f;
+        m_swingPhase = 0.0f; // Next swing starts from the top of the arc.
+    }
 }
 
 void Engine::updateBreaking(f32 dt) {
     const bool holding = m_input->isDown(MouseButton::Left) && m_input->cursorCaptured();
+
+    // The arm goes up whenever the button is down and something is in reach, even if
+    // the block turns out to be unbreakable. Swinging at bedrock and having nothing
+    // happen is the correct feedback; not swinging at all reads as broken input.
+    updateSwing(dt, holding && m_target.has_value());
 
     // Abandon the swing if the button came up, the crosshair left the block, or the
     // block stopped being breakable under it. Any of those resets to zero rather
@@ -788,7 +833,16 @@ void Engine::placeTargetBlock() {
         return;
     }
 
-    applyEdit(target, kHotbar[m_hotbarSlot]);
+    const BlockId block = kHotbar[m_hotbarSlot];
+    if (m_inventory.count(block) == 0) {
+        return; // Nothing to place. The hotbar shows the slot dimmed.
+    }
+
+    // Taken only once the edit is known to have landed, so a placement refused for
+    // being outside the world does not silently cost a block.
+    if (applyEdit(target, block)) {
+        m_inventory.take(block);
+    }
 }
 
 void Engine::updateInteraction(f32 dt) {
@@ -817,6 +871,18 @@ void Engine::updateInteraction(f32 dt) {
         }
     }
 
+    // Dropped blocks fall, settle and merge, then anything within arm's reach goes
+    // into the inventory. Ticked before the aim ray so an item spawned last frame is
+    // already where it looks like it is.
+    m_items.tick(*m_world, dt);
+    m_itemSpin += dt;
+
+    for (const ItemEntities::Pickup& pickup : m_items.collect(m_camera.position(),
+                                                              kPickupRadius)) {
+        m_inventory.add(pickup.block, pickup.count);
+        logDebug("Picked up {} x{}", kBlocks[pickup.block].name, pickup.count);
+    }
+
     // Aim from the player's eye, never from the render camera. In third person the
     // render camera sits several blocks behind, and casting from there would target
     // whatever is between the camera and the player.
@@ -830,6 +896,7 @@ void Engine::updateInteraction(f32 dt) {
         }
         m_breakingBlock.reset();
         m_breakProgress = 0.0f;
+        updateSwing(dt, false);
         return;
     }
 
@@ -1215,8 +1282,11 @@ void Engine::renderFrame() {
     if (m_thirdPerson) {
         const vec3 feet = m_camera.position() - Camera::up() * CharacterRenderer::kEyeHeight;
         m_character->draw(*m_device, m_renderCamera, feet, m_camera.forward(),
-                          m_walkPhase, m_walkAmount);
+                          m_walkPhase, m_walkAmount, m_swingPhase, m_swingAmount);
     }
+
+    m_itemRenderer->draw(*m_device, m_renderCamera, m_chunkRenderer->textures(), m_items,
+                         m_itemSpin);
 
     // Last, so the outline sits on top of the block it surrounds and of the
     // character if one is in the way. It still depth-tests -- it is inflated just
@@ -1237,6 +1307,19 @@ void Engine::renderFrame() {
                                     SelectionRenderer::stageFor(m_breakProgress));
         }
     }
+
+    // Last of all, because it clears depth. In third person the arm is already on
+    // the character and a second one floating in front of the camera would be one
+    // arm too many.
+    if (!m_thirdPerson) {
+        m_character->drawHand(*m_device, m_renderCamera, m_swingPhase, m_swingAmount);
+    }
+
+    // The HUD is genuinely last: it draws over everything, including the hand.
+    const auto width = static_cast<f32>(m_window->framebufferWidth());
+    const auto height = static_cast<f32>(m_window->framebufferHeight());
+    m_hud->draw(*m_device, m_chunkRenderer->textures(), kHotbar, m_hotbarSlot,
+                m_inventory, width / std::max(1.0f, height));
 }
 
 void Engine::updateRenderCamera() {

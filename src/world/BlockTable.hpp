@@ -109,6 +109,10 @@ inline constexpr std::array kLayers{
     LayerInfo{"oak_log_top",  TextureRecipe::Rings, 0xFF9C7A4Bu, 0xFF6B5230u, 6.0f, 40u},
     LayerInfo{"oak_log_side", TextureRecipe::Bark,  0xFF6B5433u, 0xFF4E3D24u, 14.0f, 41u},
     LayerInfo{"oak_leaves",   TextureRecipe::Grain, 0xFF3F7A2Eu, 0u,          22.0f, 42u},
+
+    // Cobblestone exists because stone drops it. Rougher and a shade darker than
+    // stone, which is the whole visual difference in vanilla too.
+    LayerInfo{"cobblestone",  TextureRecipe::Grain, 0xFF7F7F7Fu, 0u,          34.0f, 43u},
 };
 
 inline constexpr u16 kTextureLayerCount = static_cast<u16>(kLayers.size());
@@ -169,13 +173,24 @@ struct BlockInfo {
     ///
     /// Break time comes out of this in `breakSeconds` below. Nothing else reads it.
     f32 hardness = 0.0f;
+
+    /// What breaking this yields, by **name**. Empty means it drops itself, which is
+    /// almost every block; `"air"` means it drops nothing.
+    ///
+    /// A name rather than a `BlockId` for a mechanical reason: `blockIdOf` cannot be
+    /// called inside the very table it searches. `dropOf` resolves this at the use
+    /// site, and the static_assert at the bottom of the file proves every name here
+    /// matches something -- so a typo is still a compile error, which is the
+    /// property this whole file exists to keep.
+    std::string_view drops = {};
 };
 
 /// A block that draws the same layer on all six faces, which is most of them.
 consteval BlockInfo uniformBlock(std::string_view name, std::string_view layer,
-                                 char glyph, f32 hardness, bool stoneLike = false) {
+                                 char glyph, f32 hardness, bool stoneLike = false,
+                                 std::string_view drops = {}) {
     const u16 index = layerOf(layer);
-    return BlockInfo{name, true, index, index, index, glyph, stoneLike, hardness};
+    return BlockInfo{name, true, index, index, index, glyph, stoneLike, hardness, drops};
 }
 
 /// Block types, in BlockId order. The index of an entry *is* its BlockId.
@@ -188,13 +203,16 @@ consteval BlockInfo uniformBlock(std::string_view name, std::string_view layer,
 inline constexpr std::array kBlocks{
     BlockInfo{"air", false, layerOf("stone"), layerOf("stone"), layerOf("stone"), '.'},
 
-    uniformBlock("stone", "stone", '#', 1.5f, true),
+    // Stone drops cobblestone, and grass drops dirt. Both are vanilla, and both are
+    // the reason `drops` exists rather than every block simply yielding itself.
+    uniformBlock("stone", "stone", '#', 1.5f, true, "cobblestone"),
     uniformBlock("dirt", "dirt", 'd', 0.5f),
     // Grass is the reason a face carries a layer rather than a block id: one block
     // type, three different textures.
     BlockInfo{"grass", true, layerOf("grass_top"), layerOf("grass_side"),
-                             layerOf("dirt"), 'g', false, 0.6f},
+                             layerOf("dirt"), 'g', false, 0.6f, "dirt"},
     uniformBlock("sand", "sand", 's', 0.5f),
+    uniformBlock("cobblestone", "cobblestone", 'c', 2.0f, true),
 
     // -1 is vanilla's spelling of "never". See BlockInfo::hardness.
     uniformBlock("bedrock", "bedrock", 'B', -1.0f),
@@ -235,7 +253,9 @@ inline constexpr std::array kBlocks{
     // grass and flowers need, and that is Phase 10 -- see RESEARCH.md 5.4.
     BlockInfo{"oak_log", true, layerOf("oak_log_top"), layerOf("oak_log_side"),
                                layerOf("oak_log_top"), 'T', false, 2.0f},
-    uniformBlock("oak_leaves", "oak_leaves", 'l', 0.2f),
+    // Leaves drop nothing. Vanilla drops the occasional sapling or apple, and
+    // neither exists here -- a sapling is a plant, which is Phase 10's geometry.
+    uniformBlock("oak_leaves", "oak_leaves", 'l', 0.2f, false, "air"),
 };
 
 /// Resolves a block name to its BlockId. Same reasoning as `layerOf`.
@@ -264,6 +284,26 @@ constexpr bool isStoneLike(BlockId id) {
     return id < kBlocks.size() && kBlocks[id].stoneLike;
 }
 
+/// What breaking `id` yields. `kAirBlock` means nothing drops.
+///
+/// A linear search over the table, and that is fine: this runs once per block
+/// broken, which is once per click, against 29 entries.
+constexpr BlockId dropOf(BlockId id) {
+    if (id >= kBlocks.size()) {
+        return kAirBlock;
+    }
+    const std::string_view name = kBlocks[id].drops;
+    if (name.empty()) {
+        return id; // Drops itself, which is almost everything.
+    }
+    for (usize i = 0; i < kBlocks.size(); ++i) {
+        if (kBlocks[i].name == name) {
+            return static_cast<BlockId>(i);
+        }
+    }
+    return kAirBlock;
+}
+
 /// Bedrock, and anything else ever given a negative hardness.
 constexpr bool isUnbreakable(BlockId id) {
     return id < kBlocks.size() && kBlocks[id].hardness < 0.0f;
@@ -289,6 +329,31 @@ constexpr f32 breakSeconds(BlockId id) {
     }
     return kBlocks[id].hardness * 1.5f;
 }
+
+/// Proves every `drops` name in the table matches a real block.
+///
+/// `dropOf` has to be a runtime-callable `constexpr` and so cannot reject a bad name
+/// the way `blockIdOf` does -- it returns air instead, which would silently mean "no
+/// drop". This puts the compile error back.
+consteval bool everyDropResolves() {
+    for (usize i = 0; i < kBlocks.size(); ++i) {
+        const std::string_view name = kBlocks[i].drops;
+        if (name.empty()) {
+            continue;
+        }
+        bool found = false;
+        for (const BlockInfo& candidate : kBlocks) {
+            found = found || candidate.name == name;
+        }
+        if (!found) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static_assert(everyDropResolves(),
+              "a block's drops name does not match any block in kBlocks");
 
 static_assert(blockIdOf("air") == kAirBlock,
               "air must be the first entry in kBlocks; core/Types.hpp fixes it at 0");

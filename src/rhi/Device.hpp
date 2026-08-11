@@ -53,6 +53,13 @@ public:
 
     void setDepthTest(bool enabled);
 
+    /// Clears depth only, leaving colour alone.
+    ///
+    /// For view models: an arm half a block from the eye has to draw over the world
+    /// rather than inside it. Respects reversed-Z -- depth clears to 0, not 1, the
+    /// same as `clear` does.
+    void clearDepth();
+
     /// Straight alpha blending, `src.a` over the destination.
     ///
     /// Off for everything the engine draws except the breaking overlay. Real

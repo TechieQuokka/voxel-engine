@@ -6,6 +6,8 @@ add_library(mc_render STATIC
   Frustum.cpp
   SectionMeshStore.cpp
   SelectionRenderer.cpp
+  ItemRenderer.cpp
+  HudRenderer.cpp
 )
 
 # Note the absence of mc_worldgen: the renderer has no business knowing how

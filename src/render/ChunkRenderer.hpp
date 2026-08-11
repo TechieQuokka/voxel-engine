@@ -90,6 +90,15 @@ private:
     rhi::VertexArray m_vao;
     std::optional<BlockTextures> m_textures;
 
+public:
+    /// The generated block textures, borrowed by anything else that has to draw a
+    /// block: dropped items and the hotbar icons both do. One array rather than
+    /// three copies, so a texture change cannot make a dropped stone stop matching
+    /// the stone it came from.
+    const BlockTextures& textures() const noexcept { return *m_textures; }
+
+private:
+
     /// Per-section origins, persistently mapped so the visible set can be written
     /// without a GL call per frame.
     std::optional<rhi::Buffer> m_sectionBuffer;

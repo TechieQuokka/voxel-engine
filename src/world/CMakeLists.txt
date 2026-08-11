@@ -4,6 +4,7 @@ add_library(mc_world STATIC
   Chunk.cpp
   Palette.cpp
   Raycast.cpp
+  ItemEntities.cpp
   World.cpp
 )
 

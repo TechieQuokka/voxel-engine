@@ -125,6 +125,12 @@ void Device::clear(f32 r, f32 g, f32 b, f32 a) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
+void Device::clearDepth() {
+    // glClearDepth(0.0) was set once at construction for reversed-Z and has not
+    // changed, so this clears to the same "infinitely far" value `clear` does.
+    glClear(GL_DEPTH_BUFFER_BIT);
+}
+
 void Device::setDepthTest(bool enabled) {
     if (enabled) {
         glEnable(GL_DEPTH_TEST);
