@@ -1,7 +1,7 @@
 # Handoff
 
-Snapshot for resuming work. Written 2026-08-09; updated 2026-08-10 during
-Phase 4.
+Snapshot for resuming work. Written 2026-08-09; last updated 2026-08-11, after the
+interaction track's first three phases and the play sessions that steered them.
 
 Read `docs/DESIGN.md` for the full design and the reasoning behind every
 decision, and `docs/RESEARCH.md` for the vanilla Minecraft numbers the remaining
@@ -23,14 +23,44 @@ vanilla's numbers, and which of them could not be confirmed, are in RESEARCH.md.
 trees, per-block break times with a crack overlay, a walking fix, a mining swing in
 both camera modes, dropped items, an inventory and a HUD. **The loop is closed** --
 break a block, watch it drop, walk over it, see the count go up, place it and see the
-count go down.
+count go down. It is closed and it is not yet satisfying: the inventory half of it was
+judged insufficient on contact, which is the first thing below.
 
-**Playing it is what produced 7.9, and it is still the highest-value thing to do.**
-The first session lasted 83 seconds and every one of the four items that came out of
-it — trees, break time, item drops, the step height — was something no test would
-have caught. The step height in particular had been wrong since walking landed: 1.05
-instead of vanilla's 0.6, so every block was walked up instead of jumped. Thirty
+**Playing it is what produced 7.9 and 7.10, and it is still the highest-value thing
+to do.** The first session lasted 83 seconds and every one of the four items that came
+out of it — trees, break time, item drops, the step height — was something no test
+would have caught. The step height in particular had been wrong since walking landed:
+1.05 instead of vanilla's 0.6, so every block was walked up instead of jumped. Thirty
 seconds of play found it.
+
+### The next thing to build: a real inventory
+
+**Read this before picking up 7.10's `Inventory`.** After the third session
+(2026-08-11) the user's verdict on the count-based inventory was that it falls short,
+and that items want *their own container* — an item box, managed separately, rather
+than nine numbers on a hotbar.
+
+That reverses a recommendation made in this project, and the reasoning is worth
+keeping rather than quietly deleting. Two options were put up: **(A)** counts only,
+one `u32` per block type, no slots and no window; **(B)** slot-based with an
+inventory screen. (A) was recommended and chosen, on the grounds that it closes the
+whole break-drop-collect-place loop for a fraction of the work and defers building a
+UI layer until something needs one.
+
+**The loop argument was right and the conclusion was wrong.** The loop does work. It
+also turns out that "carrying things" is not felt as a number going up — the
+container *is* the feature, not the bookkeeping behind it. That is a judgement about
+play that no amount of reasoning about scope was going to produce, and it took one
+session to produce.
+
+So the next interaction work is **(B)**: slots, stack limits, an inventory screen, and
+the UI layer that needs — cursor mode, hit testing, a window. `HudRenderer` is the
+starting point and is deliberately *not* a UI framework (see its header); it will need
+to grow into one or sit beside one. `Inventory` is one small header and should be
+expected to be replaced rather than extended.
+
+Worth noting for sequencing: **crafting needs exactly the same things**, plus the
+item/block split. Doing (B) with recipes in mind is cheaper than doing it twice.
 
 **Two of the three missing subsystems are now built.** Entities (13) and the HUD (14)
 landed together. **Block updates (12) is the one still missing**, and it is what
@@ -41,7 +71,26 @@ draw-pass work in RESEARCH.md 5.3 on top of it.
 **Crafting is the next thing that forces a redesign, not just an addition.** Items are
 `BlockId`s today; a stick is not a block, so the item/block split happens then and
 `Inventory` gets rewritten with it. That is recorded in DESIGN.md 7.10 rather than
-pre-built.
+pre-built — and since the inventory is being replaced anyway (above), the two are
+worth planning together.
+
+### Three sessions in a row, the log could not say what happened
+
+**This is a real gap and it is the same gap three times.** Session three (84 seconds,
+clean 60 FPS, no GL messages) can be read for what was *not* pressed, because those
+keys log: `F5`, `F` and `1`-`9` were never touched. So the first-person hand shipped in
+7.10 **was never seen**, and the hotbar never left slot one.
+
+What the log cannot say is whether a single block was broken, dropped or picked up,
+because none of those log anything. The gap was written down after session two, and
+then repeated: pickup logging went in as `logDebug`, which is off by default and
+therefore prints nothing.
+
+**The fix, not yet built:** counters on the existing once-a-second stats line —
+blocks broken, blocks placed, items collected, items alive in the world. It costs four
+integers and makes every future session self-documenting, which matters more here than
+in most projects because *play* is where the last three phases of direction came from.
+Do this before the next feature, not after.
 
 **4d — biomes** is the last Phase 4 step and is no longer next. It still has the
 unresolved input recorded in section 6, which wants settling before any code.
@@ -149,10 +198,13 @@ between them is the argument for Phase 8.
 Sky light costs **24 KiB per column**, about 26 MiB at distance 16, because 87.5 % of
 sections are uniform and allocate nothing. The naive figure was over 400 MiB.
 
-**Interactively verified on 2026-08-10**, twice, after everything above landed: two
-sessions of 43 and 51 seconds, vsync-locked 60 FPS throughout (min 59.8, median 59.9),
-no dropped frames, no GL debug messages, clean exit both times. That replaces the old
-note about a pre-cave flight, which was three phases stale.
+**Interactively verified five times**, most recently on 2026-08-11 after 7.10 landed.
+The last three sessions ran 83, 83 and 84 seconds at a vsync-locked 60 FPS (min 58.8,
+median 59.9), with no dropped frames, no GL debug messages and a clean exit each time.
+Rendering has stayed flat across caves, ores, light, trees, entities and the HUD.
+
+**What those sessions could not confirm is anything about interaction** -- see section
+1. They are evidence the engine runs, not evidence the game works.
 
 **Neither session ever pressed `F` or `F5`** — both keys log when they are, and the logs
 are empty. So neither of them saw a cave, an ore, deepslate, or the sky light: all of
@@ -663,12 +715,17 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   Since walking has no collision volume either, the two are at least consistent — but
   a real capsule would refuse cases this lets through, and building a proper collider
   should fix both together rather than one of them.
+- **The count-based inventory is being replaced, by decision rather than by decay.**
+  Judged insufficient after the third play session: items want their own container,
+  not nine numbers. Section 1 has the full account, including why (A) was chosen and
+  what the choice got right. `Inventory` should be expected to go, not to grow.
 - **Items are `BlockId`s, and crafting will break that.** A stick is not a block.
   The split, and the `Inventory` rewrite that comes with it, is deferred on purpose
-  -- see DESIGN.md 7.10.
-- **The inventory has no cap and no slots.** One `u32` per block type, so it cannot
-  fill up and nothing can be dropped by accident. A stack limit is a crafting-era
-  concern.
+  -- see DESIGN.md 7.10. Since the inventory is being rewritten anyway, plan both at
+  once.
+- **Nothing in the interaction path logs.** Breaking, placing and picking up are all
+  silent, so three play sessions produced no record of whether any of them happened.
+  Counters on the stats line are the fix; section 1 has the detail.
 - **No test covers `SectionMeshStore`.** It holds the trickiest lifetime logic in the
   engine — deferred reuse, the pending list, arena exhaustion — and `RangeAllocator`
   underneath it is unit-tested while the combination is not.
