@@ -148,6 +148,10 @@ void Device::drawTriangles(u32 vertexCount, u32 first) {
     glDrawArrays(GL_TRIANGLES, static_cast<GLint>(first), static_cast<GLsizei>(vertexCount));
 }
 
+void Device::drawLines(u32 vertexCount, u32 first) {
+    glDrawArrays(GL_LINES, static_cast<GLint>(first), static_cast<GLsizei>(vertexCount));
+}
+
 void Device::multiDrawTriangles(std::span<const i32> firsts, std::span<const i32> counts) {
     MC_ASSERT(firsts.size() == counts.size());
     if (firsts.empty()) {

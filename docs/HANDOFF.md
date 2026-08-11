@@ -12,20 +12,31 @@ practical details needed to pick the work back up cold.
 
 ## 1. Where things stand
 
-**Phases 0 through 3 are complete. Phase 4 is in progress — 4a, 4b and 4c done.**
+**Phases 0 through 3 are complete. Phase 4 is in progress — 4a, 4b and 4c done.
+Phase 9 (block placement and breaking) is done**, on the interaction track that the
+2026-08-11 scope change added; the two tracks are independent, so 4d and 9 being open
+at once is not a contradiction. See DESIGN.md 7 for the phase plan and 7.8 for 9.
 Measurements are in DESIGN.md 7.5 (Phase 3), 7.6 (Phase 4) and 7.7 (the benchmark);
 vanilla's numbers, and which of them could not be confirmed, are in RESEARCH.md.
 
-**Start here when resuming: the next step is Phase 9 — block placement and breaking.**
-The question of what this project is for was settled on 2026-08-11 (section 9): the
-scope now includes interaction, and DESIGN.md and README.md were rewritten to match
-before any feature work began.
+**Phase 9 — block placement and breaking — is done.** You can dig. That was settled
+on 2026-08-11 along with the scope question in section 9, and DESIGN.md and README.md
+were rewritten to match *before* the feature work started rather than after.
 
-That leaves **4d — biomes** as the last Phase 4 step but no longer the next one. It
-still has the unresolved input recorded in section 6, which wants settling before any
-code is written for it.
+**The single most valuable thing to do next is play it and report back.** Not because
+the code is unverified — 16 new tests cover the raycast and the edit path, and it
+renders and benchmarks clean — but because nothing in this project has ever been
+verified by a person clicking on it, and the last three phases of underground work
+were invisible for exactly that reason. Dig down. The caves, ores and darkness are
+finally reachable.
 
-Two older items are still open and still worth doing, in either order:
+After that, the interaction track continues with **Phase 10 — vegetation** (a second
+mesher path; RESEARCH.md 5.4 is the technical brief) and **Phase 11 — persistence**.
+
+**4d — biomes** is the last Phase 4 step and is no longer next. It still has the
+unresolved input recorded in section 6, which wants settling before any code.
+
+Three older items are still open and still worth doing, in any order:
 
 - **Light does not cross column borders.** A cave lit through an opening one column
   over stays dark, and the boundary is a straight vertical edge. Fixing it needs a
@@ -58,6 +69,8 @@ Two older items are still open and still worth doing, in either order:
 | `742a0c6` | Sky light, and the Quad bit re-layout that made smooth lighting fit |
 | `5b124e2` | Record the lighting work in the handoff |
 | `2b961da` | Walking instead of flying; the character shown by default |
+| `a4b1674` | Record the engine-or-game discussion before it could be lost |
+| `c504948` | Widen the scope to include interaction, on purpose and in one commit |
 
 Working tree is clean. **Published publicly** at the `origin` remote as of
 2026-08-10; the earlier local-only rule was lifted by the user at that point.
@@ -73,24 +86,42 @@ infinitely and draws the whole visible set with **one** `glMultiDrawArrays`. Gen
 and meshing run on a 6-worker pool, uploads on their own thread, and the main thread
 only ever submits.
 
+**The world can be edited.** Left click breaks, right click places, `1`-`9` pick the
+block, and a wireframe box shows what is under the crosshair. Breaking and placing go
+through the existing dirty mask, so nothing was added to the streaming pipeline.
+
 A character is drawn at the player position on a second render path; `F5` toggles third
-person. It is outside the documented scope — see section 6.
+person, and the camera now pulls in when terrain is behind it rather than clipping
+through — a second use of Phase 9's raycast.
 
-| Distance 16 | No caves | Caves | + ores | + sky light |
-|---|---|---|---|---|
-| Frame p99 | 0.85 ms | 6.00 ms | 5.93 ms | **5.91 ms** |
-| Quads drawn | 260 k | 4.1 M | 4.15 M | **4.18 M** |
-| Arena used | 8 MiB | 112 MiB | 112 MiB | **113 MiB** |
-| Warm-up, 1,089 columns | — | 2.29 s | 2.99 s | **3.58 s** |
-| Sections with an empty mesh | 2,509 of 4,967 | **0** | **0** | **0** |
+| Distance 16 | No caves | Caves | + ores | + sky light | + editing |
+|---|---|---|---|---|---|
+| Frame p99 | 0.85 ms | 6.00 ms | 5.93 ms | 5.91 ms | **6.4–8.0** |
+| Quads drawn | 260 k | 4.1 M | 4.15 M | 4.18 M | **4.20 M** |
+| Arena used | 8 MiB | 112 MiB | 112 MiB | 113 MiB | **112 MiB** |
+| Warm-up, 1,089 columns | — | 2.29 s | 2.99 s | 3.58 s | **3.40 s** |
+| Sections with an empty mesh | 2,509 of 4,967 | **0** | **0** | **0** | **0** |
 
-**Quote the last column** — everything in it is on by default, so 5.91 ms is what the
-engine does today. Neither ores nor light cost anything measurable to *draw*: ores add
-0.6 % quads and light 0.7 %, both because they fragment a merge only where they change.
-Both cost generation time instead — the 3x3 feature replay and the light flood fill.
-Distance 24 has not been measured since caves landed and would be close to the budget.
-The earlier columns are kept only because the gap between them is the argument for
-Phase 8.
+**Read the last column carefully; it is the one place in this document where a number
+got worse and the honest answer is "cannot tell".** The p99 figure is a *range over
+three consecutive runs* (6.37, 6.94, 7.98), and the mean over the same runs ranged
+3.92 to 4.78. Every earlier column in that row is a single run. A spread of 1.6 ms
+between identical runs is far wider than one 5-block DDA march plus one 24-vertex draw
+call could plausibly cost, so **do not read this as a regression, and do not read it as
+proof of no regression either** — it says the benchmark cannot resolve a change this
+small on this machine. Settling it means running the same binary several times before
+and after, which has not been done.
+
+Warm-up genuinely improved, 3.58 s to 3.40 s, and not by intent: teaching the light
+store pass to detect changes meant it stopped clearing each mixed section and then
+re-expanding the nibble array on the first non-zero write. Comparing in place
+allocates nothing.
+
+Neither ores nor light cost anything measurable to *draw*: ores add 0.6 % quads and
+light 0.7 %, both because they fragment a merge only where they change. Both cost
+generation time instead. Distance 24 has not been measured since caves landed and
+would be close to the budget. The earlier columns are kept only because the gap
+between them is the argument for Phase 8.
 
 Sky light costs **24 KiB per column**, about 26 MiB at distance 16, because 87.5 % of
 sections are uniform and allocate nothing. The naive figure was over 400 MiB.
@@ -103,8 +134,16 @@ note about a pre-cave flight, which was three phases stale.
 **Neither session ever pressed `F` or `F5`** — both keys log when they are, and the logs
 are empty. So neither of them saw a cave, an ore, deepslate, or the sky light: all of
 that is underground, and walking cannot get there. Both sessions saw the surface only,
-which is why the world looked unchanged from before any of this work. Worth knowing
-before deciding what to build next; section 9 is about that.
+which is why the world looked unchanged from before any of this work. That observation
+is what produced section 9 and, through it, Phase 9.
+
+**Phase 9 has not been verified by a person clicking on it.** What *has* been checked:
+168 unit tests pass, 16 of them new and covering the raycast and the edit path; the
+tsan run over the live pipeline is clean; a captured frame draws the selection box and
+the engine logs what the crosshair is on. What that does not cover is the feel of
+digging, and whether a remesh after a break lands quickly enough to read as
+instantaneous. **Play it and find out** — that is the resume pointer above, and it is
+the step this project has skipped three phases in a row.
 
 Sky light landed on 2026-08-10. No aquifers and no biomes yet, and neither is next —
 see the resume pointer above.
@@ -122,7 +161,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (151 cases, doctest)
+# Test  (168 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
@@ -157,7 +196,8 @@ convert /tmp/shot.ppm /tmp/shot.png     # ImageMagick is installed
 # counts them. This is the only honest check on anything underground; see section 5.
 ./build/release/src/app/minecraft --probe --probe-columns 24
 
-# Start flying rather than walking, which is the only way to get underground.
+# Start flying rather than walking. No longer the only way underground -- digging
+# works now -- but still the fastest way to go and look at something specific.
 ./build/release/src/app/minecraft --fly
 
 # First person, if the character is in the way of what is being looked at.
@@ -178,9 +218,19 @@ meaningless.
 | `F` | switch to flying | switch to walking |
 | `F5` | first person / third person | same |
 | `Escape` | release cursor, then quit | same |
+| **Left mouse** | **break the highlighted block** | same |
+| **Right mouse** | **place the held block against it** | same |
+| **`1`-`9`** | **pick what to place** | same |
 
-**Walking cannot reach a cave**, so anything to do with ores, deepslate or sky light
-needs `F` first — or `--fly`, which starts in it.
+Reach is 5 blocks. A left click with the cursor released re-captures it instead of
+breaking anything, so `Escape` then click does not dig a hole.
+
+**Bedrock cannot be broken** — it is the world's floor, and vanilla refuses for the
+same reason.
+
+**Walking can now reach a cave: dig down.** That is the point of Phase 9, and it is
+the first time the ores, deepslate and sky light of the previous three phases are
+reachable without `--fly`.
 
 ### Why `--capture` exists
 
@@ -225,10 +275,11 @@ src/rhi/                GL abstraction; no GL type in any header
   Device, Buffer, Shader, Texture, VertexArray
 src/world/              pure data; knows nothing about rendering
   Coords (+ Face enum, ChunkPosHash), Palette, LightArray, Section,
-  Chunk (12-section column), Neighbourhood (3x3x3 view), World (chunk map)
+  Chunk (12-section column), Neighbourhood (3x3x3 view), World (chunk map + setBlock)
   BlockTable   — **every block type and texture layer; edit this to add a block**
   BlockRegistry— lookup over that table, and nothing else
-  SkyLight     — the daylight flood fill, per column
+  SkyLight     — the daylight flood fill, per column; reports what it changed
+  Raycast      — voxel DDA; aiming, and the third-person camera's collision
 src/worldgen/           knows world, nothing above it; FastNoise2 is PRIVATE
   DensityField — the 4x8x4 interpolation grid (no FastNoise2, so it is testable)
   DensityGraph — the noise router; the only file that includes FastNoise2
@@ -241,7 +292,8 @@ src/mesh/               both meshers take a SectionNeighbourhood
 src/render/
   Camera, Frustum (5 planes -- no far plane), BlockTextures,
   SectionMeshStore (one persistently mapped arena), ChunkRenderer (one multi-draw),
-  CharacterRenderer (the second render path; not voxels)
+  CharacterRenderer (the second render path; not voxels),
+  SelectionRenderer (the block outline; 24 vertices, no buffer at all)
 src/app/
   main, Engine (streaming pipeline: submit-only frame loop, upload thread)
 
@@ -346,6 +398,15 @@ Learned the hard way; all of them cost real time.
   and getting one wrong compiled and ran and put the wrong texture on a block. If you
   find yourself adding a `switch` on BlockId somewhere, add a field to the table
   instead — that is what `glyph` and `stoneLike` are.
+- **Reading a voxel from the main thread is a race unless the column is `Ready`.**
+  `World::blockAt` looked like a pure lookup and was called every frame by walking's
+  ground probe and the benchmark camera long before anything else used it. It is not
+  pure: a column in `Generating` is being written by a worker, and `Palette::fill`
+  *frees the index vector*, so a reader can walk memory that has just gone back to
+  the allocator. Phase 9's aim ray made it fire under tsan; the two older callers had
+  the same bug and had simply never been caught. The fix is one state test inside
+  `blockAt`, which is why every caller gets it for free -- but a *new* voxel reader
+  that goes around `blockAt` to `Section` directly reintroduces it.
 - **Thin features cannot live on the interpolation grid.** A 1-5 block tunnel is smaller
   than a 4x8x4 cell, so it has to be carved per block. `DensityGraph::carveThinCaves` is
   the only per-voxel noise in the engine and is bounded three ways; keep it that way.
@@ -452,12 +513,35 @@ systematic surface/filler block table. RESEARCH.md 6 records the search that fai
 the game's own worldgen data is where those numbers will have to come from. Settle
 that before planning 4d, or the phase starts on a guess.
 
+### Phase 9 — block placement and breaking (done)
+
+Full write-up in DESIGN.md 7.8. The three things worth knowing before touching it:
+
+- **Editing is safe without a lock because of the pin, and only because of it.**
+  `World::setBlock` refuses with `Busy` when the column is pinned, and the caller
+  retries next frame. Every reader of a column pins it — a job meshing a *neighbouring*
+  section pins all nine of its columns — so one `pinned()` test covers every reader
+  there can be. Take that test out and the failure is a use-after-free, because
+  `Palette::set` can reallocate the index array.
+- **An edit dirties more than its own section, and the third reason is the subtle
+  one.** The section holding the block; every section the block *touches*, because AO
+  reads a 3x3x3 and a corner block reaches seven neighbours across column boundaries;
+  and wherever the sky light moved, which also dirties the same section in the eight
+  surrounding columns because the mesher's padded light grid reaches into them. That
+  last one is why `computeSkyLight` now returns a changed-sections mask — without it
+  every click would remesh nine columns, and underground, where digging happens, the
+  honest answer is that no light moved at all.
+- **Relight is a whole-column recompute, deliberately.** About 0.5 ms, on a per-click
+  path rather than a per-frame one. Incremental relighting is the optimisation to
+  reach for if it ever appears in a profile, and not before.
+
 ### The character
 
 `render/CharacterRenderer` draws a blocky humanoid at the player position; `F5` toggles
-third person. **It is outside the documented scope** — DESIGN.md ends the project at
-terrain generation, and this is the first thing drawn that is not voxels. It is here
-because it was asked for.
+third person. It was outside the documented scope when it landed — DESIGN.md ended the
+project at terrain generation, and this was the first thing drawn that is not voxels.
+**The 2026-08-11 scope change brought it inside**, so that note is history rather than
+a caveat now.
 
 It reuses the engine's shape of answer rather than its data: no vertex buffer, quads in
 an SSBO, six corners from `gl_VertexID`, one draw call. A chunk `Quad` could not be
@@ -466,9 +550,11 @@ character.vert carries explicit float edges instead. character.frag shares chunk
 face-brightness table exactly, which is what keeps the model in the same light as the
 ground rather than reading as a sticker on it.
 
-Known gap, left open on purpose: the third-person camera does not collide with terrain,
-so backing into a hill puts the view inside it. Minecraft pulls the camera in on a ray
-cast, which needs a voxel raycast this engine does not have.
+**The third-person camera used to clip through terrain**, and the note here said fixing
+it needed a voxel raycast the engine did not have. Phase 9 built one for aiming, and
+the fix was four lines in `updateRenderCamera`: cast backwards from the eye, stop a
+quarter block short of what it hits. That is the second caller of `world/Raycast`, and
+it is the concrete reason Phase 9 was ordered ahead of vegetation.
 
 Phase 5 is indirect draw plus GPU culling. The shader side is already arranged for it:
 per-section data is an array indexed by `gl_DrawID`, which means the same thing under
@@ -514,6 +600,14 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   *inside* the noise stage on their own grid (RESEARCH.md 4), the mesher only knows the
   `isOpaque` yes/no and would need water-against-water culling, and translucency needs a
   second draw pass. Three changes that have to land together.
+- **Placing a block is refused only where the player stands, and the test is crude.**
+  A two-block column at the feet with no width, matching the walk code's own shape.
+  Since walking has no collision volume either, the two are at least consistent — but
+  a real capsule would refuse cases this lets through, and building a proper collider
+  should fix both together rather than one of them.
+- **Breaking a block does not drop anything, and placing consumes nothing.** There is
+  no inventory, so the hotbar is nine infinite blocks. That is the right answer until
+  something needs to be collected; noted so it is not mistaken for an oversight.
 - **No test covers `SectionMeshStore`.** It holds the trickiest lifetime logic in the
   engine — deferred reuse, the pending list, arena exhaustion — and `RangeAllocator`
   underneath it is unit-tested while the combination is not.

@@ -57,8 +57,54 @@ public:
     /// Null when the column is not loaded or `pos.y` is outside the world.
     const Section* sectionAt(SectionPos pos) const noexcept;
 
-    /// kAirBlock outside the world's vertical range and outside loaded columns.
+    /// kAirBlock outside the world's vertical range, outside loaded columns, and in
+    /// any column that has not finished generating.
+    ///
+    /// **That last case is a thread-safety contract, not a convenience.** This is the
+    /// one voxel read the main thread makes while workers are writing, and a column
+    /// in `Generating` is being filled by one of them. Reading it would race
+    /// `Palette::fill`, which frees the index vector -- so the answer is air until
+    /// the generator's release store makes the column Ready.
     BlockId blockAt(BlockPos pos) const noexcept;
+
+    /// Why an edit did or did not happen. Anything but `Applied` left the world
+    /// untouched.
+    enum class EditStatus {
+        Applied,
+        /// That block was already there. Not an error, and not worth remeshing for.
+        Unchanged,
+        /// Outside the world's vertical range.
+        OutsideWorld,
+        /// The column is not loaded, or has not finished generating.
+        NotLoaded,
+        /// A job owns the column right now. **The caller should retry next frame**,
+        /// not give up: this is a timing collision, not a refusal.
+        Busy,
+    };
+
+    /// Replaces one block, and marks everything whose mesh that invalidates.
+    ///
+    /// Main thread only, and it is the pin that makes that safe rather than a lock.
+    /// A meshing job borrows `const Section*` into nine columns and holds them
+    /// across frames; `Palette::set` can reallocate the index array when the palette
+    /// outgrows its bit width, so writing under a reader is a use-after-free rather
+    /// than a torn read. Every reader of this column pins it -- jobs for neighbouring
+    /// sections pin all nine of theirs -- so one `pinned()` test covers them all, and
+    /// `Busy` asks the caller to come back. Pins sit near zero in a steady state, so
+    /// in practice this retries at most a frame or two.
+    ///
+    /// Three things get dirtied, and the third is the one that is easy to miss:
+    ///
+    /// 1. The section holding the block.
+    /// 2. Sections the block *touches* -- the mesher's AO reads a 3x3x3 of voxels, so
+    ///    a block in a section corner changes shading in up to seven neighbours.
+    /// 3. Wherever the sky light moved. Light is in the mesher's merge key, and the
+    ///    padded light grid reaches one voxel into the adjacent column, so a light
+    ///    change has to dirty the same section in the eight surrounding columns too.
+    ///    `computeSkyLight` reports which sections moved, which is what keeps this
+    ///    from being "remesh the neighbourhood on every click" -- underground, where
+    ///    digging mostly happens, no sky light changes and nothing here fires.
+    EditStatus setBlock(BlockPos pos, BlockId block);
 
     /// Gathers the 3x3x3 sections around `center` for a meshing job.
     ///

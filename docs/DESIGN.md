@@ -719,15 +719,16 @@ and 9 is the next thing being built.
 
 | Phase | Content | Exit criterion |
 |---|---|---|
-| 9 | Voxel raycast; block placement and breaking | A player can dig from the surface into a cave |
+| 9 **(done)** | Voxel raycast; block placement and breaking | A player can dig from the surface into a cave |
 | 10 | Vegetation — non-cube geometry, second mesher path | Flowers and grass on the surface |
 | 11 | Persistence — chunk save format | An edited world survives a restart |
 
-Phase 9 is deliberately first of the three. It is the only one that is engine work
-rather than a new subsystem: it reuses the dirty mask, the remeshing path,
-`Palette::set` and the light recompute rather than adding machinery beside them. It
-also produces the voxel raycast that the third-person camera already needs to stop
-clipping through terrain. Vegetation without it leaves a flower nobody can pick.
+Phase 9 was deliberately first of the three, and both halves of that argument held.
+It reused the dirty mask, the remeshing path, `Palette::set` and the light recompute
+rather than adding machinery beside them, and it added nothing to the streaming
+pipeline at all. The raycast it produced for aiming turned out to be what fixed the
+third-person camera clipping through terrain, which had been an open limitation
+since the character landed. Results in 7.8.
 
 Anything past 11 — inventory, crafting, entities — is a destination, not a plan.
 Nothing here commits to it, and each would be larger than this repository is today.
@@ -1244,6 +1245,89 @@ Three lessons, all recorded in HANDOFF.md:
 - **A measurement that flatters you deserves more suspicion than one that does not.**
   The p99 improved when the instrument was fixed, but it improved for a checkable
   reason.
+
+---
+
+### 7.8 Phase 9 result — block placement and breaking
+
+The first phase of the interaction track, and the first time anything in this engine
+writes to the world after generation.
+
+| | Content | State |
+|---|---|---|
+| Voxel raycast | Amanatides & Woo DDA over the block grid | done |
+| Break / place | left and right mouse, edge-triggered | done |
+| Remesh + relight | through the existing dirty mask, no new machinery | done |
+| Selection outline | 24 vertices, one draw call, no buffer | done |
+| Third-person camera collision | second caller of the raycast | done |
+
+**Nothing new was added to the streaming pipeline.** An edit marks sections dirty
+and the existing scheduler picks them up on the next frame, which is the whole
+reason this phase was chosen to go first — see the phase plan in section 7.
+
+#### Editing without a lock
+
+The hazard is not the write, it is who might be reading. A meshing job borrows
+`const Section*` into nine columns and holds them across frames, and `Palette::set`
+can reallocate the index array when the palette outgrows its bit width — so writing
+under a reader is a use-after-free, not a torn read.
+
+The answer already existed: `Chunk::pin()`. Every reader of a column pins it, and a
+job meshing a *neighbouring* section pins all nine of its columns, so one
+`pinned()` test on the edited column covers every reader there can be.
+`World::setBlock` returns `Busy` rather than blocking, and the caller retries next
+frame. Pins sit at zero in a steady state, so in practice a retry never happens; the
+engine counts how many frames an edit has waited and complains past 20, because an
+edit that never lands means a leaked pin somewhere else.
+
+#### What an edit invalidates, and what it does not
+
+Three things, and the third is the one that is easy to get wrong:
+
+1. The section holding the block.
+2. Every section the block **touches**. The mesher's AO reads a 3x3x3 of voxels, so
+   a block in a section corner changes shading in up to seven neighbours — including
+   across a column boundary.
+3. Wherever the sky light moved. Light is part of the mesher's merge key and the
+   padded light grid reaches one voxel into the adjacent column, so a light change
+   has to dirty the same section in the **eight surrounding columns** too.
+
+Point 3 is why `computeSkyLight` now returns a mask of the sections it actually
+changed. Without that signal the honest implementation is "relight the column and
+remesh nine columns on every click", and most of that work would be for sections
+whose light did not move. **Breaking a block underground changes no sky light at
+all** — it is already zero down there — so the common case of digging costs one
+section, and the mask is what says so. A test pins exactly this.
+
+Relighting is a full column recompute rather than an incremental flood fill.
+Measured at about 0.5 ms, on a path that runs per click and not per frame, against a
+vertical fill that depends on a heightmap one block can move by any amount. An
+incremental relight is the optimisation to reach for if it ever shows up in a
+profile, and not before.
+
+#### Measurements
+
+Warm-up at distance 16 went from 3.58 s to **3.40 s**, which was not the goal and is
+worth explaining rather than claiming. The change-detection rewrite of the light
+store pass stopped it clearing each mixed section to zero and then re-expanding the
+nibble array on the first non-zero write; comparing in place does no allocation at
+all. Detecting change came out slightly cheaper than not detecting it.
+
+Frame time did not move in a way this benchmark can resolve. Three consecutive runs
+at distance 16 measured p99 6.37, 6.94 and 7.98 ms, mean 3.92 to 4.78 — a spread
+wider than anything one 5-block raycast per frame could account for, and wider than
+the gap to the 5.91 ms recorded for 4c. **That earlier figure was a single run**, so
+comparing one sample against three is not evidence either way; what can be said is
+that the added per-frame cost is one DDA march of at most a few dozen voxel lookups,
+plus one draw call of 24 vertices when something is in reach.
+
+#### The third-person camera, closed
+
+7.6 recorded that the third-person camera clipped through terrain and that fixing it
+needed a voxel raycast the engine did not have. It has one now, and the fix is four
+lines: cast backwards from the eye, stop short of what is hit. This is the second
+caller of the raycast and the reason Phase 9 was ordered ahead of vegetation — the
+prerequisite argument was not hypothetical.
 
 ---
 

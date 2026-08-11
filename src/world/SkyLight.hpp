@@ -27,6 +27,14 @@ class Chunk;
 /// meshes rather than just dim them.
 ///
 /// Runs after features, because what casts a shadow depends on what is there.
-void computeSkyLight(Chunk& chunk);
+///
+/// **Returns one bit per section whose stored light this call actually changed**,
+/// in the same order as `Chunk`'s dirty mask. Generation ignores it -- a freshly
+/// generated column marks everything dirty regardless -- but editing a block needs
+/// it: a light change has to be remeshed, and remeshing all twelve sections of a
+/// column plus its neighbours' boundaries on every click, most of them unchanged,
+/// is the difference between a dig that stutters and one that does not. Breaking a
+/// block deep underground changes no sky light at all, and this is what says so.
+u16 computeSkyLight(Chunk& chunk);
 
 } // namespace mc

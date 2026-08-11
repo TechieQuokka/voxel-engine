@@ -68,7 +68,7 @@ void note(Scratch& s, i32 worldY, u8 level) {
 
 } // namespace
 
-void computeSkyLight(Chunk& chunk) {
+u16 computeSkyLight(Chunk& chunk) {
     Scratch& s = scratch();
 
     // ------------------------------------------------------------------------
@@ -204,38 +204,58 @@ void computeSkyLight(Chunk& chunk) {
     }
 
     // ------------------------------------------------------------------------
-    // Store. A section that came out all one level keeps no array at all, which is
-    // the whole feasibility argument -- see LightArray.
+    // Store, and report what moved. A section that came out all one level keeps no
+    // array at all, which is the whole feasibility argument -- see LightArray.
     //
-    // Decided from the counters the passes above kept, not from a fresh scan: the
-    // scan would be another 393,216 reads per column to learn what was already
-    // known while writing.
+    // Which sections to *write* is decided from the counters the passes above kept,
+    // not from a fresh scan: the scan would be another 393,216 reads per column to
+    // learn what was already known while writing.
+    //
+    // Whether a write actually changed anything is a separate question, and one an
+    // edit needs answered -- see the header. The two uniform cases answer it in O(1)
+    // from the array's own uniform state. The mixed case compares as it writes,
+    // which is why it no longer clears the array first: the old values are the thing
+    // being compared against, so erasing them would destroy the answer.
     // ------------------------------------------------------------------------
+    u16 changed = 0;
+
     for (usize index = 0; index < Chunk::kSectionCount; ++index) {
         Section& section = chunk.sectionByIndex(index);
+        LightArray& array = section.skyLightArray();
         const i32 baseY = sectionIndexToWorldY(static_cast<i32>(index));
+        const auto bit = static_cast<u16>(1u << index);
 
         if (s.written[index] == 0) {
-            section.skyLightArray().fill(0); // Never reached by daylight.
+            if (!array.isUniform() || array.uniformLevel() != 0) {
+                array.fill(0); // Never reached by daylight.
+                changed |= bit;
+            }
             continue;
         }
         if (s.written[index] == kSectionVolume && s.minLevel[index] == s.maxLevel[index]) {
-            section.skyLightArray().fill(s.minLevel[index]);
+            const u8 level = s.minLevel[index];
+            if (!array.isUniform() || array.uniformLevel() != level) {
+                array.fill(level);
+                changed |= bit;
+            }
             continue;
         }
 
-        section.skyLightArray().fill(0);
         for (i32 y = 0; y < kSectionSize; ++y) {
             for (i32 z = 0; z < kSectionSize; ++z) {
                 for (i32 x = 0; x < kSectionSize; ++x) {
                     const u8 level = s.light[lightIndex(x, baseY + y, z)];
-                    if (level != 0) {
-                        section.setSkyLight(x, y, z, level);
+                    if (section.skyLight(x, y, z) == level) {
+                        continue;
                     }
+                    section.setSkyLight(x, y, z, level);
+                    changed |= bit;
                 }
             }
         }
     }
+
+    return changed;
 }
 
 } // namespace mc

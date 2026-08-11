@@ -100,6 +100,7 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
     m_input = std::make_unique<Input>(*m_window);
     m_chunkRenderer.emplace();
     m_character.emplace();
+    m_selection.emplace();
     m_meshStore.emplace(meshArenaBytesFor(m_options.renderDistance));
 
     m_world = std::make_unique<World>(m_options.renderDistance);
@@ -694,6 +695,118 @@ void Engine::updateCamera(f64 deltaTime) {
     m_walkAmount += (target - m_walkAmount) * std::min(1.0f, dt * 12.0f);
 }
 
+bool Engine::applyEdit(BlockPos pos, BlockId block) {
+    switch (m_world->setBlock(pos, block)) {
+        case World::EditStatus::Applied:
+        case World::EditStatus::Unchanged:
+            return true;
+
+        case World::EditStatus::Busy:
+            // A meshing job is reading this column. Not a failure -- come back next
+            // frame, when the pin will almost certainly be gone.
+            m_pendingEdits.push_back(PendingEdit{pos, block, 0});
+            return true;
+
+        case World::EditStatus::OutsideWorld:
+        case World::EditStatus::NotLoaded:
+            return false;
+    }
+    return false;
+}
+
+void Engine::breakTargetBlock() {
+    if (!m_target.has_value()) {
+        return;
+    }
+
+    // Bedrock is the world's floor and the reason you cannot fall out of the bottom
+    // of it. Vanilla makes it unbreakable for the same reason.
+    if (m_world->blockAt(m_target->block) == kBedrockBlock) {
+        return;
+    }
+
+    applyEdit(m_target->block, kAirBlock);
+}
+
+void Engine::placeTargetBlock() {
+    if (!m_target.has_value()) {
+        return;
+    }
+
+    const BlockPos target = m_target->adjacent;
+
+    // Do not place a block inside the player. The collision here is deliberately the
+    // same shape as the one walking uses -- a column of two blocks at the feet, no
+    // width -- so that placing and standing agree about where the player is. A
+    // narrower test would let you seal yourself into a block you are standing in.
+    const vec3 feet = m_camera.position() - Camera::up() * CharacterRenderer::kEyeHeight;
+    const auto feetX = static_cast<i32>(std::floor(feet.x));
+    const auto feetZ = static_cast<i32>(std::floor(feet.z));
+    const auto feetY = static_cast<i32>(std::floor(feet.y + 0.01f));
+
+    if (target.x == feetX && target.z == feetZ && (target.y == feetY || target.y == feetY + 1)) {
+        return;
+    }
+
+    applyEdit(target, kHotbar[m_hotbarSlot]);
+}
+
+void Engine::updateInteraction() {
+    MC_PROFILE_SCOPE_N("Engine::updateInteraction");
+
+    // Retry whatever was blocked last frame, before casting anything new. Draining
+    // in place rather than clearing: an edit can be blocked again, and it keeps its
+    // age so a genuinely stuck one is still noticed.
+    if (!m_pendingEdits.empty()) {
+        std::vector<PendingEdit> retry;
+        retry.swap(m_pendingEdits);
+
+        for (PendingEdit& edit : retry) {
+            const World::EditStatus status = m_world->setBlock(edit.pos, edit.block);
+            if (status != World::EditStatus::Busy) {
+                continue;
+            }
+            if (++edit.age >= kMaxEditAge) {
+                // A pin held this long is a bug somewhere else -- a leaked pin or a
+                // lost job -- and dropping the edit quietly would hide it.
+                logWarn("Dropping a block edit at ({}, {}, {}): column pinned for {} frames",
+                        edit.pos.x, edit.pos.y, edit.pos.z, edit.age);
+                continue;
+            }
+            m_pendingEdits.push_back(edit);
+        }
+    }
+
+    // Aim from the player's eye, never from the render camera. In third person the
+    // render camera sits several blocks behind, and casting from there would target
+    // whatever is between the camera and the player.
+    m_target = raycast(*m_world, m_camera.position(), m_camera.forward(), kReachDistance);
+
+    if (!m_input->cursorCaptured()) {
+        // Escape releases the cursor, so a click is how it comes back -- and that
+        // click must not also dig a hole. Returning here is what separates the two.
+        if (m_input->wasPressed(MouseButton::Left)) {
+            m_input->setCursorCaptured(true);
+        }
+        return;
+    }
+
+    for (usize slot = 0; slot < kHotbar.size(); ++slot) {
+        const auto key = static_cast<Key>(static_cast<u32>(Key::Num1) + slot);
+        if (m_input->wasPressed(key)) {
+            m_hotbarSlot = slot;
+            logInfo("Holding: {}", kBlocks[kHotbar[slot]].name);
+        }
+    }
+
+    if (m_input->wasPressed(MouseButton::Left)) {
+        breakTargetBlock();
+    }
+    if (m_input->wasPressed(MouseButton::Right)) {
+        placeTargetBlock();
+    }
+}
+
 std::optional<f32> Engine::groundBelow(f32 x, f32 z, f32 fromY) const {
     const auto blockX = static_cast<i32>(std::floor(x));
     const auto blockZ = static_cast<i32>(std::floor(z));
@@ -792,6 +905,12 @@ void Engine::captureAndExit() {
     const int width = m_window->framebufferWidth();
     const int height = m_window->framebufferHeight();
 
+    // Cast the aim ray first, so a capture shows the same frame the player would see
+    // -- selection box included. Without this the one tool that can look at a frame
+    // without a compositor is blind to the one thing drawn only when aiming at
+    // something, which is exactly the thing worth checking.
+    updateInteraction();
+
     renderFrame();
     const std::vector<u8> pixels = m_device->readFramebufferRgba(width, height);
     writePpm(m_options.capturePath, width, height, pixels);
@@ -799,6 +918,18 @@ void Engine::captureAndExit() {
     const ChunkRenderer::Stats& stats = m_chunkRenderer->stats();
     logInfo("Captured {}x{} frame to {} ({} sections, {} quads drawn)",
             width, height, m_options.capturePath, stats.sectionsDrawn, stats.quadsDrawn);
+
+    // What the crosshair is on, in words. The selection box is a few dark pixels in
+    // a 1280x720 image and is genuinely hard to confirm by eye; this says outright
+    // whether the aim ray found anything and what.
+    if (m_target.has_value()) {
+        logInfo("Aiming at {} at ({}, {}, {}), face {}, {:.2f} blocks away",
+                kBlocks[m_world->blockAt(m_target->block)].name,
+                m_target->block.x, m_target->block.y, m_target->block.z,
+                static_cast<u32>(m_target->face), m_target->distance);
+    } else {
+        logInfo("Aiming at nothing within {:.1f} blocks", kReachDistance);
+    }
 }
 
 void Engine::reportStats(f64 fps, f64 frameMs) {
@@ -818,6 +949,10 @@ void Engine::stepFrame(f64 deltaTime) {
 
     // Return ranges retired long enough ago before allocating any new ones.
     m_meshStore->recycle(m_frame);
+
+    // Before submitting, so a block broken this frame is remeshed this frame rather
+    // than sitting visibly intact until the next one.
+    updateInteraction();
 
     updateLoadedRegion();
 
@@ -1036,6 +1171,17 @@ void Engine::renderFrame() {
         m_character->draw(*m_device, m_renderCamera, feet, m_camera.forward(),
                           m_walkPhase, m_walkAmount);
     }
+
+    // Last, so the outline sits on top of the block it surrounds and of the
+    // character if one is in the way. It still depth-tests -- it is inflated just
+    // enough to win against its own block's faces and nothing else -- so a wall
+    // between the player and the target correctly hides it.
+    if (m_target.has_value()) {
+        m_selection->draw(*m_device, m_renderCamera,
+                          vec3{static_cast<f32>(m_target->block.x),
+                               static_cast<f32>(m_target->block.y),
+                               static_cast<f32>(m_target->block.z)});
+    }
 }
 
 void Engine::updateRenderCamera() {
@@ -1044,14 +1190,25 @@ void Engine::updateRenderCamera() {
         return;
     }
 
-    // Straight back along the view direction, with no collision test against the
-    // terrain -- so the view can end up inside a hill. Pulling the camera in on a
-    // ray cast is what Minecraft does and what this wants next; it needs a voxel
-    // raycast the engine does not have yet, and guessing one here would be a worse
-    // answer than a documented limitation.
+    // Back along the view direction, pulled in when terrain is in the way.
+    //
+    // This used to be an unconditional step backwards, with a note that fixing it
+    // needed a voxel raycast the engine did not have. Phase 9 built one for aiming,
+    // and this is the second caller: cast backwards from the eye and stop short of
+    // whatever is hit. Minecraft does exactly this.
     constexpr f32 kThirdPersonDistance = 4.0f;
-    m_renderCamera.setPosition(m_camera.position()
-                               - m_camera.forward() * kThirdPersonDistance);
+    /// Kept between the camera and the wall, so the near plane does not clip into it
+    /// and show the inside of the block.
+    constexpr f32 kWallMargin = 0.25f;
+
+    const vec3 back = -m_camera.forward();
+    f32 distance = kThirdPersonDistance;
+
+    if (const auto hit = raycast(*m_world, m_camera.position(), back, kThirdPersonDistance)) {
+        distance = std::max(0.0f, hit->distance - kWallMargin);
+    }
+
+    m_renderCamera.setPosition(m_camera.position() + back * distance);
 }
 
 } // namespace mc

@@ -3,6 +3,7 @@ add_library(mc_world STATIC
   SkyLight.cpp
   Chunk.cpp
   Palette.cpp
+  Raycast.cpp
   World.cpp
 )
 

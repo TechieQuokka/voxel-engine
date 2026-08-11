@@ -105,6 +105,7 @@ TEST_CASE("blockAt reads through to the section that owns the voxel") {
 
     Chunk* chunk = world.find(ChunkPos{0, 0});
     REQUIRE(chunk != nullptr);
+    chunk->setState(ChunkState::Ready);
 
     Section* section = chunk->sectionAt(0); // World Y 0..31.
     REQUIRE(section != nullptr);
@@ -112,6 +113,29 @@ TEST_CASE("blockAt reads through to the section that owns the voxel") {
 
     CHECK(world.blockAt(BlockPos{5, 6, 7}) == kStoneBlock);
     CHECK(world.blockAt(BlockPos{5, 6, 8}) == kAirBlock);
+}
+
+TEST_CASE("blockAt reads a column that is still generating as air") {
+    World world(1);
+    world.updateLoadedRegion(ChunkPos{0, 0});
+
+    Chunk* chunk = world.find(ChunkPos{0, 0});
+    REQUIRE(chunk != nullptr);
+    chunk->sectionAt(0)->set(5, 6, 7, kStoneBlock);
+
+    // A worker owns a Generating column and is writing its palette. The main thread
+    // reads voxels every frame -- the aim ray, the walk's ground probe -- and doing
+    // that here would race `Palette::fill`, which frees the index vector out from
+    // under the reader. ThreadSanitizer caught exactly this.
+    chunk->setState(ChunkState::Generating);
+    CHECK(world.blockAt(BlockPos{5, 6, 7}) == kAirBlock);
+
+    // A column that never started is the same answer for the same reason.
+    chunk->setState(ChunkState::Empty);
+    CHECK(world.blockAt(BlockPos{5, 6, 7}) == kAirBlock);
+
+    chunk->setState(ChunkState::Ready);
+    CHECK(world.blockAt(BlockPos{5, 6, 7}) == kStoneBlock);
 }
 
 TEST_CASE("blockAt is air outside the world and outside loaded columns") {
@@ -131,6 +155,7 @@ TEST_CASE("blockAt handles negative coordinates without straddling a section") {
     // plain division would get wrong.
     Chunk* chunk = world.find(ChunkPos{-1, -1});
     REQUIRE(chunk != nullptr);
+    chunk->setState(ChunkState::Ready);
     Section* section = chunk->sectionAt(-1);
     REQUIRE(section != nullptr);
     section->set(31, 31, 31, kSandBlock);

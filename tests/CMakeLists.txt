@@ -22,6 +22,8 @@ add_executable(mc_tests
   test_mesher.cpp
   test_skylight.cpp
   test_greedy_mesher.cpp
+  test_raycast.cpp
+  test_world_edit.cpp
 )
 
 target_link_libraries(mc_tests PRIVATE

@@ -24,6 +24,22 @@ constexpr std::array<int, static_cast<usize>(Key::Count)> kGlfwKeys{{
     GLFW_KEY_F1,
     GLFW_KEY_F3,
     GLFW_KEY_F5,
+    GLFW_KEY_1,
+    GLFW_KEY_2,
+    GLFW_KEY_3,
+    GLFW_KEY_4,
+    GLFW_KEY_5,
+    GLFW_KEY_6,
+    GLFW_KEY_7,
+    GLFW_KEY_8,
+    GLFW_KEY_9,
+}};
+
+// Indexed by MouseButton; order must match the enum.
+constexpr std::array<int, static_cast<usize>(MouseButton::Count)> kGlfwButtons{{
+    GLFW_MOUSE_BUTTON_LEFT,
+    GLFW_MOUSE_BUTTON_RIGHT,
+    GLFW_MOUSE_BUTTON_MIDDLE,
 }};
 
 GLFWwindow* handleOf(const Window& window) {
@@ -40,6 +56,12 @@ void Input::update() {
     std::copy(std::begin(m_current), std::end(m_current), std::begin(m_previous));
     for (usize i = 0; i < kKeyCount; ++i) {
         m_current[i] = glfwGetKey(handle, kGlfwKeys[i]) == GLFW_PRESS;
+    }
+
+    std::copy(std::begin(m_currentButtons), std::end(m_currentButtons),
+              std::begin(m_previousButtons));
+    for (usize i = 0; i < kButtonCount; ++i) {
+        m_currentButtons[i] = glfwGetMouseButton(handle, kGlfwButtons[i]) == GLFW_PRESS;
     }
 
     f64 x = 0.0;
@@ -67,6 +89,15 @@ bool Input::isDown(Key key) const {
 bool Input::wasPressed(Key key) const {
     const auto index = static_cast<usize>(key);
     return m_current[index] && !m_previous[index];
+}
+
+bool Input::isDown(MouseButton button) const {
+    return m_currentButtons[static_cast<usize>(button)];
+}
+
+bool Input::wasPressed(MouseButton button) const {
+    const auto index = static_cast<usize>(button);
+    return m_currentButtons[index] && !m_previousButtons[index];
 }
 
 void Input::setCursorCaptured(bool captured) {

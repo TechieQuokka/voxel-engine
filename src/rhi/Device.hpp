@@ -60,6 +60,14 @@ public:
     /// gl_VertexID; a VertexArray must be bound.
     void drawTriangles(u32 vertexCount, u32 first = 0);
 
+    /// The same, as line segments -- vertex pairs, one segment each.
+    ///
+    /// Here for the block selection outline, which is twelve edges and would
+    /// otherwise have to be twelve thin boxes. Line width stays at the default 1.0:
+    /// `glLineWidth` above 1.0 is not required to be supported in a core profile and
+    /// is one of the few places where a driver will silently do nothing.
+    void drawLines(u32 vertexCount, u32 first = 0);
+
     /// One GL call for many sections.
     ///
     /// `firsts` and `counts` are in vertices. Two properties make this work with

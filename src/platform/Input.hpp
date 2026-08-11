@@ -14,6 +14,19 @@ enum class Key : u32 {
     Space, LeftShift, LeftControl,
     Escape,
     F, F1, F3, F5,
+    /// The hotbar. Contiguous and in order, so a slot is `Num1 + n` -- the block
+    /// selector indexes them arithmetically rather than through a switch.
+    Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9,
+    Count,
+};
+
+/// Mouse buttons the engine reacts to. Separate from Key because GLFW numbers them
+/// in their own space, and because "was this pressed" for a button is asked at a
+/// different place in the frame than for a key.
+enum class MouseButton : u32 {
+    Left,
+    Right,
+    Middle,
     Count,
 };
 
@@ -32,6 +45,16 @@ public:
     /// True only on the frame the key transitioned from up to down.
     bool wasPressed(Key key) const;
 
+    bool isDown(MouseButton button) const;
+    /// True only on the frame the button transitioned from up to down.
+    ///
+    /// Breaking and placing are both edge-triggered on purpose. Holding a button
+    /// down at 60 FPS would place sixty blocks a second along the view ray, which is
+    /// not "building" -- Minecraft repeats on a timer for breaking and not at all
+    /// for placing, and a timer is not worth having before there is a block that
+    /// takes more than one hit.
+    bool wasPressed(MouseButton button) const;
+
     f64 mouseDeltaX() const noexcept { return m_mouseDeltaX; }
     f64 mouseDeltaY() const noexcept { return m_mouseDeltaY; }
 
@@ -41,11 +64,15 @@ public:
 
 private:
     static constexpr usize kKeyCount = static_cast<usize>(Key::Count);
+    static constexpr usize kButtonCount = static_cast<usize>(MouseButton::Count);
 
     Window& m_window;
 
     bool m_current[kKeyCount] = {};
     bool m_previous[kKeyCount] = {};
+
+    bool m_currentButtons[kButtonCount] = {};
+    bool m_previousButtons[kButtonCount] = {};
 
     f64 m_mouseX = 0.0;
     f64 m_mouseY = 0.0;

@@ -11,7 +11,8 @@ it removes a portability layer that would otherwise shape every decision below.
 ## What it does today
 
 Streaming terrain generated from a FastNoise2 density-function graph, meshed with
-binary greedy meshing, drawn with **one** `glMultiDrawArrays` call per frame.
+binary greedy meshing, drawn with **one** `glMultiDrawArrays` call per frame — with
+caves, ores, sky light, and a world you can dig into and build on.
 
 | | |
 |---|---|
@@ -34,8 +35,14 @@ cmake --build --preset release
 ./build/release/src/app/minecraft
 ```
 
-`WASD` to move, `Space`/`LeftShift` up and down, `LeftControl` to sprint, mouse to look,
-`Escape` to release the cursor and again to quit.
+You start walking, in third person. `WASD` to move, `Space` to jump, `LeftControl` to
+sprint, `LeftShift` to sneak, mouse to look. **Left click breaks the highlighted block,
+right click places one, and `1`-`9` choose what to place** — reach is 5 blocks and
+bedrock is unbreakable. `F` switches to flying, `F5` to first person, `Escape` releases
+the cursor and again quits.
+
+Dig down. The caves, ores and darkness are the point, and they are not visible from the
+surface.
 
 ```bash
 ctest --preset debug                       # 142 test cases
@@ -102,8 +109,7 @@ tracks remain, independent of each other:
 
 - **Performance** — indirect draw with GPU culling, four-level LOD, brickmap ray marching
   for the far field, occlusion culling. This is what the render-distance target needs.
-- **Interaction** — block placement and breaking, vegetation, persistence. Block
-  placement and breaking is next.
+- **Interaction** — block placement and breaking (**done**), vegetation, persistence.
 
 Inventory, crafting and entities are not planned.
 

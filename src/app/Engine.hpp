@@ -10,7 +10,10 @@
 #include "render/CharacterRenderer.hpp"
 #include "render/ChunkRenderer.hpp"
 #include "render/SectionMeshStore.hpp"
+#include "render/SelectionRenderer.hpp"
 #include "rhi/Device.hpp"
+#include "world/BlockTable.hpp"
+#include "world/Raycast.hpp"
 #include "world/World.hpp"
 #include "worldgen/Generator.hpp"
 
@@ -110,6 +113,22 @@ private:
     /// player's eye in first person, a few blocks behind it in third.
     void updateRenderCamera();
 
+    /// Casts the aim ray, applies clicks, and retries edits that lost a race with a
+    /// meshing job. One call per frame, before streaming submits anything -- an edit
+    /// dirties sections, and doing it after `submitMeshing` would hold the change for
+    /// a frame for no reason.
+    void updateInteraction();
+
+    /// Breaks `m_target`, or places the selected block against it. Both go through
+    /// `applyEdit`, so both get the same retry behaviour.
+    void breakTargetBlock();
+    void placeTargetBlock();
+
+    /// Edits the world, queueing the edit for the next frame if a job owns the
+    /// column. Returns false only when the edit is impossible rather than merely
+    /// early.
+    bool applyEdit(BlockPos pos, BlockId block);
+
     ChunkPos cameraColumn() const;
 
     /// Loads and unloads columns around the camera. Only does work when the camera
@@ -190,6 +209,7 @@ private:
     std::optional<ChunkRenderer> m_chunkRenderer;
     std::optional<SectionMeshStore> m_meshStore;
     std::optional<CharacterRenderer> m_character;
+    std::optional<SelectionRenderer> m_selection;
 
     std::unique_ptr<World> m_world;
     std::unique_ptr<Generator> m_generator;
@@ -231,6 +251,45 @@ private:
     /// drawn from. Two cameras rather than one moving camera, so "where the player
     /// is" and "where the frame is seen from" cannot drift apart.
     Camera m_renderCamera;
+
+    // ---------------------------------------------------------------------------
+    // Interaction (Phase 9).
+    // ---------------------------------------------------------------------------
+
+    /// The block the aim ray found this frame, if any. Recomputed every frame rather
+    /// than cached across them: the world under the ray changes without the camera
+    /// moving, because streaming and the player's own edits both alter it.
+    std::optional<RaycastHit> m_target;
+
+    /// An edit that lost a race with a meshing job and is waiting for the pin to
+    /// clear. See `World::EditStatus::Busy`.
+    struct PendingEdit {
+        BlockPos pos{};
+        BlockId block = kAirBlock;
+        /// Frames spent waiting. An edit that never lands is a leaked pin, and
+        /// silently dropping it would hide that; this counts up to a bound and then
+        /// complains.
+        u32 age = 0;
+    };
+    std::vector<PendingEdit> m_pendingEdits;
+
+    /// How far the player can reach, in blocks. Minecraft is 4.5 in survival and 5
+    /// in creative; this has no survival mode to differ from.
+    static constexpr f32 kReachDistance = 5.0f;
+
+    /// Frames a pending edit may wait before it is reported as stuck. At 60 FPS this
+    /// is a third of a second, which is far longer than a pin should ever be held.
+    static constexpr u32 kMaxEditAge = 20;
+
+    /// The hotbar. Nine blocks that are worth building with and easy to tell apart;
+    /// bedrock is deliberately absent, and so are the ores, which are worth finding
+    /// rather than spawning.
+    static constexpr std::array<BlockId, 9> kHotbar{
+        blockIdOf("stone"),    blockIdOf("dirt"),     blockIdOf("grass"),
+        blockIdOf("sand"),     blockIdOf("granite"),  blockIdOf("diorite"),
+        blockIdOf("andesite"), blockIdOf("tuff"),     blockIdOf("gravel"),
+    };
+    usize m_hotbarSlot = 0;
 
     bool m_thirdPerson = false;
     /// Advances with distance travelled, not with time, so the limbs stop when the

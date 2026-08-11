@@ -1,6 +1,7 @@
 #include "world/World.hpp"
 
 #include "core/Profile.hpp"
+#include "world/SkyLight.hpp"
 
 #include <algorithm>
 #include <vector>
@@ -97,13 +98,128 @@ BlockId World::blockAt(BlockPos pos) const noexcept {
         return kAirBlock;
     }
 
-    const Section* section = sectionAt(toSectionPos(pos));
+    const Chunk* chunk = find(toChunkPos(pos));
+    // Not `sectionAt`: a column a worker is still generating must read as air, not
+    // as whatever half-written palette it currently holds. ThreadSanitizer caught
+    // this as `Palette::get` racing `Palette::fill`, and it is a real race rather
+    // than a benign one -- `Palette::fill` frees the index vector, so a reader can
+    // be walking memory that has just been returned to the allocator.
+    //
+    // Reading as air is also the answer every caller already handles: walking and
+    // the benchmark camera both treat "nothing solid below" as a column that has not
+    // arrived yet and hold their height, and the aim ray simply finds nothing. The
+    // acquire load in `state()` pairs with the release store the generator ends on,
+    // so observing Ready means observing every voxel it wrote.
+    if (chunk == nullptr || chunk->state() != ChunkState::Ready) {
+        return kAirBlock;
+    }
+
+    const Section* section = chunk->sectionAt(blockToSectionCoord(pos.y));
     if (section == nullptr) {
         return kAirBlock;
     }
     return section->get(blockToLocalCoord(pos.x),
                         blockToLocalCoord(pos.y),
                         blockToLocalCoord(pos.z));
+}
+
+namespace {
+
+/// Marks section `sectionY` dirty in `chunk`, if that section exists.
+void dirtySection(Chunk* chunk, i32 sectionY) {
+    if (chunk == nullptr || !isValidSectionY(sectionY)) {
+        return;
+    }
+    chunk->markSectionDirty(static_cast<usize>(sectionIndexInColumn(sectionY)));
+}
+
+} // namespace
+
+World::EditStatus World::setBlock(BlockPos pos, BlockId block) {
+    MC_PROFILE_SCOPE_N("World::setBlock");
+
+    if (!isValidWorldY(pos.y)) {
+        return EditStatus::OutsideWorld;
+    }
+
+    Chunk* chunk = find(toChunkPos(pos));
+    if (chunk == nullptr || chunk->state() != ChunkState::Ready) {
+        return EditStatus::NotLoaded;
+    }
+    // Checked after Ready and before any write. See the header: this is the whole
+    // safety argument for editing without a lock.
+    if (chunk->pinned()) {
+        return EditStatus::Busy;
+    }
+
+    const i32 sectionY = blockToSectionCoord(pos.y);
+    Section* section = chunk->sectionAt(sectionY);
+    if (section == nullptr) {
+        return EditStatus::OutsideWorld;
+    }
+
+    const i32 lx = blockToLocalCoord(pos.x);
+    const i32 ly = blockToLocalCoord(pos.y);
+    const i32 lz = blockToLocalCoord(pos.z);
+
+    if (section->get(lx, ly, lz) == block) {
+        return EditStatus::Unchanged;
+    }
+    section->set(lx, ly, lz, block);
+
+    // (1) and (2): the section, plus every section the block touches. An axis
+    // contributes a neighbour only when the block sits against that section wall,
+    // so this is one section in the interior and at most eight in a corner.
+    const i32 loX = lx == 0 ? -1 : 0;
+    const i32 hiX = lx == kSectionSize - 1 ? 1 : 0;
+    const i32 loY = ly == 0 ? -1 : 0;
+    const i32 hiY = ly == kSectionSize - 1 ? 1 : 0;
+    const i32 loZ = lz == 0 ? -1 : 0;
+    const i32 hiZ = lz == kSectionSize - 1 ? 1 : 0;
+
+    const ChunkPos column = chunk->position();
+    for (i32 dz = loZ; dz <= hiZ; ++dz) {
+        for (i32 dx = loX; dx <= hiX; ++dx) {
+            Chunk* neighbour = (dx == 0 && dz == 0)
+                                   ? chunk
+                                   : find(ChunkPos{column.x + dx, column.z + dz});
+            for (i32 dy = loY; dy <= hiY; ++dy) {
+                dirtySection(neighbour, sectionY + dy);
+            }
+        }
+    }
+
+    // (3) Light. Recomputed for the whole column rather than incrementally: the
+    // vertical fill depends on the column's heightmap, which one block can move by
+    // any amount, and a full recompute measures about 0.5 ms -- per click, on a
+    // path that is not the frame loop. An incremental relight is the optimisation
+    // to reach for if that ever shows up in a profile, not before.
+    const u16 lightChanged = computeSkyLight(*chunk);
+    if (lightChanged == 0) {
+        return EditStatus::Applied;
+    }
+
+    for (usize index = 0; index < Chunk::kSectionCount; ++index) {
+        if ((lightChanged & (1u << index)) == 0) {
+            continue;
+        }
+        const i32 movedY = kMinSectionY + static_cast<i32>(index);
+        chunk->markSectionDirty(index);
+
+        // The neighbours' boundary faces are lit by light that lives in this column,
+        // so they are stale too. Only the eight around it: light is column-local, so
+        // nothing further out can be reading it.
+        for (i32 dz = -1; dz <= 1; ++dz) {
+            for (i32 dx = -1; dx <= 1; ++dx) {
+                if (dx == 0 && dz == 0) {
+                    continue;
+                }
+                dirtySection(find(ChunkPos{column.x + dx, column.z + dz}), movedY);
+            }
+        }
+    }
+
+    return EditStatus::Applied;
 }
 
 SectionNeighbourhood World::neighbourhood(SectionPos center) const {
