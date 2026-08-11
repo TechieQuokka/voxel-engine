@@ -1,11 +1,43 @@
 # Voxel Engine — Design Document
 
-> Status: **Draft / under discussion.** Nothing in this document is implemented yet.
-> Last updated: 2026-08-09
+> Status: **Implemented through Phase 4c.** Phases 0-3 are complete and Phase 4
+> (terrain generation) is in progress; results and measurements are in section 7.
+> Last updated: 2026-08-11.
+>
+> **The scope was widened on 2026-08-11** — see the note below. Everything above
+> section 7 predates that decision and still holds; the phase plan in 7 is what
+> changed.
 
 A high-performance voxel engine written from scratch in C++20, targeting a
-Minecraft-like world with an extreme render distance. Scope ends at terrain
-generation — no redstone, mob AI, or multiplayer.
+Minecraft-like world with an extreme render distance. Scope covers terrain
+generation and the interaction needed to play in the world it generates — no
+redstone and no multiplayer.
+
+### The scope change, and why
+
+This document originally ended the project at terrain generation: *"no redstone,
+mob AI, or multiplayer — the goal is the render distance, not the game."* That was
+the right call for four phases and is the reason the engine is as fast as it is.
+
+It stopped being the right call for a measurable reason. Phase 4b and 4c added
+caves, bedrock, deepslate, four stone variants, gravel and seven ores — twenty-one
+block types, every one of them underground. Two play sessions were recorded, and
+**neither reached any of it**: walking cannot get below the surface, and there is no
+way to dig. The work is real and measured throughout section 7, and it is also
+invisible to anyone who runs the program.
+
+A renderer that can generate a world nobody can enter is a renderer with a reporting
+problem, not just a missing feature. So interaction enters the scope — starting with
+block placement and breaking, which is the one item that is engine work rather than
+game systems, and is the prerequisite for all the others.
+
+**What did not change:** the performance target (render distance 64 at 60 FPS), every
+architecture decision in section 3, and phases 5 through 8. This widens what gets
+built; it does not retire anything already decided.
+
+**Still out of scope:** multiplayer and redstone. Mob AI, crafting and inventory are
+no longer refused outright, but nothing about them is planned or designed — they are
+listed in the phase plan as destinations, not commitments.
 
 ---
 
@@ -17,7 +49,8 @@ generation — no redstone, mob AI, or multiplayer.
 | Language | C++20 |
 | Compiler | GCC |
 | Engine | Custom renderer. No Unity/Unreal. |
-| Scope | Up to terrain generation |
+| Scope | Terrain generation, plus interaction with the generated world. No multiplayer, no redstone. |
+| Dependencies | As few as possible, and none that do work this project exists to do. See section 4. |
 | Primary concern | Performance |
 
 ### 1.1 Consequences of Linux-only + GCC
@@ -680,6 +713,25 @@ power, because it has to agree with the hardware's encode.
 Phase 6 reaches the stated performance target. Phase 7 completes the hybrid
 architecture.
 
+**Interaction track**, added 2026-08-11 with the scope change. Numbered after the
+performance phases but **not sequenced after them** — the two tracks are independent,
+and 9 is the next thing being built.
+
+| Phase | Content | Exit criterion |
+|---|---|---|
+| 9 | Voxel raycast; block placement and breaking | A player can dig from the surface into a cave |
+| 10 | Vegetation — non-cube geometry, second mesher path | Flowers and grass on the surface |
+| 11 | Persistence — chunk save format | An edited world survives a restart |
+
+Phase 9 is deliberately first of the three. It is the only one that is engine work
+rather than a new subsystem: it reuses the dirty mask, the remeshing path,
+`Palette::set` and the light recompute rather than adding machinery beside them. It
+also produces the voxel raycast that the third-person camera already needs to stop
+clipping through terrain. Vegetation without it leaves a flower nobody can pick.
+
+Anything past 11 — inventory, crafting, entities — is a destination, not a plan.
+Nothing here commits to it, and each would be larger than this repository is today.
+
 Every phase ends with a Tracy capture. A phase is not complete until its
 performance characteristics are measured, not assumed.
 
@@ -1208,8 +1260,11 @@ implementation makes contact with reality:
   procedurally, no binary assets in the repository.
 - **Occlusion culling method** — HZB, visibility graph, or both. Decided by
   profiling in Phase 8.
-- **World persistence** — disk format, and whether persistence is in scope at
-  all, is still undecided.
+- ~~**World persistence** — whether it is in scope at all~~ — **in scope as of the
+  2026-08-11 scope change**, as Phase 11. Once a player can edit the world, throwing
+  the edits away on exit is a defect rather than a simplification. The disk format is
+  still undecided; palette-compressed sections are already compact, so the open part
+  is the container and whether it compresses at all.
 
 ---
 

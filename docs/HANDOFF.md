@@ -16,15 +16,16 @@ practical details needed to pick the work back up cold.
 Measurements are in DESIGN.md 7.5 (Phase 3), 7.6 (Phase 4) and 7.7 (the benchmark);
 vanilla's numbers, and which of them could not be confirmed, are in RESEARCH.md.
 
-**Start here when resuming: read section 9 first.** There is an open question about
-what this project is for, raised by the user on 2026-08-10 and not yet answered, and
-it decides whether the next step is 4d at all.
+**Start here when resuming: the next step is Phase 9 — block placement and breaking.**
+The question of what this project is for was settled on 2026-08-11 (section 9): the
+scope now includes interaction, and DESIGN.md and README.md were rewritten to match
+before any feature work began.
 
-If the answer is "engine, as documented", the remaining Phase 4 step is **4d —
-biomes**, which has an unresolved input recorded in section 6 that wants settling
-before any code.
+That leaves **4d — biomes** as the last Phase 4 step but no longer the next one. It
+still has the unresolved input recorded in section 6, which wants settling before any
+code is written for it.
 
-The two open items most worth doing before 4d, in either order:
+Two older items are still open and still worth doing, in either order:
 
 - **Light does not cross column borders.** A cave lit through an opening one column
   over stays dark, and the boundary is a straight vertical edge. Fixing it needs a
@@ -105,7 +106,8 @@ that is underground, and walking cannot get there. Both sessions saw the surface
 which is why the world looked unchanged from before any of this work. Worth knowing
 before deciding what to build next; section 9 is about that.
 
-No aquifers, biomes or lighting yet. Lighting comes first — see the resume pointer above.
+Sky light landed on 2026-08-10. No aquifers and no biomes yet, and neither is next —
+see the resume pointer above.
 
 ---
 
@@ -495,8 +497,6 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
 
 ## 8. Still open
 
-- **What this project is for.** The largest open item by far, and unanswered. See
-  section 9.
 - **`ChunkRenderer`'s section-origin buffer is overwritten while the GPU may be reading
   it.** `rhi/Buffer.hpp` states the contract — the caller must not overwrite a range the
   GPU may still be reading — and `SectionMeshStore` honours it with `kReuseDelayFrames`.
@@ -507,7 +507,9 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   command buffer has the identical problem, so fix both together.
 - **Occlusion culling method** — HZB, visibility graph, or both. Decided by
   profiling in Phase 8.
-- **World persistence** — disk format, and whether it is in scope at all.
+- **World persistence** — **now in scope** (DESIGN.md Phase 11), so the open part is
+  the disk format rather than the question. Sections are palette-compressed already,
+  so what is undecided is the container and whether it compresses at all.
 - **Water, and the aquifers under it.** Larger than its one line suggests: aquifers run
   *inside* the noise stage on their own grid (RESEARCH.md 4), the mesher only knows the
   `isOpaque` yes/no and would need water-against-water culling, and translucency needs a
@@ -527,11 +529,31 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
 
 ---
 
-## 9. The open question: engine, or game
+## 9. The open question: engine, or game — **answered**
 
-Raised by the user on 2026-08-10, after playing the engine twice. **Unanswered.**
-Everything about what to build next depends on it, which is why it is written down
-rather than left in a conversation.
+Raised by the user on 2026-08-10 after playing the engine twice, and **settled on
+2026-08-11: the scope widens to include interaction.** DESIGN.md and README.md were
+rewritten to say so in one commit before any feature work started, which is what the
+last subsection of this section asked for.
+
+**The next thing to build is block placement and breaking** — DESIGN.md's Phase 9.
+The reasoning is unchanged from the recommendation below, which is kept because it is
+the argument, not just the conclusion.
+
+Two constraints the user attached to the decision, both worth carrying forward:
+
+- **Libraries stay minimal.** Everything on the list below is to be written here. This
+  turned out not to constrain the plan at all: none of it needs a new dependency, and
+  the repository has already proved the pattern twice — `BlockTextures` generates every
+  texture in code rather than loading an image, and `CharacterRenderer` added a whole
+  non-voxel render path with zero new dependencies. A UI layer would use the same
+  screen-space quad and `gl_VertexID` trick. The one genuinely painful thing to
+  self-implement is audio, which is not on the list.
+- **Time is accepted.** The user's framing was "it will take a long time, but" — so the
+  size estimates below are not an argument against doing it, only against doing it all
+  at once.
+
+The record of what was discussed follows.
 
 ### What happened
 
@@ -565,7 +587,7 @@ question still leaves the user with a world they cannot do anything in.
 | Building | **block placement and breaking** — voxel raycast, world edit, remesh, relight | medium |
 | Crafting, weapons | inventory, item types, recipe data, and a UI layer that does not exist | large |
 | Hunting | entities, AI, pathfinding, health, combat, drops | large |
-| Keeping any of it | world persistence — already listed in section 8 as *"whether it is in scope at all"* | medium |
+| Keeping any of it | world persistence — now in scope as DESIGN.md Phase 11 | medium |
 
 The bottom three are a game, not a renderer. Comparable in size to everything in
 this repository so far, or larger.

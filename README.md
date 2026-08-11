@@ -87,12 +87,33 @@ corrections are usually more useful than the conclusions. Three examples:
 
 ## Scope
 
-Terrain generation and rendering. There is no inventory, crafting, mob AI, redstone or
-multiplayer, and none is planned — the goal is the render distance, not the game.
+Terrain generation and rendering, plus the interaction needed to play in the world that
+gets generated. No multiplayer and no redstone.
 
-Phases 0 through 3 are complete; Phase 4 (terrain generation) is in progress. Remaining:
-indirect draw with GPU culling, four-level LOD, brickmap ray marching for the far field,
-and occlusion culling.
+The scope was widened on 2026-08-11. It previously ended at terrain generation, and the
+reason it moved is worth stating plainly: the last two phases added caves, deepslate and
+seven ores — twenty-one block types, **all of them underground** — and two recorded play
+sessions reached none of it, because walking cannot get below the surface and there is no
+way to dig. Generating a world nobody can enter is a strange place to stop. DESIGN.md
+section 1 has the full reasoning.
+
+Phases 0 through 3 are complete and Phase 4 (terrain generation) is in progress. Two
+tracks remain, independent of each other:
+
+- **Performance** — indirect draw with GPU culling, four-level LOD, brickmap ray marching
+  for the far field, occlusion culling. This is what the render-distance target needs.
+- **Interaction** — block placement and breaking, vegetation, persistence. Block
+  placement and breaking is next.
+
+Inventory, crafting and entities are not planned.
+
+## Dependencies
+
+Six, and every one of them is a foundation rather than engine work: GLFW (windowing),
+glad (GL loader), glm (vector maths), FastNoise2 (SIMD noise), plus Tracy and doctest for
+profiling and tests. There is no game engine, no scene graph, no meshing library and no
+image loader — block textures are generated in code. The chunk storage, mesher, culling,
+job system, allocator and lighting are all written here.
 
 ## Licence
 

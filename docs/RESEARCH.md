@@ -213,9 +213,17 @@ one line suggests.
 
 Cross-quad vegetation is not greedy-mergeable, needs back-face culling off and alpha
 testing on, and does not fit the "one face = one merged rectangle" model that
-`Quad` and `chunk.vert` are built around. Given the project's stated scope ends at
-terrain generation, **the recommendation is not to do it** rather than to do it
-badly.
+`Quad` and `chunk.vert` are built around.
+
+The original recommendation here was **not to do it**, on the grounds that the
+project's scope ended at terrain generation and a second mesher path could not earn
+its keep inside that scope. **That premise expired on 2026-08-11**, when the scope
+widened to include interaction (DESIGN.md 1); vegetation is now Phase 10.
+
+The technical objection above is unchanged and is the actual content of that phase —
+it is a second mesher path, not a new block type, and nothing in this section makes
+it cheaper. What changed is only whether it is worth paying for. It stays *after*
+Phase 9: a flower that cannot be picked is scenery, and picking needs block breaking.
 
 ---
 
