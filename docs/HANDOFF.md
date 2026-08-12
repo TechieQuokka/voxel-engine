@@ -266,6 +266,8 @@ Two older items are still open and still worth doing, in any order:
 | `af8cd6e` | Audit the docs against the code, and fix three stale numbers |
 | `240c8a7` | Item pickup measured from the body; the asan build unbroken (7.14) |
 | `b8a703e` | Fullscreen on `F11` at the monitor's native resolution |
+| `bd87899` | Alt-Tab no longer drops the player through the floor |
+| `510f290` | Shoulder camera, thick outline, and the block name under the crosshair |
 
 Working tree is clean. **Published publicly** at the `origin` remote as of
 2026-08-10; the earlier local-only rule was lifted by the user at that point.
@@ -493,6 +495,11 @@ meaningless.
 | `F` | switch to flying | switch to walking |
 | `F5` | first person / third person | same |
 | `F11` | **fullscreen at the monitor's native resolution** | same |
+
+Third person is **over the right shoulder**, and the crosshair follows the aim ray
+rather than sitting at the screen centre -- in third person those are not the same
+point. The block under the crosshair is **named on the HUD**, which is the only thing
+that works when the character is standing in front of what is being mined.
 | `Escape` | release cursor, then quit | same |
 | **Left mouse** | **hold to break the highlighted block** | same |
 | **Right mouse** | **place the held block against it** | same |
@@ -792,6 +799,20 @@ Learned the hard way; all of them cost real time.
   "there is no ocean near spawn" and used to answer a question about what the player
   could see. A capture from the spawn point shows a lake with a sand shore. **When the
   question is what the player sees, look at a frame.**
+- **A stall is not simulation time, and the frame after one is where that bites.**
+  A hidden Wayland surface gets no frame callbacks, so `swapBuffers` blocks until it
+  is visible again and the next delta is the whole absence. Unclamped, gravity spent
+  it in one step and the ground probe -- which samples the destination -- never saw
+  the floor: **Alt-Tab away for half a second and the player came back ten blocks
+  inside the terrain.** Silently, because `m_trackingFall` is false in that path, so
+  no fall damage fired and no number in the log changed. `kMaxFrameSeconds` bounds it
+  and walking is substepped like `ItemEntities` and `FallingBlocks`; the stats line
+  carries a position and a `BURIED` flag now, because the bug moved the player into
+  rock without changing anything that was being printed.
+- **`glLineWidth` above 1.0 may be silently ignored in a core profile**, which is why
+  the selection outline was one pixel for as long as it was. A line of a chosen width
+  has to be built as geometry -- `selection.vert` expands each cube edge into a
+  screen-space quad. `rhi::Device::drawLines` is unused now and its header says why.
 - **Reading a voxel from the main thread is a race unless the column is `Ready`.**
   `World::blockAt` looked like a pure lookup and was called every frame by walking's
   ground probe and the benchmark camera long before anything else used it. It is not
