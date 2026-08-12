@@ -715,7 +715,7 @@ architecture.
 
 **Interaction track**, added 2026-08-11 with the scope change. Numbered after the
 performance phases but **not sequenced after them** — the two tracks are independent,
-and 9 is the next thing being built.
+and every phase built since the scope change has come from this one.
 
 | Phase | Content | Exit criterion |
 |---|---|---|
@@ -725,6 +725,18 @@ and 9 is the next thing being built.
 | 12 **(done)** | Block updates — neighbour notification and scheduled ticks | Sand falls when its support goes |
 | 13 **(done)** | Entities — the first thing in the world that is not a voxel | A broken block drops an item |
 | 14 **(done)** | Inventory and a HUD | That item can be picked up and placed again |
+| 15 **(done)** | Health — hearts and fall damage | A fall costs something |
+
+**14's exit criterion was claimed and was not met**, and it took four play sessions
+and a set of counters to find out. An item could be dropped and placed; it could not
+be *picked up*, because the reach was measured from the eye and an item at the feet
+is 1.50 away against a radius of 1.4. Fixed in 7.14 — and the phase table is where
+that matters, because a phase marked done against an exit criterion nobody exercised
+is exactly how it happened.
+
+**15 landed inside 7.12** rather than as a phase of its own, which is why it appears
+here after the fact: hearts and fall damage were asked for alongside the inventory
+and shipped in the same commit. `Engine.hpp` has named it Phase 15 since then.
 
 **Trees landed early, in 7.9, and did not wait for Phase 10.** Vegetation is priced
 as a second mesher path because grass and flowers are cross-quads; a log and a leaf
@@ -736,12 +748,14 @@ their dependencies force. **13 and 14 landed together** (7.10) because separatel
 is half a feature: a drop nobody can pick up is scenery, and an inventory with nothing
 to put in it is an empty array. **12 landed last** (7.11), and with it all three exist.
 
-**Water is the next thing and it is still not a phase of its own**, because it is
-three changes that have to land together: aquifers inside the noise stage, water
-against water face culling in a mesher that only knows `isOpaque`, and a translucent
-second draw pass. RESEARCH.md 5.3 has the detail. What 12 removed from that list is
-the fourth item — the tick to flow on — which now exists and is the same one falling
-sand uses.
+**Water landed on 2026-08-12 and never became a phase of its own**, which was the
+right call for two of its three parts and a scoping decision for the third. Water
+against water face culling and the translucent second draw pass are built; **aquifers
+are not**, so there are oceans and no flooded caves. RESEARCH.md 5.3 has the original
+statement of the three problems and 7.13 has what was done about them. What 12 had
+already removed from the list is the fourth item — the tick to flow on — which exists
+and is the same one falling sand uses; **flowing water still does not**, and the note
+at `BlockUpdates::examine` says why it is not a small addition.
 
 Phase 9 was deliberately first of the three, and both halves of that argument held.
 It reused the dirty mask, the remeshing path, `Palette::set` and the light recompute
@@ -1629,8 +1643,8 @@ Two failure modes are pinned by tests rather than by care:
 Worth adding here rather than only in the handoff, because it is the clearest
 evidence any argument in this document has produced. The first session that ran with
 the counters reported `broke 2 | placed 0 | collected 0 | 2 items` — and **item pickup
-turned out never to have worked**. The radius is 1.4 measured from the eye; an item
-rests 1.5 below it. Standing on an item is out of range.
+turned out never to have worked**. The radius was 1.4 measured from the eye; an item
+rests 1.5 below it. Standing on an item was out of range. Fixed in 7.14.
 
 7.10 shipped that and said the loop was closed. Three sessions played it and none
 could tell, because nothing on the path logged anything. The counters cost four
@@ -1941,6 +1955,84 @@ caves landed, run backwards: an ocean is a flat sheet, greedy meshing merges a f
 sheet into very few quads, and the second pass is skipped entirely for every section
 that holds no fluid — which is everything above sea level and everything below the
 sea bed. The expensive translucent surface would be one that is *not* flat.
+
+### 7.14 Item pickup, which had never worked
+
+The stats counters added in 7.11 found this in their first session, and it is the
+best argument for them that could have been constructed: **two blocks broken, two
+items still lying in the world at exit, zero collected.**
+
+#### The arithmetic
+
+Pickup was a 1.4-block sphere measured from `m_camera.position()`, which is the
+**eye**. A dropped item comes to rest at ground + `kHalfSize` (0.12); the eye sits at
+ground + `kEyeHeight` (1.62). Standing directly on top of an item is therefore 1.50
+away from it against a radius of 1.4 — out of range while standing on it, on flat
+ground, always.
+
+It is not *literally* never: an item resting on a ledge one block above the player's
+feet is about 0.71 away and was collectible. That is the only case that ever worked,
+and it is not the case anybody plays.
+
+**This shipped in 7.10 under the claim that the loop was closed** — "break a block,
+watch it drop, walk over it, see the count go up". The break, the drop and the count
+were all real. The walk-over never was.
+
+#### Why nothing caught it
+
+`ItemEntities` was well tested. Six cases covered gravity, merging, despawn, column
+unload, falling out of the world and a full inventory refusing a stack — and every
+one of them called `collect(position, radius)` with a position and a radius **of its
+own choosing**, typically the item's own height and a radius of 2 or 3.
+
+So the tested unit was correct and the bug was in neither of its two inputs
+separately. It was in the *relationship* between `Engine::kPickupRadius` and
+`CharacterRenderer::kEyeHeight` — two constants in two different modules, combined at
+one call site, with nothing asserting anything about the pair. A test suite can have
+full coverage of a class and zero coverage of the only thing that was wrong.
+
+#### The fix is the reference point, not the radius
+
+Enlarging the radius to 1.6 would have made the symptom go away and left the shape of
+the error in place, ready to come back the moment the eye height or the item's rest
+height moved. Vanilla measures from the player's **bounding box**, which is precisely
+why it does not care where the eye is.
+
+`ItemEntities::PickupVolume` is that answer without a collider: a vertical segment
+from the feet to the top of the head, plus a radius around it. `distanceSquaredTo`
+clamps onto the segment before measuring, so an item anywhere between the feet and
+the head is at zero vertical distance and only the horizontal reach matters.
+`placeTargetBlock` already used this shape of test for "am I standing here", and both
+would still be better served by the real collider section 8 wants.
+
+Three things moved to make the relationship testable, and that was most of the work:
+
+- **`kPickupRadius` moved from `Engine` to `ItemEntities`.** It was a private
+  constant in the caller, so no test could reach it.
+- **`collect` and `collectInto` take a `PickupVolume`, not a point.** The point form
+  is deleted rather than kept as an overload — it is the bug, and every caller now
+  has to say where the player's *body* is.
+- **`Engine::playerFeet()` exists.** The subtraction was spelled out at four call
+  sites and the fifth caller passed the eye instead. A named accessor is how the next
+  one gets it right by construction.
+
+`tests/test_items.cpp` now builds its volumes from `CharacterRenderer::kHeight` and
+`ItemEntities::kPickupRadius` — the engine's real numbers, not chosen ones — and one
+case reaches for the same item from the eye and requires it to *fail*, so a radius
+enlarged back into the old failure is a red test rather than a silent regression.
+That is the one place a world-layer test includes a render header, and
+`tests/CMakeLists.txt` says why.
+
+**224 tests pass, asan and tsan clean.** What is still not verified is the feel of
+it: whether walking over a dropped block picks it up in play. That needs a person,
+and it is the fifth session's job.
+
+#### What this says about the project's testing, and it is not "write more tests"
+
+The counters were the thing that worked. Three sessions of play could not find this
+because nothing on the path logged; one session with four integers found it
+immediately. **The lesson is that a subsystem's tests do not cover the seam where two
+subsystems meet, and the cheapest instrument at that seam is a counter, not a test.**
 
 ---
 

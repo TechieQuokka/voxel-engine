@@ -76,7 +76,10 @@ std::vector<u8> buildGlyphAtlas(u32 size, u32 count) {
             for (u32 column = 0; column < kDigitWidth; ++column) {
                 const u32 bit = (kDigitHeight - 1 - row) * kDigitWidth
                               + (kDigitWidth - 1 - column);
-                if ((kDigits[glyph] >> bit & 1u) == 0u) {
+                // Widened before the shift. `kDigits` is u16, so it promotes to a
+                // signed int and `& 1u` then converts back -- which `-Wsign-conversion`
+                // rejects, and rightly: the whole point of this bitmap is unsigned.
+                if (((static_cast<u32>(kDigits[glyph]) >> bit) & 1u) == 0u) {
                     continue;
                 }
                 blit(pixels, size, glyph, digitX + column, digitY + row);

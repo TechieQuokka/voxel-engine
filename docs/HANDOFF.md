@@ -1,7 +1,7 @@
 # Handoff
 
 Snapshot for resuming work. Written 2026-08-09; last updated 2026-08-12, after
-block updates, a real inventory, and water.
+block updates, a real inventory, water, and the item-pickup fix.
 
 Read `docs/DESIGN.md` for the full design and the reasoning behind every
 decision, and `docs/RESEARCH.md` for the vanilla Minecraft numbers the remaining
@@ -21,10 +21,12 @@ vanilla's numbers, and which of them could not be confirmed, are in RESEARCH.md.
 
 **Phase 9 is done, and so are the two follow-up batches** in DESIGN.md 7.9 and 7.10:
 trees, per-block break times with a crack overlay, a walking fix, a mining swing in
-both camera modes, dropped items, an inventory and a HUD. **The loop is closed** --
-break a block, watch it drop, walk over it, see the count go up, place it and see the
-count go down. The inventory half of it was judged insufficient on contact and has
-since been **replaced with a real one** — see below.
+both camera modes, dropped items, an inventory and a HUD. **7.10 claimed the loop was
+closed and it was not** -- break, drop and place worked; walking over an item to
+collect it never did, and that went unnoticed for four play sessions. It is fixed as
+of 2026-08-12 (DESIGN.md 7.14) and the account of how the claim survived so long is
+below, because it is more useful than the fix. The inventory half was separately
+judged insufficient on contact and has since been **replaced with a real one**.
 
 **Playing it is what produced 7.9 and 7.10, and it is still the highest-value thing
 to do.** The first session lasted 83 seconds and every one of the four items that came
@@ -117,11 +119,13 @@ broke 2 | placed 0 | collected 0 | 2 items, 0 falling, 0 updates queued
 Two blocks broken. Two items still lying in the world when the session ended. **Zero
 collected.**
 
-**Picking items up does not work, and the arithmetic says it never has.** Pickup is a
+**Picking items up did not work, and the arithmetic says it never had.** Pickup was a
 1.4-block sphere measured from `m_camera.position()`, which is the *eye*. An item
 comes to rest at ground + `kHalfSize` (0.12) and the eye sits at ground + `kEyeHeight`
 (1.62). Standing directly on top of an item is therefore 1.50 away from it, against a
-radius of 1.4 — **out of range while standing on it**, on flat ground, always.
+radius of 1.4 — **out of range while standing on it**, on flat ground, always. (Not
+literally never: an item on a ledge one block up is 0.71 away and did work. That is
+not the case anybody plays.)
 
 Two things about this are worth keeping:
 
@@ -132,11 +136,27 @@ Two things about this are worth keeping:
   logged. The counters existed for one session before finding it, which is the whole
   argument for them stated better than the argument was.
 
-**The fix is not just a bigger radius.** Vanilla measures from the player's bounding
-box, not from a point, which is why it does not care where the eye is. Measuring to a
-vertical segment from the feet to head height is the same shape of fix that
-`placeTargetBlock` already uses for "am I standing here", and both would be better
-served by the real collider that section 8 already wants.
+**Fixed on 2026-08-12 — DESIGN.md 7.14, and the fix was not a bigger radius.** Vanilla
+measures from the player's bounding box, not from a point, which is why it does not
+care where the eye is. `ItemEntities::PickupVolume` is a vertical segment from the
+feet to the top of the head with a radius around it; `distanceSquaredTo` clamps onto
+the segment before measuring, so an item between the feet and the head is at zero
+vertical distance. Enlarging the radius would have hidden the symptom and kept the
+shape of the error. `placeTargetBlock` already used this shape of test, and both would
+still be better served by the real collider that section 8 wants.
+
+**What made it possible to test is the part worth carrying forward.** `ItemEntities`
+had six good cases and none of them could have caught this, because each chose its own
+reference point and its own radius — the bug was in the *relationship* between
+`Engine::kPickupRadius` and `CharacterRenderer::kEyeHeight`, two constants in two
+modules combined at one call site. `kPickupRadius` moved into `ItemEntities` so a test
+can reach it, the point-taking overloads are deleted rather than kept, and
+`Engine::playerFeet()` now exists because the subtraction was written out at four call
+sites and the fifth caller passed the eye instead.
+
+**It still has not been confirmed in play.** The geometry is pinned by tests using the
+engine's real constants, which is not the same as walking over a block and watching
+the count go up. That is the fifth session's first job.
 
 ### Three sessions in a row, the log could not say what happened — **fixed**
 
@@ -159,17 +179,30 @@ blocks and queued updates are alive. Every future session documents itself.
 first one that can confirm anything about Phase 12: a benchmark flight never edits the
 world, so it cannot make a single block fall.
 
-**4d — biomes** is the last Phase 4 step and is no longer next. It still has the
-unresolved input recorded in section 6, which wants settling before any code.
+### The resume pointer: **play it**
 
-Three older items are still open and still worth doing, in any order:
+Three separate pieces of work are now finished, tested and **unseen by a person**, and
+they have accumulated because every session so far went looking for something else:
+
+1. **Item pickup** (7.14). Break a block, walk over it, watch `collected` go up. It
+   has never once done that in play. This is the single highest-value thing to check.
+2. **Falling sand** (Phase 12). Place a stack of sand from the hotbar and knock the
+   bottom out. A benchmark flight cannot make a block fall, so nothing has.
+3. **Water from underneath** (7.13). Back-face culling is off for the translucent
+   pass precisely so the surface reads from below, and `--capture` cannot get the
+   camera under the sea. Swim down and look up.
+
+**4d — biomes** is the last Phase 4 step and is not next. It still has the unresolved
+input recorded in section 6, which wants settling before any code.
+
+Two older items are still open and still worth doing, in any order:
 
 - **Light does not cross column borders.** A cave lit through an opening one column
   over stays dark, and the boundary is a straight vertical edge. Fixing it needs a
   light-changed signal threaded into the same dirty-mask and pin machinery meshing
   uses, so it is a phase rather than a patch. Section 6 has the shape of it.
 - **The `ChunkRenderer` buffer hazard in section 8**, which Phase 5 will otherwise
-  inherit.
+  inherit — and which water has now made two writes rather than one.
 
 | Commit | Contents |
 |---|---|
@@ -204,6 +237,8 @@ Three older items are still open and still worth doing, in any order:
 | `3dd2f4b` | Slot inventory, the UI layer and window on `E`, hearts and fall damage |
 | `83c573c` | Water — oceans, a translucent pass, and the fluid/solid split |
 | `af62782` | The fourth play session: item pickup has never worked (section 1) |
+| `af8cd6e` | Audit the docs against the code, and fix three stale numbers |
+| _pending_ | Item pickup measured from the body; the asan build unbroken (7.14) |
 
 Working tree is clean. **Published publicly** at the `origin` remote as of
 2026-08-10; the earlier local-only rule was lifted by the user at that point.
@@ -226,8 +261,9 @@ character in third person, on a first-person view model otherwise. A wireframe b
 shows what is under the crosshair and cracks spread across it as it is mined; break
 time is vanilla hardness, 0.75 s for dirt up to 6.75 s for a deepslate ore. Broken
 blocks **drop as spinning items**, fall, merge with nearby stacks and can be walked
-over to collect. Breaking and placing go through the existing dirty mask, so nothing
-was added to the streaming pipeline.
+over to collect -- which is true as of 2026-08-12 and was not before it, see 7.14.
+Breaking and placing go through the existing dirty mask, so nothing was added to the
+streaming pipeline.
 
 **There is a real inventory**: 36 slots on vanilla's layout, stacks of 64, a window on
 `E` with a pointer, click to pick up and put down, right click to split. The hotbar is
@@ -311,8 +347,10 @@ Sky light costs **24 KiB per column**, about 26 MiB at distance 16, because 87.5
 sections are uniform and allocate nothing. The naive figure was over 400 MiB.
 
 **Interactively verified six times**, most recently on 2026-08-12 after water landed.
-That session is written up in section 1: it found that item pickup has never worked.
-7.13's water was in it but the underwater view was not checked -- see below.
+That session is written up in section 1: it found that item pickup had never worked.
+7.13's water was in it but the underwater view was not checked -- see below. **Nothing
+since that session has been played**, so the pickup fix, water from underneath and
+Phase 12's falling sand are all waiting on the same seventh session.
 The last three sessions ran 83, 83 and 84 seconds at a vsync-locked 60 FPS (min 58.8,
 median 59.9), with no dropped frames, no GL debug messages and a clean exit each time.
 Rendering has stayed flat across caves, ores, light, trees, entities and the HUD.
@@ -358,11 +396,15 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (221 cases, doctest)
+# Test  (224 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
 # on the streaming path. See the ASLR note below for why setarch is needed.
+#
+# The asan preset failed to *build* from the HUD landing until 2026-08-12, and nothing
+# noticed because the debug tree never recompiled the offending file. Run these after
+# a long gap before trusting them -- see the -Wsign-conversion note in section 5.
 ctest --preset asan
 setarch $(uname -m) -R ./build/tsan/tests/mc_tests
 
@@ -495,7 +537,8 @@ src/world/              pure data; knows nothing about rendering
   SkyLight     — the daylight flood fill, per column; reports what it changed
   Raycast      — voxel DDA; aiming, and the third-person camera's collision
   ItemEntities — dropped blocks: gravity, merging, despawn. The first non-voxel
-                 thing that exists in the world
+                 thing that exists in the world. Carries `PickupVolume`, which is
+                 measured from the player's **body** -- see the note in section 5
   FallingBlocks— sand and gravel between two cells. Straight down, i32 x and z
   BlockUpdates — "this block changed, tell its neighbours": the tick queue, the
                  dedupe set and the retry discipline. **Where water plugs in**
@@ -669,6 +712,33 @@ Learned the hard way; all of them cost real time.
   reason, and a `static_assert` pins the relationship that makes it safe: terminal
   velocity times the maximum substep must stay under one block. Adding speed without
   reading that assert is how it comes back.
+- **A well-tested class can have zero coverage of the only thing that is wrong, and
+  the seam is where to look.** `ItemEntities` had six cases covering gravity, merging,
+  despawn, column unload, falling out of the world and a full inventory — and item
+  pickup had never worked once, for four play sessions. Every one of those cases called
+  `collect(position, radius)` with a position and radius **of its own choosing**, so
+  none of them asserted anything about `Engine::kPickupRadius` against
+  `CharacterRenderer::kEyeHeight`. The bug was in the relationship between two
+  constants in two modules, combined at one call site, and neither module was wrong.
+  A test that picks its own inputs is testing the unit; the seam needs the *real*
+  constants, which usually means moving one of them somewhere a test can reach.
+- **A constant that only the caller can see cannot be tested, so put geometry next to
+  what it describes.** `kPickupRadius` was private in `Engine`. Moving it to
+  `ItemEntities` was most of what made the fix above verifiable, and it is a rule
+  worth applying before the next number like it goes in.
+- **A named accessor beats a subtraction written out five times.** `playerFeet()`
+  exists because `m_camera.position() - up * kEyeHeight` appeared at four call sites
+  and the fifth caller passed the camera position instead — which is the whole of the
+  pickup bug. The camera holds the *eye*; anything asking where the player is standing
+  has to convert, and now cannot forget to.
+- **`-Wsign-conversion` on a `u16` bitmask is a from-scratch-build failure that an
+  incremental build hides.** `HudRenderer.cpp`'s digit blitter did
+  `kDigits[glyph] >> bit & 1u` on a `std::array<u16, 10>`: the element promotes to
+  `int`, and `& 1u` converts it back. It went unnoticed because the debug tree never
+  recompiled that file after it landed, and only surfaced when the asan preset — which
+  had a build directory older than the HUD — compiled it fresh. **`ctest --preset asan`
+  had been failing to build since the HUD landed.** If a documented command has not
+  been run in a while, run it before trusting it.
 - **Reading a voxel from the main thread is a race unless the column is `Ready`.**
   `World::blockAt` looked like a pure lookup and was called every frame by walking's
   ground probe and the benchmark camera long before anything else used it. It is not
@@ -861,7 +931,10 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   no ring, no fence and no delay. `barrierAfterClientWrites()` orders writes; it does not
   wait for last frame's draw. Vsync at 60 FPS with a 6 ms frame leaves enough slack that
   it has not been observed, which is not the same as it being correct. Phase 5's indirect
-  command buffer has the identical problem, so fix both together.
+  command buffer has the identical problem, so fix both together. **Water added a second
+  write to the same buffer** (the translucent pass's origins, at
+  `m_origins.size() * sizeof(vec4)`), so there are two instances of the hazard now
+  rather than one; a ring has to cover both.
 - **Occlusion culling method** — HZB, visibility graph, or both. Decided by
   profiling in Phase 8.
 - **World persistence** — **now in scope** (DESIGN.md Phase 11), so the open part is
@@ -886,11 +959,10 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
 - **Trees leave a two-block band along every column edge with no trees in it.** The
   deliberate cost of trees not crossing columns; see `TreeSpec` and DESIGN.md 7.9.
   Fixing it properly means a chunk-status pipeline like vanilla's.
-- **Items cannot be picked up.** The 1.4-block radius is measured from the eye and an
-  item at the player's feet is 1.5 away, so standing on one is out of range. Found by
-  the stats counters in their first session; section 1 has the arithmetic. **This is
-  the first thing to fix** -- it is the one part of the break-drop-collect-place loop
-  that has never worked.
+- ~~**Items cannot be picked up.**~~ **Fixed on 2026-08-12** — pickup measures from a
+  vertical segment through the player's body rather than from the eye. DESIGN.md 7.14;
+  section 1 keeps the arithmetic and the account of why the tests could not see it.
+  **Still unconfirmed in play**, which is the fifth session's first job.
 - **Nobody has looked at water from underneath.** Back-face culling is turned off for
   the translucent pass precisely so the surface is visible from below, and that is
   the one thing `--capture` cannot reach: there is no way to put the camera under the

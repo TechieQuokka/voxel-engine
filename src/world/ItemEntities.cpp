@@ -186,20 +186,30 @@ void ItemEntities::cull(const World& world) {
     });
 }
 
-std::vector<ItemEntities::Pickup> ItemEntities::collect(const vec3& position, f32 radius) {
+f32 ItemEntities::distanceSquaredTo(const PickupVolume& volume, const vec3& point) {
+    // Clamp onto the segment before measuring. An item anywhere between the feet and
+    // the top of the head is at zero vertical distance, which is what makes standing
+    // on one work -- the case the eye-relative sphere could never reach.
+    const f32 clampedY =
+        std::clamp(point.y, volume.feet.y, volume.feet.y + volume.height);
+    const vec3 delta{point.x - volume.feet.x, point.y - clampedY,
+                     point.z - volume.feet.z};
+    return math::dot(delta, delta);
+}
+
+std::vector<ItemEntities::Pickup> ItemEntities::collect(const PickupVolume& volume) {
     std::vector<Pickup> taken;
     if (m_items.empty()) {
         return taken;
     }
 
-    const f32 radiusSquared = radius * radius;
+    const f32 radiusSquared = volume.radius * volume.radius;
 
     for (ItemEntity& item : m_items) {
         if (item.pickupDelay > 0.0f) {
             continue;
         }
-        const vec3 delta = item.position - position;
-        if (math::dot(delta, delta) > radiusSquared) {
+        if (distanceSquaredTo(volume, item.position) > radiusSquared) {
             continue;
         }
         taken.push_back(Pickup{item.block, item.count});

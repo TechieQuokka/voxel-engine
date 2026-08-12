@@ -45,9 +45,8 @@ pick a hotbar slot.** Reach is 5 blocks, cracks spread across the block while yo
 mine it, and the time is vanilla's hardness — 0.75 s for dirt, 2.25 s for stone,
 6.75 s for an ore in deepslate. Bedrock is unbreakable.
 
-Broken blocks drop as items, and the hotbar shows what you are carrying. (Walking
-over an item to collect it is currently broken — the pickup radius is measured from
-the eye, so an item at your feet is just out of range. See `docs/HANDOFF.md` 1.) **`E` opens the inventory** — 36 slots with
+Broken blocks drop as items, and walking over one collects it into the hotbar, which
+shows what you are carrying. **`E` opens the inventory** — 36 slots with
 vanilla's stack limit of 64, click to pick a stack up and put it down, right click to
 split it in half or place one at a time.
 
@@ -68,7 +67,7 @@ Dig down. The caves, ores and darkness are the point, and they are not visible f
 surface.
 
 ```bash
-ctest --preset debug                       # 221 test cases
+ctest --preset debug                       # 224 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm

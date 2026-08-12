@@ -143,6 +143,14 @@ private:
     /// Advances the mining swing, and eases it in and out.
     void updateSwing(f32 dt, bool swinging);
 
+    /// The bottom of the player. The camera holds the *eye*, which is 1.62 up.
+    ///
+    /// **A named accessor rather than the subtraction spelled out at each use.** It
+    /// was written out four times, and the fifth caller -- item pickup -- simply
+    /// passed the eye instead and shipped a feature that could never work. Anything
+    /// asking "where is the player standing" gets it right by construction now.
+    vec3 playerFeet() const;
+
     /// Breaks `m_target`, or places the selected block against it. Both go through
     /// `applyEdit`, so both get the same retry behaviour.
     void breakTargetBlock();
@@ -376,10 +384,6 @@ private:
 
     /// Shared spin clock for every dropped item, so a pile turns together.
     f32 m_itemSpin = 0.0f;
-
-    /// How close the player has to be to pick something up. Vanilla is one block
-    /// from the item's centre, plus the player's own width.
-    static constexpr f32 kPickupRadius = 1.4f;
 
     /// How far the player can reach, in blocks. Minecraft is 4.5 in survival and 5
     /// in creative; this has no survival mode to differ from.

@@ -56,14 +56,47 @@ public:
     /// despawned or fell out of the loaded world.
     void tick(const World& world, f32 dt);
 
-    /// Removes and accumulates everything within `radius` of `position` that is
-    /// past its pickup delay. Returns the picked-up stacks, which the caller adds
-    /// to an inventory.
+    /// The volume a player picks items up into: a vertical segment from the feet to
+    /// the top of the head, with a radius around it.
+    ///
+    /// **A segment rather than a point, and the reason is a bug that shipped in 7.10
+    /// and survived four play sessions.** Pickup used to be a sphere measured from
+    /// `Camera::position()`, which is the *eye*. An item comes to rest at ground +
+    /// `kHalfSize` (0.12) and the eye sits at ground + `kEyeHeight` (1.62), so
+    /// standing directly on top of an item put it 1.50 away against a radius of
+    /// 1.4 -- out of range while standing on it, on flat ground, always. The whole
+    /// break-drop-collect-place loop had one step that had never worked.
+    ///
+    /// Vanilla measures from the player's bounding box, which is exactly why it does
+    /// not care where the eye is. This is the same answer without a collider: clamp
+    /// onto the body's vertical extent first, then measure. `placeTargetBlock` uses
+    /// this shape of test for "am I standing here", and both would be better served
+    /// by the real collider HANDOFF.md 8 wants.
+    struct PickupVolume {
+        /// The bottom of the player. **Not the eye and not the camera** -- passing
+        /// either is the bug above.
+        vec3 feet{};
+        /// Feet to the top of the head.
+        f32 height = 0.0f;
+        /// Reach measured from the body axis, not from the eye.
+        f32 radius = 0.0f;
+    };
+
+    /// Squared distance from `point` to the volume's axis segment.
+    ///
+    /// Public because pinning this geometry against the player's real dimensions is
+    /// the point of it -- see the Engine-geometry cases in `test_items.cpp`. Nothing
+    /// else about the failure above was testable from inside this class: both
+    /// constants that made it wrong lived in the caller.
+    static f32 distanceSquaredTo(const PickupVolume& volume, const vec3& point);
+
+    /// Removes and accumulates everything inside `volume` that is past its pickup
+    /// delay. Returns the picked-up stacks, which the caller adds to an inventory.
     struct Pickup {
         BlockId block = kAirBlock;
         u32 count = 0;
     };
-    std::vector<Pickup> collect(const vec3& position, f32 radius);
+    std::vector<Pickup> collect(const PickupVolume& volume);
 
     /// Offers everything in range to `accept`, which takes what it can and returns
     /// how many it could not. Anything left over stays on the ground.
@@ -75,18 +108,17 @@ public:
     /// a diamond with a full pack should see it stay there, which is also what
     /// vanilla does.
     template <typename F>
-    void collectInto(const vec3& position, f32 radius, F&& accept) {
+    void collectInto(const PickupVolume& volume, F&& accept) {
         if (m_items.empty()) {
             return;
         }
-        const f32 radiusSquared = radius * radius;
+        const f32 radiusSquared = volume.radius * volume.radius;
 
         for (ItemEntity& item : m_items) {
             if (item.pickupDelay > 0.0f || item.count == 0) {
                 continue;
             }
-            const vec3 delta = item.position - position;
-            if (math::dot(delta, delta) > radiusSquared) {
+            if (distanceSquaredTo(volume, item.position) > radiusSquared) {
                 continue;
             }
             const u32 leftover = accept(item.block, item.count);
@@ -109,6 +141,15 @@ public:
     static constexpr f32 kPickupDelay = 0.5f;
     /// How close two stacks of the same block have to be to become one.
     static constexpr f32 kMergeDistance = 0.6f;
+    /// Reach for `PickupVolume::radius`. Vanilla inflates the player's bounding box
+    /// by one block horizontally, which is a block from the item plus the player's
+    /// own half-width.
+    ///
+    /// **It lives here rather than in the Engine, which is where it used to be.**
+    /// The failure documented on `PickupVolume` was a relationship between this
+    /// number and the player's dimensions, and it was untestable while this was a
+    /// private constant in the caller.
+    static constexpr f32 kPickupRadius = 1.4f;
     /// Beyond a full stack they stop merging, which is what stops one entity
     /// silently accumulating an entire mining session.
     static constexpr u32 kMaxStack = 64;

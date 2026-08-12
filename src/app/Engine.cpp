@@ -838,6 +838,10 @@ void Engine::updateBreaking(f32 dt) {
     m_breakProgress = 0.0f;
 }
 
+vec3 Engine::playerFeet() const {
+    return m_camera.position() - Camera::up() * CharacterRenderer::kEyeHeight;
+}
+
 void Engine::placeTargetBlock() {
     if (!m_target.has_value()) {
         return;
@@ -849,7 +853,7 @@ void Engine::placeTargetBlock() {
     // same shape as the one walking uses -- a column of two blocks at the feet, no
     // width -- so that placing and standing agree about where the player is. A
     // narrower test would let you seal yourself into a block you are standing in.
-    const vec3 feet = m_camera.position() - Camera::up() * CharacterRenderer::kEyeHeight;
+    const vec3 feet = playerFeet();
     const auto feetX = static_cast<i32>(std::floor(feet.x));
     const auto feetZ = static_cast<i32>(std::floor(feet.z));
     const auto feetY = static_cast<i32>(std::floor(feet.y + 0.01f));
@@ -979,9 +983,16 @@ void Engine::updateInteraction(f32 dt) {
     m_items.tick(*m_world, dt);
     m_itemSpin += dt;
 
+    // **Measured from the body, not from the eye.** Passing `m_camera.position()`
+    // here is what stopped an item at the player's feet ever being collected -- the
+    // eye is 1.62 up and the item rests 0.12 up, so standing on one put it 1.50 away
+    // against a 1.4 radius. `PickupVolume` carries the account of it.
+    //
     // Offered rather than taken: with stack limits the inventory can be full, and a
     // stack that does not fit stays on the ground instead of being deleted.
-    m_items.collectInto(m_camera.position(), kPickupRadius,
+    m_items.collectInto(ItemEntities::PickupVolume{playerFeet(),
+                                                  CharacterRenderer::kHeight,
+                                                  ItemEntities::kPickupRadius},
                         [this](BlockId block, u32 count) {
                             const u32 leftover = m_inventory.add(block, count);
                             m_itemsCollected += count - leftover;
@@ -1101,7 +1112,7 @@ bool Engine::inWater(const vec3& feet) const {
 }
 
 void Engine::updateWalk(f32 dt) {
-    vec3 feet = m_camera.position() - Camera::up() * CharacterRenderer::kEyeHeight;
+    vec3 feet = playerFeet();
 
     // Input is flattened onto the ground plane. This is the whole difference
     // between walking and flying: looking up must not lift you off the floor.
@@ -1546,7 +1557,7 @@ void Engine::renderFrame() {
     // rather than against nothing. Only in third person: in first person the model
     // is around the eye and would fill the screen with the inside of a head.
     if (m_thirdPerson) {
-        const vec3 feet = m_camera.position() - Camera::up() * CharacterRenderer::kEyeHeight;
+        const vec3 feet = playerFeet();
         m_character->draw(*m_device, m_renderCamera, feet, m_camera.forward(),
                           m_walkPhase, m_walkAmount, m_swingPhase, m_swingAmount);
     }
