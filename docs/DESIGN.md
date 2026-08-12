@@ -2023,9 +2023,11 @@ enlarged back into the old failure is a red test rather than a silent regression
 That is the one place a world-layer test includes a render header, and
 `tests/CMakeLists.txt` says why.
 
-**224 tests pass, asan and tsan clean.** What is still not verified is the feel of
-it: whether walking over a dropped block picks it up in play. That needs a person,
-and it is the fifth session's job.
+**224 tests pass, asan and tsan clean.** And it is **confirmed in play**: the fifth
+session (111 seconds, fullscreen, locked 60 FPS) reported `broke 5 | collected 5 |
+0 items`, each collect landing on the stats line after the break that caused it.
+The fourth session's `broke 5 | collected 2` was three items never walked over, not
+three that failed.
 
 #### What this says about the project's testing, and it is not "write more tests"
 

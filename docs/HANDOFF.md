@@ -154,9 +154,28 @@ can reach it, the point-taking overloads are deleted rather than kept, and
 `Engine::playerFeet()` now exists because the subtraction was written out at four call
 sites and the fifth caller passed the eye instead.
 
-**It still has not been confirmed in play.** The geometry is pinned by tests using the
-engine's real constants, which is not the same as walking over a block and watching
-the count go up. That is the fifth session's first job.
+### The fifth session: **confirmed**
+
+**2026-08-12, 111 seconds, fullscreen at 2560x1440, a locked 60 FPS, no GL messages,
+clean exit.** The longest session so far and the one that closes this out:
+
+```
+broke 5 | placed 0 | collected 5 | 0 items, 0 falling, 0 updates queued
+```
+
+**Five broken, five collected, nothing left on the ground.** Every one was picked up
+on the stats line after the one that broke it -- so the collect happens within a
+second of walking onto it, which is what it should feel like. The loop 7.10 claimed
+is closed now actually is.
+
+It also settles what the fourth session could not say. That one read `broke 5 |
+collected 2` with three items lying about, and the honest reading at the time was
+that it could not distinguish "not picked up" from "not walked over". At 5 of 5 it
+was the latter.
+
+Fall damage fired twice in the same session -- 14.0 blocks for 10 and 12.8 for 9,
+leaving 1 health -- which is the first time anything in 7.12's health work has been
+exercised by a person either.
 
 ### Three sessions in a row, the log could not say what happened — **fixed**
 
@@ -184,13 +203,20 @@ world, so it cannot make a single block fall.
 Three separate pieces of work are now finished, tested and **unseen by a person**, and
 they have accumulated because every session so far went looking for something else:
 
-1. **Item pickup** (7.14). Break a block, walk over it, watch `collected` go up. It
-   has never once done that in play. This is the single highest-value thing to check.
+1. ~~**Item pickup** (7.14).~~ **Done** -- the fifth session collected 5 of 5, and
+   fall damage fired for the first time in the same session. See above.
 2. **Falling sand** (Phase 12). Place a stack of sand from the hotbar and knock the
    bottom out. A benchmark flight cannot make a block fall, so nothing has.
 3. **Water from underneath** (7.13). Back-face culling is off for the translucent
    pass precisely so the surface reads from below, and `--capture` cannot get the
-   camera under the sea. Swim down and look up.
+   camera under the sea. Swim down and look up. **The water is a short walk west of
+   spawn** -- a lake with a sand shore, visible in a capture from the spawn point,
+   which is worth writing down because a `--probe` reading was misread as saying
+   there was none nearby (see section 5).
+4. **The `F11` toggle back to windowed.** The fifth session ran fullscreen from
+   `--fullscreen` and never pressed it, so the path that restores the remembered
+   windowed rectangle -- the one with the Wayland caveat under it -- has still not
+   been run once.
 
 **4d — biomes** is the last Phase 4 step and is not next. It still has the unresolved
 input recorded in section 6, which wants settling before any code.
@@ -347,7 +373,8 @@ between them is the argument for Phase 8.
 Sky light costs **24 KiB per column**, about 26 MiB at distance 16, because 87.5 % of
 sections are uniform and allocate nothing. The naive figure was over 400 MiB.
 
-**Interactively verified six times**, most recently on 2026-08-12 after water landed.
+**Interactively verified seven times**, most recently on 2026-08-12 in fullscreen,
+which is the session that confirmed item pickup.
 That session is written up in section 1: it found that item pickup had never worked.
 7.13's water was in it but the underwater view was not checked -- see below. **Nothing
 since that session has been played**, so the pickup fix, water from underneath and
@@ -985,10 +1012,10 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
 - **Trees leave a two-block band along every column edge with no trees in it.** The
   deliberate cost of trees not crossing columns; see `TreeSpec` and DESIGN.md 7.9.
   Fixing it properly means a chunk-status pipeline like vanilla's.
-- ~~**Items cannot be picked up.**~~ **Fixed on 2026-08-12** — pickup measures from a
-  vertical segment through the player's body rather than from the eye. DESIGN.md 7.14;
-  section 1 keeps the arithmetic and the account of why the tests could not see it.
-  **Still unconfirmed in play**, which is the fifth session's first job.
+- ~~**Items cannot be picked up.**~~ **Fixed on 2026-08-12 and confirmed in play** —
+  pickup measures from a vertical segment through the player's body rather than from
+  the eye. The fifth session collected 5 of 5. DESIGN.md 7.14; section 1 keeps the
+  arithmetic and the account of why the tests could not see it.
 - **Nobody has looked at water from underneath.** Back-face culling is turned off for
   the translucent pass precisely so the surface is visible from below, and that is
   the one thing `--capture` cannot reach: there is no way to put the camera under the
