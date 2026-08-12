@@ -168,6 +168,7 @@ Three older items are still open and still worth doing, in any order:
 | `a204b83` | Phases 13/14 — mining swing, item drops, inventory, HUD |
 | `acdbf07` | Phase 12 — a 20 Hz game tick, block updates, falling sand; stats counters |
 | `3dd2f4b` | Slot inventory, the UI layer and window on `E`, hearts and fall damage |
+| `83c573c` | Water — oceans, a translucent pass, and the fluid/solid split |
 
 Working tree is clean. **Published publicly** at the `origin` remote as of
 2026-08-10; the earlier local-only rule was lifted by the user at that point.
