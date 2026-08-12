@@ -12,7 +12,8 @@ it removes a portability layer that would otherwise shape every decision below.
 
 Streaming terrain generated from a FastNoise2 density-function graph, meshed with
 binary greedy meshing, drawn with **one** `glMultiDrawArrays` call per frame — with
-caves, ores, sky light, trees, and a world you can mine, collect and build with.
+caves, ores, sky light, trees, oceans, and a world you can mine, collect and build
+with.
 
 | | |
 |---|---|
@@ -55,6 +56,10 @@ you yet.
 Sand and gravel fall. Dig out from under a stack and it comes down one block at a
 time, on a 20 Hz tick rather than at your frame rate.
 
+There are oceans. You swim in them rather than standing on them, and falling into one
+cancels the fall damage. No flooded caves and no flowing water — both need vanilla's
+aquifer system, whose internals are not published anywhere usable.
+
 `F` switches to flying, `F5` to first person, `Escape` releases the cursor and again
 quits.
 
@@ -62,7 +67,7 @@ Dig down. The caves, ores and darkness are the point, and they are not visible f
 surface.
 
 ```bash
-ctest --preset debug                       # 213 test cases
+ctest --preset debug                       # 222 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
@@ -127,15 +132,14 @@ tracks remain, independent of each other:
 - **Performance** — indirect draw with GPU culling, four-level LOD, brickmap ray marching
   for the far field, occlusion culling. This is what the render-distance target needs.
 - **Interaction** — block placement and breaking, trees, item drops, a slot inventory
-  with its window, a HUD, health and block updates are all **done**. Still open: water,
-  the rest of vegetation, and persistence.
+  with its window, a HUD, health, block updates and oceans are all **done**. Still
+  open: aquifers and flowing water, the rest of vegetation, and persistence.
 
-Entities, a slot inventory with a UI layer under it, and a game tick all exist now.
-Water is the next thing wanted and is three changes at once: aquifers, a mesher that
-can cull water against water, and a translucent draw pass. Mobs and combat remain
-unplanned. Crafting is closer than it was — the window, cursor, hit testing and stack
-limits it needs are built — but it still forces items to stop being block types, which
-is a redesign rather than an addition.
+Entities, a slot inventory with a UI layer under it, a game tick and a translucent
+draw pass all exist now. Mobs and combat remain unplanned. Crafting is closer than it
+was — the window, cursor, hit testing and stack limits it needs are built — but it
+still forces items to stop being block types, which is a redesign rather than an
+addition.
 
 ## Dependencies
 

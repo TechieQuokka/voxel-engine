@@ -342,6 +342,78 @@ void Generator::generateColumn(Chunk& chunk) const {
     }
 
     // ---------------------------------------------------------------------------
+    // Stage 2b: the sea. Fill the gap between the terrain surface and sea level.
+    //
+    // **This is not vanilla's aquifer system and does not pretend to be.** Vanilla
+    // decides water, lava or air per 16x40x16 cell inside the *noise* stage, and one
+    // mechanism there produces oceans, rivers and flooded caves alike. RESEARCH.md 6
+    // records that the barrier noise and fluid-level selection are not published
+    // anywhere usable, so building it would mean working from decompiled code.
+    //
+    // What is left when that is set aside is the part that is both well defined and
+    // almost all of what a player sees: **the ocean**. Water fills each column from
+    // sea level down to the terrain surface, and stops there.
+    //
+    // Two consequences worth stating outright, because both are deliberate:
+    //
+    // - **Caves under the sea stay dry.** Filling down to the first solid instead
+    //   would pour water down every carved shaft and hang 1x1 columns of it in the
+    //   middle of caverns. Flooded caves are the aquifer feature, and this is the
+    //   line where that feature begins.
+    // - **A column whose terrain reaches above sea level gets no water at all**,
+    //   even at its base. Under a cliff overhang the honest answer needs to know
+    //   whether the space is open to the sea sideways, which a per-column scan
+    //   cannot know. The error is a dry pocket at the foot of an overhang, and the
+    //   alternative error is water hanging in a cliff face -- much the worse of the
+    //   two to look at.
+    //
+    // Before features, so `surfaceOf` sees water rather than air and no tree plants
+    // itself on the sea bed. Before light, which is stage 4.
+    // ---------------------------------------------------------------------------
+    for (i32 z = 0; z < kSectionSize; ++z) {
+        for (i32 x = 0; x < kSectionSize; ++x) {
+            const i32 top = terrainTop[static_cast<usize>(z * kSectionSize + x)];
+            if (top >= kSeaLevel) {
+                continue; // Land.
+            }
+
+            // **`terrainTop` is the density field's surface, and the carvers ran
+            // after it.** A thin cave that breaks through the sea bed leaves that
+            // voxel air, and filling down to it would rest the lowest water block on
+            // a hole -- water hanging in mid-air over a cave mouth. A test found
+            // thirteen of them in three columns.
+            //
+            // The column is skipped rather than filled deeper. Following the hole
+            // down to the first real solid would drop a one-block-wide pillar of
+            // still water through a cavern, which is worse to look at than the dry
+            // patch this leaves, and is the flooded-cave behaviour that belongs to
+            // the aquifer system this deliberately does not implement.
+            {
+                const Section* bedSection = chunk.sectionAt(blockToSectionCoord(top));
+                if (bedSection == nullptr
+                    || bedSection->get(x, blockToLocalCoord(top), z) == kAirBlock) {
+                    continue;
+                }
+            }
+
+            for (i32 worldY = kSeaLevel; worldY > top; --worldY) {
+                const usize sectionIndex =
+                    static_cast<usize>(sectionIndexInColumn(blockToSectionCoord(worldY)));
+                Section& section = chunk.sectionByIndex(sectionIndex);
+                const i32 localY = blockToLocalCoord(worldY);
+
+                // Air only. Nothing above the density surface is solid, so in
+                // practice this is every voxel in the range -- the test is here
+                // because "in practice" is what stops being true when someone adds a
+                // feature that builds upward.
+                if (section.get(x, localY, z) == kAirBlock) {
+                    section.set(x, localY, z, kWaterBlock);
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
     // Stage 3: features. Blob features -- stone variants, gravel, ores -- replace
     // rock that the stages above placed.
     //

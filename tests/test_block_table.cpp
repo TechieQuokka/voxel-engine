@@ -16,11 +16,18 @@ TEST_CASE("break time follows vanilla hardness") {
     CHECK(breakSeconds(blockIdOf("oak_log")) == doctest::Approx(3.0f));
 }
 
-TEST_CASE("bedrock is the only unbreakable block") {
+TEST_CASE("bedrock and water are the only unbreakable blocks") {
     CHECK(isUnbreakable(kBedrockBlock));
     // And it reports no break time rather than a negative one, so a caller that
     // forgets to ask cannot end up dividing by it.
     CHECK(breakSeconds(kBedrockBlock) == doctest::Approx(0.0f));
+
+    // Water joined bedrock when it landed. It is unbreakable for a different reason
+    // -- vanilla needs a bucket, and this engine has no items -- and it is also
+    // unreachable, because the aim ray passes straight through a fluid and never
+    // offers it as a target. Both belts, one brace.
+    CHECK(isUnbreakable(kWaterBlock));
+    CHECK(breakSeconds(kWaterBlock) == doctest::Approx(0.0f));
 
     usize unbreakable = 0;
     for (usize id = 0; id < kBlocks.size(); ++id) {
@@ -28,7 +35,31 @@ TEST_CASE("bedrock is the only unbreakable block") {
             ++unbreakable;
         }
     }
-    CHECK(unbreakable == 1);
+    CHECK(unbreakable == 2);
+}
+
+TEST_CASE("fluid and solid are different questions from opaque") {
+    // Water is the block that forces the distinction: not opaque, so it hides
+    // nothing behind it; not solid, so it holds nothing up. Every physics caller
+    // wants `isSolidBlock` and every mesher caller wants `opaque`, and before water
+    // existed `!= kAirBlock` was indistinguishable from the first.
+    CHECK(isFluid(kWaterBlock));
+    CHECK_FALSE(kBlocks[kWaterBlock].opaque);
+    CHECK_FALSE(isSolidBlock(kWaterBlock));
+
+    CHECK_FALSE(isSolidBlock(kAirBlock));
+    CHECK_FALSE(isFluid(kAirBlock));
+
+    // Everything else is solid and opaque, including leaves -- which are a full
+    // cube here on purpose, the way vanilla's fast graphics draws them.
+    CHECK(isSolidBlock(kStoneBlock));
+    CHECK(isSolidBlock(kOakLeavesBlock));
+
+    usize fluids = 0;
+    for (usize id = 0; id < kBlocks.size(); ++id) {
+        fluids += isFluid(static_cast<BlockId>(id)) ? 1u : 0u;
+    }
+    CHECK(fluids == 1);
 }
 
 TEST_CASE("every ore is harder in deepslate than in stone") {

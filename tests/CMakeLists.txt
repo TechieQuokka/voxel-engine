@@ -29,6 +29,7 @@ add_executable(mc_tests
   test_items.cpp
   test_block_updates.cpp
   test_inventory.cpp
+  test_water.cpp
 )
 
 target_link_libraries(mc_tests PRIVATE

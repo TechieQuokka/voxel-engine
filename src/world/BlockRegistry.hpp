@@ -22,6 +22,7 @@ public:
     const BlockInfo& operator[](BlockId id) const;
 
     bool isOpaque(BlockId id) const { return (*this)[id].opaque; }
+    bool isFluid(BlockId id) const { return (*this)[id].fluid; }
 
     /// Texture array layer for one face of a block.
     u16 textureLayer(BlockId id, Face face) const;

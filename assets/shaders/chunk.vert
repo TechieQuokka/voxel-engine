@@ -26,6 +26,14 @@ layout(std430, binding = 1) readonly buffer SectionBuffer {
 
 uniform mat4 u_viewProjection;
 
+// Where this draw's sections start in b_sectionOrigins.
+//
+// gl_DrawID counts from zero within each multi-draw, and there are two of them now
+// -- opaque, then translucent water. Both index one origin buffer holding the
+// opaque sections followed by the water ones, so the second pass adds its base.
+// Zero for the first pass, which is what it always effectively was.
+uniform int u_drawIdBase;
+
 out vec3 v_normal;
 out vec3 v_worldPos;
 out vec2 v_uv;
@@ -103,7 +111,7 @@ void main() {
     uint quadIndex = uint(gl_VertexID) / 6u;
     uint cornerIndex = uint(gl_VertexID) % 6u;
 
-    vec3 sectionOrigin = b_sectionOrigins[gl_DrawID].xyz;
+    vec3 sectionOrigin = b_sectionOrigins[u_drawIdBase + gl_DrawID].xyz;
 
     // Not named `packed`: that is a reserved keyword in GLSL.
     uvec2 quad = b_quads[quadIndex];

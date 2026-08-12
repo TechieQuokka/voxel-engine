@@ -289,6 +289,16 @@ private:
     /// How far down to look for something to stand on before giving up.
     static constexpr i32 kGroundSearchDepth = 96;
 
+    /// Swimming. Not vanilla's model -- there is no air meter, no drowning and no
+    /// swimming pose -- but enough that water is somewhere to be rather than a hole
+    /// in the world that drops you to the sea bed.
+    static constexpr f32 kSwimSpeed = 3.2f;
+    static constexpr f32 kSinkSpeed = 1.6f;
+    static constexpr f32 kSwimGravityScale = 0.25f;
+
+    /// True when the block at the player's feet is a liquid.
+    bool inWater(const vec3& feet) const;
+
     /// The camera the frame is actually drawn from.
     ///
     /// Equal to `m_camera` in first person. In third person it is pulled back along

@@ -31,6 +31,9 @@ namespace mc {
 class ChunkRenderer {
 public:
     struct Stats {
+        /// Of `quadsDrawn`, how many were water. Separate because the translucent
+        /// pass has different costs and different failure modes from the opaque one.
+        usize waterQuadsDrawn = 0;
         usize sectionsConsidered = 0;
         usize columnsCulled = 0;
         usize sectionsCulled = 0;
@@ -107,6 +110,12 @@ private:
     std::vector<i32> m_firsts;
     std::vector<i32> m_counts;
     std::vector<vec4> m_origins;
+
+    /// The translucent pass. A section with both opaque geometry and water appears
+    /// in both lists, because the two halves of its arena range are two draws.
+    std::vector<i32> m_waterFirsts;
+    std::vector<i32> m_waterCounts;
+    std::vector<vec4> m_waterOrigins;
 
     f32 m_aoStrength = 1.0f;
     f32 m_fadeDistance = kDefaultFadeDistance;

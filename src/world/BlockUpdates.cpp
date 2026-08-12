@@ -121,7 +121,7 @@ BlockUpdates::Outcome BlockUpdates::examine(World& world, FallingBlocks& falling
     // has simply not arrived yet. Only the Y differs here, so the column is the same
     // one -- and if it were not Ready, the `isFalling` test above already returned.
     // Flowing water spreads sideways and will need a real "is this loaded" test.
-    if (world.blockAt(below) != kAirBlock) {
+    if (isSolidBlock(world.blockAt(below))) {
         return Outcome::Done; // Supported.
     }
 

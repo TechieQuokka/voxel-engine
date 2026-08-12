@@ -51,36 +51,57 @@ void meshSectionCulled(const SectionNeighbourhood& hood,
 
     const BlockRegistry& blocks = BlockRegistry::instance();
 
-    for (i32 y = 0; y < kSectionSize; ++y) {
-        for (i32 z = 0; z < kSectionSize; ++z) {
-            for (i32 x = 0; x < kSectionSize; ++x) {
-                const BlockId block = center->get(x, y, z);
-                if (!blocks.isOpaque(block)) {
-                    continue;
-                }
+    // Two passes, opaque then fluid, because the mesh is one list with a split and
+    // the translucent half has to come second. See ChunkMesh::opaqueQuads.
+    //
+    // The only difference between them is which blocks emit a face and what counts
+    // as hiding one. Opaque: emit for opaque blocks, hidden by an opaque neighbour.
+    // Fluid: emit for fluid blocks, hidden by a fluid *or* opaque neighbour -- so
+    // water against water produces nothing and an ocean is a surface rather than a
+    // stack of visible cubes.
+    for (const bool fluidPass : {false, true}) {
+        if (fluidPass) {
+            // Everything emitted so far was opaque. Recorded here rather than after
+            // the loop so that an early return leaves it at the zero `clear()` set.
+            out.opaqueQuads = out.quads.size();
+        }
 
-                for (const FaceDef& def : kFaces) {
-                    // The neighbourhood answers uniformly whether the neighbour is
-                    // inside this section or across a boundary, so there is no
-                    // in-section special case left. Coordinates outside the 3x3x3
-                    // block, and sections that are not loaded, read as air.
-                    const BlockId neighbour =
-                        hood.blockAt(x + def.dx, y + def.dy, z + def.dz);
-                    if (blocks.isOpaque(neighbour)) {
+        for (i32 y = 0; y < kSectionSize; ++y) {
+            for (i32 z = 0; z < kSectionSize; ++z) {
+                for (i32 x = 0; x < kSectionSize; ++x) {
+                    const BlockId block = center->get(x, y, z);
+                    const bool emits = fluidPass ? blocks.isFluid(block)
+                                                 : blocks.isOpaque(block);
+                    if (!emits) {
                         continue;
                     }
 
-                    // A texture array layer, not the BlockId. Both meshers must
-                    // agree on what the material field means, or a mesh from
-                    // this one would be textured wrongly -- and it stays
-                    // renderable precisely so it can be compared against the
-                    // greedy mesher on screen, not just in tests.
-                    out.quads.push_back(Quad::make(static_cast<u32>(x + def.ox),
-                                                   static_cast<u32>(y + def.oy),
-                                                   static_cast<u32>(z + def.oz),
-                                                   1, 1,
-                                                   def.face,
-                                                   blocks.textureLayer(block, def.face)));
+                    for (const FaceDef& def : kFaces) {
+                        // The neighbourhood answers uniformly whether the neighbour
+                        // is inside this section or across a boundary, so there is
+                        // no in-section special case left. Coordinates outside the
+                        // 3x3x3 block, and sections that are not loaded, read as air.
+                        const BlockId neighbour =
+                            hood.blockAt(x + def.dx, y + def.dy, z + def.dz);
+                        const bool hidden = blocks.isOpaque(neighbour)
+                                         || (fluidPass && blocks.isFluid(neighbour));
+                        if (hidden) {
+                            continue;
+                        }
+
+                        // A texture array layer, not the BlockId. Both meshers must
+                        // agree on what the material field means, or a mesh from
+                        // this one would be textured wrongly -- and it stays
+                        // renderable precisely so it can be compared against the
+                        // greedy mesher on screen, not just in tests.
+                        out.quads.push_back(
+                            Quad::make(static_cast<u32>(x + def.ox),
+                                       static_cast<u32>(y + def.oy),
+                                       static_cast<u32>(z + def.oz),
+                                       1, 1,
+                                       def.face,
+                                       blocks.textureLayer(block, def.face)));
+                    }
                 }
             }
         }

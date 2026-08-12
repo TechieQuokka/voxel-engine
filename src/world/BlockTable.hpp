@@ -113,6 +113,14 @@ inline constexpr std::array kLayers{
     // Cobblestone exists because stone drops it. Rougher and a shade darker than
     // stone, which is the whole visual difference in vanilla too.
     LayerInfo{"cobblestone",  TextureRecipe::Grain, 0xFF7F7F7Fu, 0u,          34.0f, 43u},
+
+    // **The first layer whose alpha is not 255.** Vanilla's still-water colour, at
+    // three-quarters opacity. The alpha channel has always been carried through
+    // `fromArgb` -> `shade` -> `writePixel` and has always been opaque until now;
+    // the texture array is SRGB8_ALPHA8, which encodes only RGB, so this value
+    // reaches the shader unchanged. Very low roughness: water that looks like
+    // gravel is worse than water that looks flat.
+    LayerInfo{"water",        TextureRecipe::Grain, 0xBF3F76E4u, 0u,           4.0f, 50u},
 };
 
 inline constexpr u16 kTextureLayerCount = static_cast<u16>(kLayers.size());
@@ -196,6 +204,21 @@ struct BlockInfo {
     /// of the entries that spell themselves out rather than going through
     /// `uniformBlock`. Appending cannot.
     bool falls = false;
+
+    /// A liquid. Distinct from `!opaque` in every way that matters:
+    ///
+    /// - You walk **into** it, so it holds nothing up -- not the player, not a
+    ///   dropped item, and not a block of sand looking for support.
+    /// - The aim ray goes **through** it, so a crosshair over an ocean targets the
+    ///   sea bed rather than the surface.
+    /// - It is meshed in a **second pass** and drawn translucent, against a cull
+    ///   mask that includes itself, so a body of water is a surface rather than a
+    ///   stack of visible cubes.
+    ///
+    /// `opaque` answers "does this hide the face behind it", which is a rendering
+    /// question. This answers "is this stuff", which is a physics one. Glass will
+    /// want the first and not the second.
+    bool fluid = false;
 };
 
 /// A block that draws the same layer on all six faces, which is most of them.
@@ -272,6 +295,14 @@ inline constexpr std::array kBlocks{
     // Leaves drop nothing. Vanilla drops the occasional sapling or apple, and
     // neither exists here -- a sapling is a plant, which is Phase 10's geometry.
     uniformBlock("oak_leaves", "oak_leaves", 'l', 0.2f, false, "air"),
+
+    // -- water ----------------------------------------------------------------
+    // Not opaque, so it hides nothing behind it; a fluid, so it holds nothing up.
+    // Unbreakable because a bucket is the only thing that removes water in vanilla
+    // and there are no items yet -- and because the aim ray passes through it, the
+    // player never gets the chance to try.
+    BlockInfo{"water", false, layerOf("water"), layerOf("water"), layerOf("water"),
+              '~', false, -1.0f, "air", false, true},
 };
 
 /// Resolves a block name to its BlockId. Same reasoning as `layerOf`.
@@ -295,6 +326,12 @@ inline constexpr BlockId kBedrockBlock   = blockIdOf("bedrock");
 inline constexpr BlockId kDeepslateBlock = blockIdOf("deepslate");
 inline constexpr BlockId kOakLogBlock    = blockIdOf("oak_log");
 inline constexpr BlockId kOakLeavesBlock = blockIdOf("oak_leaves");
+inline constexpr BlockId kWaterBlock     = blockIdOf("water");
+
+/// Sea level. Vanilla's 63 is the first block *above* the water surface, so the
+/// topmost water block is 62 -- which is the number this engine needs, since it
+/// fills downward from here.
+inline constexpr i32 kSeaLevel = 62;
 
 /// True for the rock a blob feature may replace. See BlockInfo::stoneLike.
 constexpr bool isStoneLike(BlockId id) {
@@ -304,6 +341,21 @@ constexpr bool isStoneLike(BlockId id) {
 /// True for the blocks that fall when unsupported. See BlockInfo::falls.
 constexpr bool isFalling(BlockId id) {
     return id < kBlocks.size() && kBlocks[id].falls;
+}
+
+/// True for liquids. See BlockInfo::fluid.
+constexpr bool isFluid(BlockId id) {
+    return id < kBlocks.size() && kBlocks[id].fluid;
+}
+
+/// True for anything that holds things up: not air, and not a liquid.
+///
+/// **This is the test almost every caller of `blockAt` actually wanted**, and until
+/// water existed `!= kAirBlock` was indistinguishable from it. Walking, item
+/// physics, falling-block support and the aim ray all need this one rather than
+/// that one; getting it wrong means a player standing on an ocean.
+constexpr bool isSolidBlock(BlockId id) {
+    return id != kAirBlock && !isFluid(id);
 }
 
 /// What breaking `id` yields. `kAirBlock` means nothing drops.

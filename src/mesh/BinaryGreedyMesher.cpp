@@ -77,14 +77,32 @@ struct Scratch {
     /// Opacity including the one-voxel shell of neighbours.
     std::array<u8, kPaddedVolume> opaque{};
 
+    /// Fluid occupancy, on the same padded grid. Separate from `opaque` because
+    /// water is neither: it hides nothing behind it, and it hides its own faces
+    /// from itself.
+    std::array<u8, kPaddedVolume> fluid{};
+    /// Whether the centre section holds any fluid at all. When it does not, the
+    /// second pass is skipped whole -- which is almost every section in the world,
+    /// so the cost of water existing is one boolean for everything above sea level
+    /// and everything under the sea bed.
+    bool anyFluid = false;
+
     /// Sky light, on the same padded grid and for the same reason: a face on a
     /// section boundary has to be lit by the light in the neighbour it faces, or
     /// every chunk seam becomes a visible band.
     std::array<u8, kPaddedVolume> light{};
 
-    Mask2D colX{}; ///< [y][z], bit x
+    Mask2D colX{}; ///< [y][z], bit x -- voxels that *emit* a face
     Mask2D colY{}; ///< [x][z], bit y
     Mask2D colZ{}; ///< [x][y], bit z
+
+    /// Voxels that *hide* a face. Equal to col* on the opaque pass, and a superset
+    /// on the fluid pass: water is hidden by water and by rock, but only water
+    /// emits. Splitting the two is the whole of what makes a body of water render
+    /// as a surface rather than as a stack of visible cubes.
+    Mask2D cullX{};
+    Mask2D cullY{};
+    Mask2D cullZ{};
 
     /// Occupancy of the neighbour voxel immediately below and above each column,
     /// which is what turns "outside is air" into real boundary culling.
@@ -110,6 +128,20 @@ Scratch& scratch() {
 
 bool opaqueAt(const Scratch& s, i32 x, i32 y, i32 z) {
     return s.opaque[paddedIndex(x, y, z)] != 0;
+}
+
+bool fluidAt(const Scratch& s, i32 x, i32 y, i32 z) {
+    return s.fluid[paddedIndex(x, y, z)] != 0;
+}
+
+/// Does a voxel emit a face on this pass?
+bool emitsAt(const Scratch& s, bool fluidPass, i32 x, i32 y, i32 z) {
+    return fluidPass ? fluidAt(s, x, y, z) : opaqueAt(s, x, y, z);
+}
+
+/// Does a voxel hide the face of its neighbour on this pass?
+bool hidesAt(const Scratch& s, bool fluidPass, i32 x, i32 y, i32 z) {
+    return opaqueAt(s, x, y, z) || (fluidPass && fluidAt(s, x, y, z));
 }
 
 u8 lightAt(const Scratch& s, i32 x, i32 y, i32 z) {
@@ -140,7 +172,9 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
     // Zero first, so a null or all-air neighbour costs nothing at all beyond this
     // memset -- which is the common case, since most of a column is sky.
     std::memset(s.opaque.data(), 0, s.opaque.size());
+    std::memset(s.fluid.data(), 0, s.fluid.size());
     std::memset(s.light.data(), 0, s.light.size());
+    s.anyFluid = false;
 
     const bool centerLightUniform = center->skyLightArray().isUniform();
     const u8 centerLightLevel = center->skyLightArray().uniformLevel();
@@ -152,6 +186,10 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
                 const BlockId block = center->getByIndex(local);
                 s.blocks[local] = block;
                 s.opaque[paddedIndex(x, y, z)] = registry.isOpaque(block) ? u8{1} : u8{0};
+                if (registry.isFluid(block)) {
+                    s.fluid[paddedIndex(x, y, z)] = 1;
+                    s.anyFluid = true;
+                }
                 s.light[paddedIndex(x, y, z)] =
                     centerLightUniform ? centerLightLevel : center->skyLight(x, y, z);
             }
@@ -184,11 +222,14 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
                 const bool blocksUniform = section->isUniform();
                 const bool opaqueFill =
                     blocksUniform && registry.isOpaque(section->uniformBlock());
+                const bool fluidFill =
+                    blocksUniform && registry.isFluid(section->uniformBlock());
                 const bool lightUniform = section->skyLightArray().isUniform();
                 const u8 lightLevel = section->skyLightArray().uniformLevel();
 
-                if (blocksUniform && !opaqueFill && lightUniform && lightLevel == 0) {
-                    continue; // Both already zero.
+                if (blocksUniform && !opaqueFill && !fluidFill && lightUniform
+                    && lightLevel == 0) {
+                    continue; // All three already zero.
                 }
 
                 for (i32 y = yBegin; y < yEnd; ++y) {
@@ -198,11 +239,23 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
                             const i32 ly = blockToLocalCoord(y);
                             const i32 lz = blockToLocalCoord(z);
 
+                            const BlockId neighbourBlock =
+                                blocksUniform ? section->uniformBlock()
+                                              : section->get(lx, ly, lz);
+
                             s.opaque[paddedIndex(x, y, z)] =
                                 blocksUniform
                                     ? (opaqueFill ? u8{1} : u8{0})
-                                    : (registry.isOpaque(section->get(lx, ly, lz)) ? u8{1}
-                                                                                   : u8{0});
+                                    : (registry.isOpaque(neighbourBlock) ? u8{1} : u8{0});
+                            // The shell's fluid occupancy matters even when the
+                            // centre holds none: a water face on the boundary of a
+                            // full ocean section must be culled against the water in
+                            // the section next door, or every 32-block seam draws a
+                            // wall of quads inside the sea.
+                            s.fluid[paddedIndex(x, y, z)] =
+                                blocksUniform
+                                    ? (fluidFill ? u8{1} : u8{0})
+                                    : (registry.isFluid(neighbourBlock) ? u8{1} : u8{0});
                             s.light[paddedIndex(x, y, z)] =
                                 lightUniform ? lightLevel : section->skyLight(lx, ly, lz);
                         }
@@ -213,43 +266,67 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
     }
 }
 
-void buildOccupancy(Scratch& s) {
+/// Fills the emit and cull columns for one pass.
+///
+/// On the opaque pass the two are identical and this is exactly what it always was.
+/// On the fluid pass the emit set is water and the cull set is water plus rock,
+/// which is what stops the inside of an ocean being meshed.
+void buildOccupancy(Scratch& s, bool fluidPass) {
     MC_PROFILE_SCOPE_N("buildOccupancy");
 
     for (auto& row : s.colX) { row.fill(0); }
     for (auto& row : s.colY) { row.fill(0); }
     for (auto& row : s.colZ) { row.fill(0); }
+    for (auto& row : s.cullX) { row.fill(0); }
+    for (auto& row : s.cullY) { row.fill(0); }
+    for (auto& row : s.cullZ) { row.fill(0); }
 
     for (i32 y = 0; y < kN; ++y) {
         for (i32 z = 0; z < kN; ++z) {
             for (i32 x = 0; x < kN; ++x) {
-                if (!opaqueAt(s, x, y, z)) {
+                const bool emits = emitsAt(s, fluidPass, x, y, z);
+                const bool hides = hidesAt(s, fluidPass, x, y, z);
+                if (!emits && !hides) {
                     continue;
                 }
+
                 const auto ux = static_cast<u32>(x);
                 const auto uy = static_cast<u32>(y);
                 const auto uz = static_cast<u32>(z);
-                s.colX[static_cast<usize>(y)][static_cast<usize>(z)] |= 1u << ux;
-                s.colY[static_cast<usize>(x)][static_cast<usize>(z)] |= 1u << uy;
-                s.colZ[static_cast<usize>(x)][static_cast<usize>(y)] |= 1u << uz;
+                const auto sx = static_cast<usize>(x);
+                const auto sy = static_cast<usize>(y);
+                const auto sz = static_cast<usize>(z);
+
+                if (emits) {
+                    s.colX[sy][sz] |= 1u << ux;
+                    s.colY[sx][sz] |= 1u << uy;
+                    s.colZ[sx][sy] |= 1u << uz;
+                }
+                if (hides) {
+                    s.cullX[sy][sz] |= 1u << ux;
+                    s.cullY[sx][sz] |= 1u << uy;
+                    s.cullZ[sx][sy] |= 1u << uz;
+                }
             }
         }
     }
 
-    // One value per plane cell, read from the shell decoded above.
+    // One value per plane cell, read from the shell decoded above. These are the
+    // cull set: they answer "is the face on this boundary hidden by the neighbour",
+    // which is the same question the shifted columns answer inside the section.
     for (i32 a = 0; a < kN; ++a) {
         for (i32 b = 0; b < kN; ++b) {
             const auto ua = static_cast<usize>(a);
             const auto ub = static_cast<usize>(b);
 
-            s.lowX[ua][ub] = opaqueAt(s, -1, a, b) ? u8{1} : u8{0};
-            s.highX[ua][ub] = opaqueAt(s, kN, a, b) ? u8{1} : u8{0};
+            s.lowX[ua][ub] = hidesAt(s, fluidPass, -1, a, b) ? u8{1} : u8{0};
+            s.highX[ua][ub] = hidesAt(s, fluidPass, kN, a, b) ? u8{1} : u8{0};
 
-            s.lowY[ua][ub] = opaqueAt(s, a, -1, b) ? u8{1} : u8{0};
-            s.highY[ua][ub] = opaqueAt(s, a, kN, b) ? u8{1} : u8{0};
+            s.lowY[ua][ub] = hidesAt(s, fluidPass, a, -1, b) ? u8{1} : u8{0};
+            s.highY[ua][ub] = hidesAt(s, fluidPass, a, kN, b) ? u8{1} : u8{0};
 
-            s.lowZ[ua][ub] = opaqueAt(s, a, b, -1) ? u8{1} : u8{0};
-            s.highZ[ua][ub] = opaqueAt(s, a, b, kN) ? u8{1} : u8{0};
+            s.lowZ[ua][ub] = hidesAt(s, fluidPass, a, b, -1) ? u8{1} : u8{0};
+            s.highZ[ua][ub] = hidesAt(s, fluidPass, a, b, kN) ? u8{1} : u8{0};
         }
     }
 }
@@ -267,23 +344,29 @@ void buildFaceMasks(Scratch& s) {
 
     for (usize a = 0; a < kN; ++a) {
         for (usize b = 0; b < kN; ++b) {
+            // The emit column decides which voxels *have* a face; the cull column
+            // decides which of those faces are hidden. They are the same array on
+            // the opaque pass, so this is unchanged there.
             const u32 cx = s.colX[a][b];
+            const u32 hx = s.cullX[a][b];
             s.faceMask[static_cast<usize>(Face::NegX)][a][b] =
-                cx & ~((cx << 1) | static_cast<u32>(s.lowX[a][b]));
+                cx & ~((hx << 1) | static_cast<u32>(s.lowX[a][b]));
             s.faceMask[static_cast<usize>(Face::PosX)][a][b] =
-                cx & ~((cx >> 1) | (static_cast<u32>(s.highX[a][b]) << 31));
+                cx & ~((hx >> 1) | (static_cast<u32>(s.highX[a][b]) << 31));
 
             const u32 cy = s.colY[a][b];
+            const u32 hy = s.cullY[a][b];
             s.faceMask[static_cast<usize>(Face::NegY)][a][b] =
-                cy & ~((cy << 1) | static_cast<u32>(s.lowY[a][b]));
+                cy & ~((hy << 1) | static_cast<u32>(s.lowY[a][b]));
             s.faceMask[static_cast<usize>(Face::PosY)][a][b] =
-                cy & ~((cy >> 1) | (static_cast<u32>(s.highY[a][b]) << 31));
+                cy & ~((hy >> 1) | (static_cast<u32>(s.highY[a][b]) << 31));
 
             const u32 cz = s.colZ[a][b];
+            const u32 hz = s.cullZ[a][b];
             s.faceMask[static_cast<usize>(Face::NegZ)][a][b] =
-                cz & ~((cz << 1) | static_cast<u32>(s.lowZ[a][b]));
+                cz & ~((hz << 1) | static_cast<u32>(s.lowZ[a][b]));
             s.faceMask[static_cast<usize>(Face::PosZ)][a][b] =
-                cz & ~((cz >> 1) | (static_cast<u32>(s.highZ[a][b]) << 31));
+                cz & ~((hz >> 1) | (static_cast<u32>(s.highZ[a][b]) << 31));
         }
     }
 }
@@ -408,8 +491,6 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
 
     Scratch& s = scratch();
     decodeNeighbourhood(hood, s);
-    buildOccupancy(s);
-    buildFaceMasks(s);
 
     const BlockRegistry& registry = BlockRegistry::instance();
 
@@ -421,6 +502,22 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
     // faces, which is a far more visible error than a lost merge -- it puts a hard
     // edge of the wrong shade across the middle of a cave wall.
     const u32 keyMask = options.aoAwareMerging ? 0xFFFFFFFFu : 0xFFFFFF00u;
+
+    // Opaque first, then fluid, appended after it. The split is what lets the
+    // renderer draw the two as separate passes over one contiguous arena range.
+    for (const bool fluidPass : {false, true}) {
+        if (fluidPass) {
+            out.opaqueQuads = out.quads.size();
+            if (!s.anyFluid) {
+                // Almost every section in the world: everything above sea level and
+                // everything below the sea bed. The whole second pass costs one
+                // boolean for them.
+                break;
+            }
+        }
+
+        buildOccupancy(s, fluidPass);
+        buildFaceMasks(s);
 
     for (usize faceIndex = 0; faceIndex < kFaceCount; ++faceIndex) {
         const FacePlan& plan = kPlans[faceIndex];
@@ -535,6 +632,7 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
             }
         }
     }
+    } // fluidPass
 }
 
 void meshSectionGreedy(const Section& section,

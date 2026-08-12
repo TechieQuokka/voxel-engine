@@ -209,6 +209,20 @@ Adding `water` requires, together and not in sequence: aquifers in the density s
 already lists aquifers as unbuilt; this is a note that the item is larger than its
 one line suggests.
 
+**Resolved on 2026-08-12, two problems out of three.** The mesher now carries a cull
+mask distinct from its occupancy mask, and the translucent pass exists. DESIGN.md 7.13
+has both.
+
+The count was right and the *grouping* was not: those two had to land together, and
+aquifers did not have to land with them. Oceans come from a per-column flood between
+sea level and the terrain surface, which needs no aquifer and is what a player
+actually sees. What the missing third costs is flooded caves and lava lakes — see
+section 6, whose aquifer entry is still open and is still the blocker.
+
+The "own sort order" clause also turned out to be avoidable rather than solved: with
+water the only translucent block type and very nearly a flat sheet, no back-to-front
+sort is done. A second translucent block type is where that stops being defensible.
+
 ### 5.4 Tier E is a different mesher
 
 Cross-quad vegetation is not greedy-mergeable, needs back-face culling off and alpha

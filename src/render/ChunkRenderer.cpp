@@ -26,6 +26,9 @@ void ChunkRenderer::beginFrame() {
     m_firsts.clear();
     m_counts.clear();
     m_origins.clear();
+    m_waterFirsts.clear();
+    m_waterCounts.clear();
+    m_waterOrigins.clear();
     m_stats = Stats{};
 }
 
@@ -35,18 +38,33 @@ void ChunkRenderer::addSection(SectionPos pos, const SectionMeshStore::Placement
     }
 
     const usize quadBase = placement.byteOffset / sizeof(Quad);
-
-    m_firsts.push_back(static_cast<i32>(quadBase * kVerticesPerQuad));
-    m_counts.push_back(static_cast<i32>(placement.quadCount * kVerticesPerQuad));
-
     const auto size = static_cast<f32>(kSectionSize);
-    m_origins.push_back(vec4{static_cast<f32>(pos.x) * size,
-                             static_cast<f32>(pos.y) * size,
-                             static_cast<f32>(pos.z) * size,
-                             0.0f});
+    const vec4 origin{static_cast<f32>(pos.x) * size,
+                      static_cast<f32>(pos.y) * size,
+                      static_cast<f32>(pos.z) * size,
+                      0.0f};
+
+    // The two halves of a section's range become entries in two different draws, so
+    // a section holding both opaque geometry and water appears once in each. Its
+    // origin is therefore pushed to both lists -- `gl_DrawID` counts within a draw,
+    // and the shader adds the pass's base to reach the right one.
+    if (placement.opaqueCount > 0) {
+        m_firsts.push_back(static_cast<i32>(quadBase * kVerticesPerQuad));
+        m_counts.push_back(static_cast<i32>(placement.opaqueCount * kVerticesPerQuad));
+        m_origins.push_back(origin);
+    }
+
+    if (placement.translucentCount() > 0) {
+        const usize waterBase = quadBase + placement.opaqueCount;
+        m_waterFirsts.push_back(static_cast<i32>(waterBase * kVerticesPerQuad));
+        m_waterCounts.push_back(
+            static_cast<i32>(placement.translucentCount() * kVerticesPerQuad));
+        m_waterOrigins.push_back(origin);
+    }
 
     ++m_stats.sectionsDrawn;
     m_stats.quadsDrawn += placement.quadCount;
+    m_stats.waterQuadsDrawn += placement.translucentCount();
 }
 
 void ChunkRenderer::ensureSectionBuffer(usize sectionCount) {
@@ -73,15 +91,24 @@ void ChunkRenderer::ensureSectionBuffer(usize sectionCount) {
 void ChunkRenderer::draw(rhi::Device& device, const Camera& camera, const SectionMeshStore& store) {
     MC_PROFILE_SCOPE_N("ChunkRenderer::draw");
 
-    if (m_firsts.empty()) {
+    if (m_firsts.empty() && m_waterFirsts.empty()) {
         return;
     }
 
-    ensureSectionBuffer(m_origins.size());
+    // One buffer, opaque origins then water origins. The water pass reaches its half
+    // through u_drawIdBase rather than through a second buffer or a second binding.
+    ensureSectionBuffer(m_origins.size() + m_waterOrigins.size());
 
     const std::span<const std::byte> originBytes{
         reinterpret_cast<const std::byte*>(m_origins.data()), m_origins.size() * sizeof(vec4)};
     m_sectionBuffer->write(0, originBytes);
+
+    if (!m_waterOrigins.empty()) {
+        const std::span<const std::byte> waterBytes{
+            reinterpret_cast<const std::byte*>(m_waterOrigins.data()),
+            m_waterOrigins.size() * sizeof(vec4)};
+        m_sectionBuffer->write(m_origins.size() * sizeof(vec4), waterBytes);
+    }
 
     // Both the arena and the origin buffer are persistently mapped and were written
     // from the CPU, so the GPU has to be told to observe those writes. Coherence
@@ -100,7 +127,53 @@ void ChunkRenderer::draw(rhi::Device& device, const Camera& camera, const Sectio
     m_sectionBuffer->bindBase(rhi::BufferTarget::Storage, kSectionBufferBinding);
     m_vao.bind();
 
-    device.multiDrawTriangles(m_firsts, m_counts);
+    m_shader.setUniform("u_drawIdBase", 0);
+    if (!m_firsts.empty()) {
+        device.multiDrawTriangles(m_firsts, m_counts);
+    }
+
+    if (m_waterFirsts.empty()) {
+        return;
+    }
+
+    // **Water second, blended, and with depth writes off.**
+    //
+    // After the opaque pass so it composites over a finished frame rather than over
+    // whatever had been drawn when it got its turn. Depth *testing* stays on, so a
+    // sea bed correctly hides the water below it and terrain in front of the ocean
+    // still occludes it; depth *writing* goes off, because a translucent surface
+    // that writes depth hides whatever is behind it -- including the rest of the
+    // water -- and an ocean would render as its nearest 32-block section and nothing
+    // else.
+    //
+    // **There is no back-to-front sort, and that is a real limitation rather than an
+    // oversight.** Correct blending of overlapping translucent surfaces needs one.
+    // Water gets away without it because the only translucent thing in the world is
+    // water and it is very nearly a single flat sheet: two water surfaces are rarely
+    // both in front of the same pixel. Looking through one ocean at another across a
+    // bay is where this shows, and a second translucent block type is where it stops
+    // being defensible.
+    // **Back faces stay on for water**, which they are not for anything else.
+    //
+    // The mesher emits only the outside of a body of water -- every face between two
+    // water blocks is culled against its own kind. So the surface of a lake is a
+    // single sheet whose one face points up, and with back-face culling on it
+    // vanishes the moment the camera goes under it: a swimmer would look up at open
+    // sky. Vanilla draws water from both sides for the same reason.
+    //
+    // The cost is that looking across a lake can show its near wall and its far wall
+    // blended together. With no back-to-front sort that is not strictly right, and it
+    // is the same limitation noted above rather than a new one.
+    device.setBackfaceCulling(false);
+    device.setDepthWrite(false);
+    device.setAlphaBlending(true);
+
+    m_shader.setUniform("u_drawIdBase", static_cast<i32>(m_origins.size()));
+    device.multiDrawTriangles(m_waterFirsts, m_waterCounts);
+
+    device.setAlphaBlending(false);
+    device.setDepthWrite(true);
+    device.setBackfaceCulling(true);
 }
 
 } // namespace mc

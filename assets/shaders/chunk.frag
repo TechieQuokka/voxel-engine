@@ -68,5 +68,8 @@ void main() {
     float distance = length(v_worldPos - u_cameraPosition);
     float fog = smoothstep(u_fadeDistance * 0.55, u_fadeDistance, distance);
 
-    o_fragColor = vec4(mix(shaded, u_fogColor, fog), 1.0);
+    // Alpha comes from the texture rather than being 1. Every opaque block layer
+    // stores 255, so this changes nothing for them; water stores ~0.75 and is drawn
+    // in the translucent pass with blending on. See BlockTable's water layer.
+    o_fragColor = vec4(mix(shaded, u_fogColor, fog), albedo.a);
 }

@@ -50,9 +50,17 @@ public:
     static constexpr u64 kReuseDelayFrames = 3;
 
     /// Where one section's quads live in the arena.
+    ///
+    /// One contiguous range holding the opaque quads followed by the translucent
+    /// ones, with `opaqueCount` marking the join. Two ranges would mean two
+    /// allocations, two retirements and two lifetimes to keep in step for what is
+    /// arithmetic on a single offset.
     struct Placement {
         usize byteOffset = 0;
         u32 quadCount = 0;
+        u32 opaqueCount = 0;
+
+        u32 translucentCount() const noexcept { return quadCount - opaqueCount; }
     };
 
     /// `capacityBytes` is fixed for the store's lifetime, because the arena is

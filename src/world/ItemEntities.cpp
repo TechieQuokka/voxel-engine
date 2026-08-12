@@ -27,7 +27,9 @@ bool solidAt(const World& world, const vec3& position) {
     const BlockPos block{static_cast<i32>(std::floor(position.x)),
                          static_cast<i32>(std::floor(position.y)),
                          static_cast<i32>(std::floor(position.z))};
-    return world.blockAt(block) != kAirBlock;
+    // Solid, not merely non-air: a dropped block sinks through water rather than
+    // bobbing on it. Vanilla floats items, which needs buoyancy this does not have.
+    return isSolidBlock(world.blockAt(block));
 }
 
 f32 hashUnit(u32 value) {

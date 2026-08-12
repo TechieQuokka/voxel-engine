@@ -60,7 +60,7 @@ void FallingBlocks::integrate(World& world, f32 dt, Result& result) {
             continue;
         }
 
-        if (world.blockAt(BlockPos{falling.x, cell, falling.z}) == kAirBlock) {
+        if (!isSolidBlock(world.blockAt(BlockPos{falling.x, cell, falling.z}))) {
             continue; // Still falling.
         }
 
@@ -81,7 +81,7 @@ void FallingBlocks::integrate(World& world, f32 dt, Result& result) {
         // placement into a cell with an entity falling through it -- but the
         // alternative to handling it is deleting a block, which is the one outcome
         // worth ruling out even at a low probability.
-        if (world.blockAt(destination) != kAirBlock) {
+        if (isSolidBlock(world.blockAt(destination))) {
             result.displaced.push_back(
                 Displaced{vec3{static_cast<f32>(destination.x) + 0.5f,
                                static_cast<f32>(destination.y) + 0.5f,

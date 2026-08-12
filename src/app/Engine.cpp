@@ -1084,11 +1084,20 @@ std::optional<f32> Engine::groundBelow(f32 x, f32 z, f32 fromY) const {
     const i32 stop = std::max(kWorldMinY, start - kGroundSearchDepth);
 
     for (i32 y = start; y >= stop; --y) {
-        if (m_world->blockAt(BlockPos{blockX, y, blockZ}) != kAirBlock) {
+        // Solid, not merely non-air. Water holds nothing up, and before it existed
+        // these two tests were the same thing -- a player stood on the sea otherwise.
+        if (isSolidBlock(m_world->blockAt(BlockPos{blockX, y, blockZ}))) {
             return static_cast<f32>(y + 1); // Stand on top of it.
         }
     }
     return std::nullopt;
+}
+
+bool Engine::inWater(const vec3& feet) const {
+    const BlockPos block{static_cast<i32>(std::floor(feet.x)),
+                         static_cast<i32>(std::floor(feet.y + 0.1f)),
+                         static_cast<i32>(std::floor(feet.z))};
+    return isFluid(m_world->blockAt(block));
 }
 
 void Engine::updateWalk(f32 dt) {
@@ -1135,12 +1144,33 @@ void Engine::updateWalk(f32 dt) {
         }
     }
 
-    if (!m_inventoryOpen && m_onGround && m_input->isDown(Key::Space)) {
-        m_verticalVelocity = kJumpVelocity;
-        m_onGround = false;
+    // **Swimming, such as it is.** Water holds nothing up, so without this the player
+    // sinks to the sea bed at full gravity and walks around down there. Buoyancy is a
+    // quarter of gravity with a low sink speed, and Space paddles upward -- which is
+    // enough to swim out to an island and back, and is not vanilla's model (no air
+    // meter, no drowning, no swimming pose).
+    const bool swimming = inWater(feet);
+
+    if (!m_inventoryOpen && m_input->isDown(Key::Space)) {
+        if (swimming) {
+            m_verticalVelocity = kSwimSpeed;
+        } else if (m_onGround) {
+            m_verticalVelocity = kJumpVelocity;
+            m_onGround = false;
+        }
     }
 
-    m_verticalVelocity = std::max(m_verticalVelocity - kGravity * dt, -kTerminalVelocity);
+    if (swimming) {
+        m_verticalVelocity =
+            std::max(m_verticalVelocity - kGravity * kSwimGravityScale * dt, -kSinkSpeed);
+        // Entering water cancels a fall, which is vanilla's rule and the reason
+        // jumping off a cliff into a lake is a thing people do.
+        m_trackingFall = false;
+    } else {
+        m_verticalVelocity =
+            std::max(m_verticalVelocity - kGravity * dt, -kTerminalVelocity);
+    }
+
     feet.y += m_verticalVelocity * dt;
 
     const bool wasOnGround = m_onGround;

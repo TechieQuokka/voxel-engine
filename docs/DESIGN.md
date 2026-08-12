@@ -1776,6 +1776,161 @@ with stacks, two-digit counts, six full hearts, a half and three empty at health
 
 ---
 
+### 7.13 Water
+
+RESEARCH.md 5.3 has said since it was written that water is three problems and not
+one: aquifers inside the noise stage, water-against-water face culling in a mesher
+that only knows `isOpaque`, and a translucent second draw pass. That was right, and
+one of the three turned out to be a decision rather than a piece of work.
+
+#### The aquifer is not built, and that is the scoping decision
+
+Vanilla decides water, lava or air per 16x40x16 cell **inside the density
+evaluation**, and one mechanism there produces oceans, rivers and flooded caves
+alike. RESEARCH.md 6 records that the barrier noise, the fluid-level selection and
+the interaction with carvers are not published anywhere usable — the entry has stood
+unresolved since 4b, and closing it means working from decompiled `NoiseChunk` and
+`Aquifer` code.
+
+Set that aside and what remains is the part that is both well defined and almost all
+of what a player sees: **the ocean**. Water fills each column from sea level (62)
+down to the terrain surface, and stops.
+
+Two consequences, both deliberate and both written at the code:
+
+- **Caves under the sea stay dry.** Filling down to the first solid instead would
+  pour water down every carved shaft and hang 1x1 columns of it in the middle of
+  caverns. Flooded caves are the aquifer feature; this is the line where that
+  feature begins.
+- **A column whose terrain reaches above sea level gets no water at all**, even at
+  its base. Deciding otherwise needs to know whether a space under an overhang is
+  open to the sea sideways, which a per-column scan cannot know. The error is a dry
+  pocket at the foot of an overhang; the alternative error is water hanging in a
+  cliff face, which is much the worse of the two to look at.
+
+The surface rules needed no change: `kBeachLevel` already put sand rather than grass
+below 66, and trees already refuse to plant on anything but grass, so nothing grows
+out of the sea bed.
+
+**One thing about the ordering did bite, and a test found it rather than a
+screenshot.** The flood's floor is `terrainTop`, which is the *density field's*
+surface — and the thin-cave carver runs after that field is sampled. Where a cave
+breaks through the sea bed, that voxel is air by the time the flood runs, so the
+lowest water block came to rest on a hole: water hanging in mid-air over a cave
+mouth. Thirteen of them in three columns.
+
+The column is now skipped when its sea bed has been carved open, rather than filled
+deeper. Following the hole down to the first real solid would drop a one-block-wide
+pillar of still water through a cavern, which looks worse than the small dry patch
+this leaves — and is the flooded-cave behaviour that belongs to the aquifer system
+above. **The general shape of this mistake is worth remembering: a value computed in
+one stage of an ordered pipeline describes the world as of that stage, not as of the
+stage using it.**
+
+#### `opaque` was answering two questions
+
+Adding one non-solid block type exposed that `!= kAirBlock` had been standing in for
+"is this solid" everywhere, and the two had been indistinguishable because every
+block was both. Water separates them, and the list of places that had to change is
+the interesting part:
+
+- walking's ground probe — otherwise the player stands **on** the sea;
+- item physics — otherwise dropped blocks float;
+- falling-block support and landing — sand should fall *through* water;
+- the aim ray — a crosshair over the ocean should find the sea bed, since there is
+  no bucket and nothing can be done with the surface.
+
+`BlockInfo` therefore carries `fluid` next to `opaque`, and `isSolidBlock` is the
+test almost every caller of `blockAt` actually wanted. Glass, when it arrives, will
+want `opaque` false and `fluid` false — which is the shape that says these are two
+questions rather than one with a bad name.
+
+#### The mesher needed the cull mask to stop being the occupancy mask
+
+Binary greedy meshing finds faces with `col & ~(col >> 1)`: a voxel is occupied and
+its neighbour is not. That expression uses one mask for both halves, which is exactly
+right while the only thing that hides a face is the same thing that emits one.
+
+Water breaks that. Water emits a face; water **and** rock hide one. So the mesher
+now builds two column sets — `col*` for what emits and `cull*` for what hides — and
+the shift uses the second. On the opaque pass they are identical and the generated
+code is unchanged; on the fluid pass the cull set is water plus rock, which is what
+makes the inside of an ocean produce nothing at all.
+
+The neighbour shell decodes fluid occupancy too, and that matters more than it
+sounds: without it, every 32-block section boundary inside a sea would emit a wall of
+quads, drawing a visible grid through the water. A test pins it — a section of ocean
+surrounded by ocean meshes to zero quads.
+
+The second pass is skipped whole when the centre section holds no fluid, which is
+almost every section in the world: everything above sea level and everything below
+the sea bed. The cost of water existing is one boolean for them.
+
+#### One arena range, two draws
+
+`ChunkMesh` is opaque quads followed by translucent ones with a split index, rather
+than two lists. Two lists would mean two allocations, two retirements and two
+lifetimes to keep in step, for what is arithmetic on one offset. `Placement` carries
+the split, and the renderer issues two multi-draws over the same range.
+
+`gl_DrawID` counts from zero within each multi-draw, so the second pass needs its
+section origins found at an offset — one `u_drawIdBase` uniform, zero for the first
+pass, which is what it effectively always was.
+
+Three pieces of state, and each is a specific failure if left out:
+
+- **Depth writes off.** A translucent surface that writes depth hides what is behind
+  it, including the rest of the water, and an ocean renders as its nearest section
+  and nothing else. Depth *testing* stays on, so the sea bed and any terrain in front
+  still occlude correctly.
+- **Back-face culling off.** The mesher emits only the outside of a body of water, so
+  a lake's surface is a single sheet whose one face points up — and with culling on
+  it vanishes the moment the camera goes under it. A swimmer would look up at open
+  sky. Vanilla draws water double-sided for the same reason.
+- **Alpha from the texture rather than 1.** Every opaque layer stores 255, so this
+  changes nothing for them; the water layer stores ~0.75.
+
+**There is no back-to-front sort, and that is a real limitation rather than an
+oversight.** Correct blending of overlapping translucent surfaces needs one. Water
+gets away without it because it is the only translucent thing in the world and very
+nearly a single flat sheet: two water surfaces are rarely both in front of the same
+pixel. Looking across a bay at a second body of water is where it shows, and a second
+translucent block type is where it stops being defensible.
+
+#### Swimming, such as it is
+
+Water holds nothing up, so without something the player sinks to the sea bed at full
+gravity and walks around down there. Buoyancy is a quarter of gravity with a low sink
+speed, and `Space` paddles up. Entering water clears the fall tracker, which is
+vanilla's rule and the reason jumping off a cliff into a lake is a thing people do.
+
+No air meter, no drowning, no swimming pose. Those are a survival system rather than
+a fluid, and none of them is what "the world has oceans" was asking for.
+
+#### Measurements
+
+222 tests, up from 213. Nine new ones, and the ones worth naming are the mesher's:
+a slab of water meshes to six quads rather than to its 8,192 internal faces, an
+ocean section surrounded by ocean meshes to none, the opaque/translucent split is a
+real partition rather than a hint, and the culled mesher — the oracle — covers the
+same water area the greedy one does.
+
+Warm-up **3.36–3.47 s** and frame p99 **4.88–5.18 ms** over three runs on an idle
+machine, against 3.29–3.52 s and 4.40–5.86 ms measured the same way immediately
+before water. **Water is not distinguishable from noise in either.** Arena use is
+unchanged at 115 MiB, and a capture from the spawn point draws 4.343 M quads against
+4.332 M without water — **0.27 % more geometry for every ocean in the render
+distance.**
+
+That last number is the one worth understanding rather than just recording. Water is
+nearly free to draw for the same reason the fully-enclosed saving disappeared when
+caves landed, run backwards: an ocean is a flat sheet, greedy meshing merges a flat
+sheet into very few quads, and the second pass is skipped entirely for every section
+that holds no fluid — which is everything above sea level and everything below the
+sea bed. The expensive translucent surface would be one that is *not* flat.
+
+---
+
 ## 8. Open Questions
 
 Filled in with recommended defaults above, but expected to need revisiting once

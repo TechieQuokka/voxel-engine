@@ -1,7 +1,7 @@
 # Handoff
 
 Snapshot for resuming work. Written 2026-08-09; last updated 2026-08-12, after
-Phase 12 closed the last of the three missing subsystems.
+block updates, a real inventory, and water.
 
 Read `docs/DESIGN.md` for the full design and the reasoning behind every
 decision, and `docs/RESEARCH.md` for the vanilla Minecraft numbers the remaining
@@ -78,17 +78,25 @@ landed together; **block updates (12) landed on 2026-08-12** and brought a 20 Hz
 tick with it, which the engine did not have at all. Sand and gravel fall. See
 DESIGN.md 7.11.
 
-**Water is next, and it is the one item the documents describe without giving a
-number to.** It is three changes that have to land together -- aquifers inside the
-noise stage, water-against-water face culling in a mesher that only knows `isOpaque`,
-and a translucent second draw pass. RESEARCH.md 5.3 has the detail. What Phase 12
-removed from that list is the clock to flow on, which now exists.
+**Water is built -- the ocean half of it.** DESIGN.md 7.13. Two of RESEARCH.md 5.3's
+three problems are solved: water-against-water culling in the mesher, and a
+translucent second draw pass. **The third, aquifers, is deliberately not built**, and
+that is the thing to read before touching this.
 
-Worth knowing before starting it: **the safe voxel read in `BlockUpdates::examine`
-stops being safe for water.** It asks about the block below, which is in the same
+Vanilla decides water/lava/air per 16x40x16 cell inside the noise stage, and oceans,
+rivers and flooded caves all come out of that one mechanism. RESEARCH.md 6 has said
+since 4b that its internals are not published anywhere usable. So what shipped is a
+per-column flood from sea level down to the terrain surface: **oceans and lakes yes,
+flooded caves no**. Caves under the sea stay dry, and a column whose terrain reaches
+above sea level gets no water at all -- which leaves a dry pocket under a cliff
+overhang, chosen over the alternative artefact of water hanging in a cliff face.
+
+**Flowing water is also not built.** The 20 Hz tick it needs exists (Phase 12) and
+`BlockUpdates::examine` is where the second behaviour goes -- but read the note at
+the voxel read there first. It asks about the block *below*, which is in the same
 column, so an unloaded neighbour cannot be mistaken for "nothing is holding this up".
-Water spreads sideways and that argument does not survive. The note is written at the
-read itself.
+**Water spreads sideways and that argument does not survive**; a lateral reader needs
+a real "is this column loaded" test.
 
 **Crafting is the next thing that forces a redesign, not just an addition.** Items are
 `BlockId`s today; a stick is not a block, so the item/block split happens then and
@@ -197,17 +205,32 @@ cell at a time. That runs on a **20 Hz game tick**, which is new -- everything b
 Phase 12 ran on frame delta time. Flowing water will use the same clock unchanged.
 Generated sand does not fall until something disturbs it, which is also vanilla.
 
+**There are oceans.** Water fills every column from sea level 62 down to the terrain
+surface, drawn translucent in a second pass with depth writes and back-face culling
+off. You swim in it rather than standing on it, falling into it cancels fall damage,
+sand falls through it and the aim ray goes straight through to the sea bed. **No
+flooded caves and no flowing water** -- both are the aquifer system, which is not
+built; see section 1.
+
 A character is drawn at the player position on a second render path; `F5` toggles third
 person, and the camera now pulls in when terrain is behind it rather than clipping
 through — a second use of Phase 9's raycast.
 
-| Distance 16 | No caves | Caves | + ores | + sky light | + editing | + trees | + items | + falling |
-|---|---|---|---|---|---|---|---|---|
-| Frame p99 | 0.85 ms | 6.00 ms | 5.93 ms | 5.91 ms | 6.4–8.0 | 7.55 | 6.20 | **4.40–5.86** |
-| Quads drawn | 260 k | 4.1 M | 4.15 M | 4.18 M | 4.20 M | 4.33 M | 4.33 M | **4.08 M** |
-| Arena used | 8 MiB | 112 MiB | 112 MiB | 113 MiB | 112 MiB | 115 MiB | 115 MiB | **115 MiB** |
-| Warm-up, 1,089 columns | — | 2.29 s | 2.99 s | 3.58 s | 3.40 s | 3.52 s | 3.26 s | **3.29–3.52 s** |
-| Sections with an empty mesh | 2,509 of 4,967 | **0** | **0** | **0** | **0** | **0** | **0** | **0** |
+| Distance 16 | No caves | Caves | + ores | + sky light | + editing | + trees | + items | + falling | + water |
+|---|---|---|---|---|---|---|---|---|---|
+| Frame p99 | 0.85 ms | 6.00 ms | 5.93 ms | 5.91 ms | 6.4–8.0 | 7.55 | 6.20 | 4.40–5.86 | **4.88–5.18** |
+| Quads drawn | 260 k | 4.1 M | 4.15 M | 4.18 M | 4.20 M | 4.33 M | 4.33 M | 4.08 M | **4.08 M** |
+| Arena used | 8 MiB | 112 MiB | 112 MiB | 113 MiB | 112 MiB | 115 MiB | 115 MiB | 115 MiB | **115 MiB** |
+| Warm-up, 1,089 columns | — | 2.29 s | 2.99 s | 3.58 s | 3.40 s | 3.52 s | 3.26 s | 3.29–3.52 s | **3.36–3.47 s** |
+| Sections with an empty mesh | 2,509 of 4,967 | **0** | **0** | **0** | **0** | **0** | **0** | **0** | **0** |
+
+**Water is not distinguishable from noise in any of these**, and the reason is worth
+knowing rather than being pleased about: an ocean is a flat sheet, greedy meshing
+merges a flat sheet into very few quads, and the translucent pass is skipped whole
+for every section holding no fluid — everything above sea level and everything below
+the sea bed. A capture from the spawn point draws 0.27 % more quads with every ocean
+in the render distance included. The translucent surface that would cost something is
+one that is not flat.
 
 **The last column is three runs on a deliberately idle machine, and that is a change
 of method rather than of code.** Earlier in the same session, with an asan build
@@ -298,7 +321,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (213 cases, doctest)
+# Test  (222 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
@@ -440,6 +463,7 @@ src/world/              pure data; knows nothing about rendering
   BlockUpdates — "this block changed, tell its neighbours": the tick queue, the
                  dedupe set and the retry discipline. **Where water plugs in**
   Inventory    — 36 slots, stack limits, and the cursor stack the window drags
+  BlockTable also carries **fluid**; `isSolidBlock` is the test physics wants
   BlockTable also carries **hardness**, **drops** and **falls**
 src/worldgen/           knows world, nothing above it; FastNoise2 is PRIVATE
   DensityField — the 4x8x4 interpolation grid (no FastNoise2, so it is testable)
@@ -576,6 +600,18 @@ Learned the hard way; all of them cost real time.
   aged an item by 299 seconds in one tick found it falling out of the world instead.
   Physics is substepped and clamped now; ageing still uses the real elapsed time.
   Walking's ground probe has the same shape and the same latent issue.
+- **A value computed in one generation stage describes the world as of *that* stage.**
+  The sea flood used `terrainTop`, which comes from the density field -- and the thin
+  cave carver runs after it. Where a cave broke through the sea bed the flood rested
+  its lowest water block on a hole, leaving water hanging over a cave mouth. Thirteen
+  of them in three columns, found by a test that counted rather than by looking at
+  the world. Generation is an ordered pipeline (DESIGN.md 7.6) and every cached
+  heightmap in it has this shape of hazard.
+- **A test that walks generated terrain can pass by finding nothing.** The first
+  version of the sea test checked its three rules against the origin column, which
+  for that seed is entirely above sea level: every rule held vacuously. It searches
+  outward for an ocean now and requires having found one. Any test whose subject is
+  "what the generator produced" needs that guard.
 - **`blockAt` answers air for a column that is not loaded, and "air below me" is what
   makes a block fall.** Those two facts together are a bug waiting to happen: sand at
   the edge of the loaded region dropping into a column that has simply not arrived
@@ -794,14 +830,22 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
 - **World persistence** — **now in scope** (DESIGN.md Phase 11), so the open part is
   the disk format rather than the question. Sections are palette-compressed already,
   so what is undecided is the container and whether it compresses at all.
-- **Water, and the aquifers under it.** Larger than its one line suggests: aquifers run
-  *inside* the noise stage on their own grid (RESEARCH.md 4), the mesher only knows the
-  `isOpaque` yes/no and would need water-against-water culling, and translucency needs a
-  second draw pass. Three changes that have to land together.
+- ~~**Water, and the aquifers under it.**~~ **Two of the three landed** on 2026-08-12:
+  water-against-water culling and the translucent pass. Aquifers did not — see below.
 - ~~**Three subsystems are missing.**~~ **All three are built** — entities and the HUD
-  in 7.10, block updates in 7.11. Water is still not one phase: it needs the mesher
-  and draw-pass work in RESEARCH.md 5.3 on top of aquifers, and those three have to
-  land together.
+  in 7.10, block updates in 7.11.
+- **Aquifers, and with them flooded caves and lava lakes.** RESEARCH.md 5.3's third
+  problem, and the only one water did not solve. Its internals are unpublished
+  (RESEARCH.md 6), so this needs a source beyond the wiki. Until then caves under the
+  sea are dry and a cliff overhang has a dry pocket at its foot — both documented at
+  the code in `Generator`.
+- **Flowing water.** The 20 Hz tick exists and `BlockUpdates::examine` is where it
+  goes, but the safe-read argument there does not survive a sideways spread. See the
+  note at that read.
+- **The translucent pass does not sort back to front.** Correct blending of
+  overlapping translucent surfaces needs it. Water gets away without it by being the
+  only translucent thing and very nearly flat; a second translucent block type is
+  where that stops being true.
 - **Trees leave a two-block band along every column edge with no trees in it.** The
   deliberate cost of trees not crossing columns; see `TreeSpec` and DESIGN.md 7.9.
   Fixing it properly means a chunk-status pipeline like vanilla's.

@@ -95,7 +95,10 @@ std::optional<RaycastHit> raycast(const World& world, vec3 origin, vec3 directio
         }
 
         const BlockPos block{x, y, z};
-        if (world.blockAt(block) == kAirBlock) {
+        // Fluids are not targets. Vanilla needs a bucket to remove water and this
+        // engine has no items at all, so a crosshair over the sea should find the
+        // sea bed rather than a surface nothing can do anything with.
+        if (!isSolidBlock(world.blockAt(block))) {
             continue;
         }
 
