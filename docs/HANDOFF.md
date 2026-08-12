@@ -23,8 +23,8 @@ vanilla's numbers, and which of them could not be confirmed, are in RESEARCH.md.
 trees, per-block break times with a crack overlay, a walking fix, a mining swing in
 both camera modes, dropped items, an inventory and a HUD. **The loop is closed** --
 break a block, watch it drop, walk over it, see the count go up, place it and see the
-count go down. It is closed and it is not yet satisfying: the inventory half of it was
-judged insufficient on contact, which is the first thing below.
+count go down. The inventory half of it was judged insufficient on contact and has
+since been **replaced with a real one** — see below.
 
 **Playing it is what produced 7.9 and 7.10, and it is still the highest-value thing
 to do.** The first session lasted 83 seconds and every one of the four items that came
@@ -33,12 +33,15 @@ would have caught. The step height in particular had been wrong since walking la
 1.05 instead of vanilla's 0.6, so every block was walked up instead of jumped. Thirty
 seconds of play found it.
 
-### The next thing to build: a real inventory
+### The real inventory — **built** (2026-08-12)
 
-**Read this before picking up 7.10's `Inventory`.** After the third session
-(2026-08-11) the user's verdict on the count-based inventory was that it falls short,
-and that items want *their own container* — an item box, managed separately, rather
-than nine numbers on a hotbar.
+**Done.** Slots, stack limits, an inventory window on `E`, cursor mode, hit testing,
+drag-and-drop, and hearts. DESIGN.md 7.12 has the write-up. What follows is the
+record of why the thing it replaced existed, which is worth keeping.
+
+After the third session (2026-08-11) the user's verdict on the count-based inventory
+was that it falls short, and that items want *their own container* — an item box,
+managed separately, rather than nine numbers on a hotbar.
 
 That reverses a recommendation made in this project, and the reasoning is worth
 keeping rather than quietly deleting. Two options were put up: **(A)** counts only,
@@ -53,14 +56,22 @@ container *is* the feature, not the bookkeeping behind it. That is a judgement a
 play that no amount of reasoning about scope was going to produce, and it took one
 session to produce.
 
-So the next interaction work is **(B)**: slots, stack limits, an inventory screen, and
-the UI layer that needs — cursor mode, hit testing, a window. `HudRenderer` is the
-starting point and is deliberately *not* a UI framework (see its header); it will need
-to grow into one or sit beside one. `Inventory` is one small header and should be
-expected to be replaced rather than extended.
+So the next interaction work was **(B)**, and (B) is what got built: slots, stack
+limits, an inventory screen, and the UI layer that needed — cursor mode, hit testing,
+a window. `HudRenderer` grew into a small one rather than sitting beside a general
+one, and its header now says where that stops being enough (a second window).
+
+**One thing the user said about the old HUD was a factual error worth recording,
+because acting on it would have made the game less like Minecraft.** The complaint was
+that the bottom bar showed blocks with counts and "vanilla does not do that". Vanilla
+*does* have a hotbar with stack counts. What it does not do is show slots for items
+you do not own, and the old hotbar was a fixed array of nine block types drawn whether
+you held them or not. Fixing that — an empty slot is empty — was most of what the
+complaint was actually about.
 
 Worth noting for sequencing: **crafting needs exactly the same things**, plus the
-item/block split. Doing (B) with recipes in mind is cheaper than doing it twice.
+item/block split. The window, the cursor, the hit test and the stack limits are all
+built now, so a 2x2 grid is a layout change and a recipe table rather than a phase.
 
 **All three of the missing subsystems are now built.** Entities (13) and the HUD (14)
 landed together; **block updates (12) landed on 2026-08-12** and brought a 20 Hz game
@@ -81,9 +92,9 @@ read itself.
 
 **Crafting is the next thing that forces a redesign, not just an addition.** Items are
 `BlockId`s today; a stick is not a block, so the item/block split happens then and
-`Inventory` gets rewritten with it. That is recorded in DESIGN.md 7.10 rather than
-pre-built — and since the inventory is being replaced anyway (above), the two are
-worth planning together.
+`ItemStack` changes with it. That is recorded in DESIGN.md 7.10 rather than pre-built.
+Everything *else* crafting needs now exists: a window, a cursor, a hit test and stack
+limits, so a 2x2 grid is a layout change plus a recipe table.
 
 ### Three sessions in a row, the log could not say what happened — **fixed**
 
@@ -170,9 +181,14 @@ character in third person, on a first-person view model otherwise. A wireframe b
 shows what is under the crosshair and cracks spread across it as it is mined; break
 time is vanilla hardness, 0.75 s for dirt up to 6.75 s for a deepslate ore. Broken
 blocks **drop as spinning items**, fall, merge with nearby stacks and can be walked
-over to collect. The **hotbar** shows what is held and how many, and placing spends
-one. Breaking and placing go through the existing dirty mask, so nothing was added to
-the streaming pipeline.
+over to collect. Breaking and placing go through the existing dirty mask, so nothing
+was added to the streaming pipeline.
+
+**There is a real inventory**: 36 slots on vanilla's layout, stacks of 64, a window on
+`E` with a pointer, click to pick up and put down, right click to split. The hotbar is
+its first nine slots, so **an empty slot is empty** -- which is the fix for the nine
+grey blocks that used to sit along the bottom of an empty world. **Ten hearts**, and
+falling more than three blocks costs some; nothing else damages you yet.
 
 **Sand and gravel fall.** Dig the support out from under a sand pillar and it comes
 down one block per tick, as a real falling entity rather than a block stepping down a
@@ -235,6 +251,7 @@ Sky light costs **24 KiB per column**, about 26 MiB at distance 16, because 87.5
 sections are uniform and allocate nothing. The naive figure was over 400 MiB.
 
 **Interactively verified five times**, most recently on 2026-08-11 after 7.10 landed.
+Nothing since has been played -- 7.11 and 7.12 are checked by test and by capture only.
 The last three sessions ran 83, 83 and 84 seconds at a vsync-locked 60 FPS (min 58.8,
 median 59.9), with no dropped frames, no GL debug messages and a clean exit each time.
 Rendering has stayed flat across caves, ores, light, trees, entities and the HUD.
@@ -280,7 +297,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (198 cases, doctest)
+# Test  (213 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
@@ -321,6 +338,10 @@ convert /tmp/shot.ppm /tmp/shot.png     # ImageMagick is installed
 
 # First person, if the character is in the way of what is being looked at.
 ./build/release/src/app/minecraft --first-person --capture /tmp/shot.ppm
+
+# Open the inventory and seed it, then capture. The window is the only thing in the
+# engine that needs a pointer to exist, so --capture cannot otherwise reach it.
+./build/release/src/app/minecraft --inventory --capture /tmp/shot.ppm
 ```
 
 **Always measure on the `release` preset.** Debug is `-O0`; timings from it are
@@ -339,7 +360,8 @@ meaningless.
 | `Escape` | release cursor, then quit | same |
 | **Left mouse** | **hold to break the highlighted block** | same |
 | **Right mouse** | **place the held block against it** | same |
-| **`1`-`9`** | **pick what to place** | same |
+| **`1`-`9`** | **pick which hotbar slot to place from** | same |
+| **`E`** | **open and close the inventory** | same |
 | walk over an item | **pick it up** | same |
 
 Reach is 5 blocks. **Breaking is held, not clicked** -- cracks spread across the block
@@ -416,7 +438,7 @@ src/world/              pure data; knows nothing about rendering
   FallingBlocks— sand and gravel between two cells. Straight down, i32 x and z
   BlockUpdates — "this block changed, tell its neighbours": the tick queue, the
                  dedupe set and the retry discipline. **Where water plugs in**
-  Inventory    — one count per block type; not slots, deliberately
+  Inventory    — 36 slots, stack limits, and the cursor stack the window drags
   BlockTable also carries **hardness**, **drops** and **falls**
 src/worldgen/           knows world, nothing above it; FastNoise2 is PRIVATE
   DensityField — the 4x8x4 interpolation grid (no FastNoise2, so it is testable)
@@ -434,7 +456,9 @@ src/render/
   CharacterRenderer (the second render path; not voxels),
   SelectionRenderer (the block outline and the breaking cracks; no buffer at all),
   ItemRenderer (every dropped item *and every falling block* in one draw call),
-  HudRenderer (hotbar, counts, crosshair — the first screen-space layer)
+  InventoryLayout (every slot rectangle; the renderer AND the hit test use it,
+                   which is the whole reason it exists),
+  HudRenderer (crosshair, hotbar, hearts, the inventory window — a small UI layer)
 src/app/
   main, Engine (streaming pipeline: submit-only frame loop, upload thread)
 
@@ -785,14 +809,19 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   Since walking has no collision volume either, the two are at least consistent — but
   a real capsule would refuse cases this lets through, and building a proper collider
   should fix both together rather than one of them.
-- **The count-based inventory is being replaced, by decision rather than by decay.**
-  Judged insufficient after the third play session: items want their own container,
-  not nine numbers. Section 1 has the full account, including why (A) was chosen and
-  what the choice got right. `Inventory` should be expected to go, not to grow.
-- **Items are `BlockId`s, and crafting will break that.** A stick is not a block.
-  The split, and the `Inventory` rewrite that comes with it, is deferred on purpose
-  -- see DESIGN.md 7.10. Since the inventory is being rewritten anyway, plan both at
-  once.
+- ~~**The count-based inventory is being replaced.**~~ **Replaced on 2026-08-12** —
+  36 slots, stack limits, a window on `E`, and hearts. DESIGN.md 7.12. Section 1 keeps
+  the account of why the model it replaced was chosen and what that choice got right.
+- **Items are `BlockId`s, and crafting will break that.** A stick is not a block. The
+  split is deferred on purpose -- see DESIGN.md 7.10. It is a smaller job than it was:
+  it now means changing what `ItemStack::block` is, rather than that plus building the
+  container around it.
+- **The UI layer handles exactly one window.** No widget tree, no event routing --
+  `HudRenderer` plus `InventoryLayout` and nothing else. A chest or a crafting bench is
+  a second window and is the point at which that stops being enough; its header says so.
+- **Death drops nothing and shows nothing.** Respawn is full health where you stand.
+  A death screen needs the second window above; dropping the inventory needs somewhere
+  the player can get it back from.
 - ~~**Nothing in the interaction path logs.**~~ **Fixed on 2026-08-12.** The stats
   line carries broken, placed, collected, and how many items, falling blocks and
   queued updates are alive.

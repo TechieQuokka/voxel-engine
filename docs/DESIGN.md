@@ -1676,6 +1676,106 @@ Two things about that, and the second matters more than the first:
 
 ---
 
+### 7.12 A real inventory, a UI layer, and hearts
+
+Asked for immediately after Phase 12, and the request began with a complaint about
+the HUD: nine blocks sat along the bottom of the screen and "vanilla does not do
+that".
+
+**Half of that was right and the half that was wrong mattered.** Vanilla does have a
+hotbar and it does draw stack counts on it. What it does not do is give you slots for
+things you do not own — and the old hotbar was `Engine::kHotbar`, a compile-time array
+of nine block types, drawn at 32 % brightness when the player held none of them. In an
+empty world that is nine grey blocks and nine zeroes for no reason. Acting on the
+complaint as stated would have removed the hotbar and moved *away* from the game the
+request was asking for; acting on what it was pointing at fixed it in one rule. **An
+empty slot is empty.**
+
+#### The container is the feature
+
+The count model was chosen in 7.10 over slots, and the argument for it was that it
+closes the break-drop-collect-place loop for a fraction of the work. That was correct
+and it is why the loop works. What it got wrong is that carrying things is not felt as
+a number going up: 36 slots of 64 is the thing, and one `u32` per block type is the
+bookkeeping behind the thing. HANDOFF.md 1 has the full account, including that the
+recommendation which lost was the one this project made.
+
+Vanilla's shape, because the point is to feel like the game: 36 slots, the first nine
+being the hotbar, and `add` filling partial stacks before empty ones and the hotbar
+before the grid. Each of those is visible in play — the last one is why a block you
+just mined is immediately placeable.
+
+**Stack limits made a full inventory possible for the first time, and that turned out
+to be a correctness change rather than a cosmetic one.** `ItemEntities::collect`
+removed an item whether or not the caller had room for it, which was fine against an
+unbounded count and silently deletes a stack against 36 slots. `collectInto` offers
+each stack and takes back what did not fit, so a player with a full pack walks over a
+diamond and it stays there.
+
+#### One layout, or the pixels and the pointer drift apart
+
+`InventoryLayout` computes every slot rectangle, and both the renderer and the hit
+test go through it. That is the entire reason it is a class rather than two loops.
+Two independent computations would agree until someone adjusted a margin, and then
+clicks would land a few pixels off the icon they appear to be on — which reads as
+*unresponsive* rather than as misaligned, and is miserable to find. A test walks every
+slot at four aspect ratios, hit-tests its centre, and requires the answer to be the
+slot it started from.
+
+#### The UI layer is small on purpose
+
+`HudRenderer`'s header used to say it was deliberately not a UI framework. It is one
+now, and a deliberately poor one: no widget tree, no layout engine, no event routing.
+There is one window, its geometry is a class, and a click is resolved by asking that
+class which slot a point is in. **A second window is the moment to reconsider**, and a
+chest or a crafting bench is exactly that — which is written in the header where the
+next person will be standing.
+
+Everything still goes through one shader, one buffer and one draw call, with a mode
+per quad. Hearts reuse the glyph machinery the digits already had: a 7x7 bit pattern
+expanded into the same texture array, with the half heart produced by masking the full
+one to its left four columns rather than being drawn twice, so the two cannot drift
+apart by a pixel. The empty heart is the full glyph in dark, for the same reason.
+
+One deviation from vanilla, taken knowingly: **hearts stay visible while the inventory
+is open.** Vanilla hides them because that screen shows the player model and armour in
+their place; this window is slots and nothing else, so the space is free and health is
+the only status the player has.
+
+#### Hearts need damage, or they are decoration
+
+Fall damage, because the engine already had gravity, a vertical velocity and a landing
+test — the only new state is the height the player left the ground at. Vanilla's rule:
+nothing for the first three blocks, then one half-heart per block, which is what makes
+a jump free and a two-storey drop hurt.
+
+Two details are load-bearing:
+
+- **The fall is measured from where the ground was left, not from the peak.** A jump
+  therefore pays for its own arc, which is why the three-block grace exists at all.
+- **A column that has not streamed in does not count as a fall.** Walking already
+  holds height rather than dropping through an unloaded column; without clearing the
+  fall tracker there too, the game would damage the player for the streaming pipeline.
+
+Death respawns with full health where the player stands. No death screen and no
+dropped inventory: the first needs the UI layer to grow a second window and the second
+needs somewhere for the items to go that the player can get back to. It logs rather
+than pretending nothing happened.
+
+#### Measurements
+
+213 tests, up from 198. Fifteen new ones cover the slot rules, the click/split/swap
+decisions, the full-inventory paths on both sides, and the layout property above.
+asan clean.
+
+`--inventory` seeds the player and opens the window at startup. It exists because
+`--capture` cannot click, and the window is the only part of the engine that needs a
+pointer to appear at all — the same reason `--fly` and `--first-person` exist. Both
+states were checked by capture: an empty hotbar with ten hearts, and the open window
+with stacks, two-digit counts, six full hearts, a half and three empty at health 13.
+
+---
+
 ## 8. Open Questions
 
 Filled in with recommended defaults above, but expected to need revisiting once

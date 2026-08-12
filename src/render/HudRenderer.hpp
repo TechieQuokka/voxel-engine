@@ -3,6 +3,7 @@
 #include "core/Math.hpp"
 #include "core/Types.hpp"
 #include "render/BlockTextures.hpp"
+#include "render/InventoryLayout.hpp"
 #include "rhi/Buffer.hpp"
 #include "rhi/Device.hpp"
 #include "rhi/Shader.hpp"
@@ -10,38 +11,53 @@
 #include "rhi/VertexArray.hpp"
 
 #include <optional>
-#include <span>
 #include <vector>
 
 namespace mc {
 
 class Inventory;
 
-/// The hotbar, the counts on it, and the crosshair.
+/// Everything drawn in screen space: the crosshair, the hotbar, the hearts, and the
+/// inventory window.
 ///
-/// **The engine's first screen-space layer.** Everything before it was in the world;
-/// this is drawn in normalised device coordinates with no projection at all, because
-/// the only transform a HUD needs is the one the CPU already did when it laid the
-/// slots out.
+/// **It used to say, in this comment, that it was deliberately not a UI framework.**
+/// That was true and it stopped being enough. The count-based inventory it was built
+/// against was replaced because carrying things is not felt as a number going up, and
+/// a container needs a window, a cursor and hit testing -- the three things this was
+/// written to avoid needing. It is a small UI layer now.
 ///
-/// It is deliberately not a UI framework. There is no cursor mode, no hit testing
-/// and no window -- those are what a slot-based inventory would need, and the count
-/// model (see `Inventory`) exists precisely so they are not needed yet.
+/// What it still is not is a *general* one. There is no widget tree, no layout
+/// engine and no event routing: there is one window, its geometry lives in
+/// `InventoryLayout`, and clicks are resolved by asking that layout which slot a
+/// point is in. A second window would be the moment to reconsider, and a second
+/// window is what a chest or a crafting bench would be.
 ///
-/// The digit font is nine hundred bits of hard-coded 3x5 patterns, expanded into a
-/// texture array at startup. That keeps the repository's rule that no binary asset
-/// ships with it, and a font that only has to render "0" to "999" does not justify
-/// more.
+/// Drawn in NDC with no projection at all, one draw call, one shader, a mode per
+/// quad. The glyph font is hard-coded bit patterns expanded into a texture array at
+/// startup -- ten digits and two hearts -- which keeps the rule that no binary asset
+/// ships with this repository.
 class HudRenderer {
 public:
     HudRenderer();
 
-    /// `slots` is what the hotbar holds, `selected` which one is active, and
-    /// `aspect` the framebuffer's width over its height -- without it the slots come
-    /// out as rectangles on any window that is not square.
+    /// Everything the HUD needs that is not the inventory itself.
+    struct State {
+        /// Which hotbar slot is selected, 0-8.
+        usize hotbarSlot = 0;
+
+        /// In half-hearts, as vanilla counts them: 20 is ten full hearts.
+        f32 health = 20.0f;
+        f32 maxHealth = 20.0f;
+
+        bool inventoryOpen = false;
+        /// Where the pointer is, in NDC. Only read while the window is open, which
+        /// is the only time there is a pointer to read.
+        f32 cursorX = 0.0f;
+        f32 cursorY = 0.0f;
+    };
+
     void draw(rhi::Device& device, const BlockTextures& textures,
-              std::span<const BlockId> slots, usize selected,
-              const Inventory& inventory, f32 aspect);
+              const Inventory& inventory, const State& state, f32 aspect);
 
 private:
     /// Matches the mode constants in hud.frag.
@@ -58,25 +74,35 @@ private:
         vec4 params;
     };
 
-    static constexpr usize kMaxQuads = 256;
+    /// Room for the open window: a panel, 36 slots each with a plate, an icon and up
+    /// to two shadowed digits, the hearts and the dragged stack. About 400 in the
+    /// worst case, and the buffer is 24 KiB either way.
+    static constexpr usize kMaxQuads = 1024;
     static constexpr u32 kVerticesPerQuad = 6;
     static constexpr u32 kQuadBufferBinding = 0;
     static constexpr u32 kBlockTextureUnit = 0;
     static constexpr u32 kGlyphTextureUnit = 1;
 
-    /// Digits only. Ten glyphs is all a count needs.
-    static constexpr u32 kGlyphCount = 10;
+    /// Ten digits, then the two heart shapes. The empty heart is the full one drawn
+    /// dark rather than a third pattern, because a socket and a heart are the same
+    /// silhouette and drawing them from one glyph is what keeps them aligned.
+    static constexpr u32 kDigitGlyphs = 10;
+    static constexpr u32 kHeartFullGlyph = 10;
+    static constexpr u32 kHeartHalfGlyph = 11;
+    static constexpr u32 kGlyphCount = 12;
     static constexpr u32 kGlyphSize = 8;
 
-    /// Slot height as a fraction of the screen height, and the gap between slots.
-    static constexpr f32 kSlotHeight = 0.11f;
-    static constexpr f32 kSlotGap = 0.012f;
-    /// Distance from the bottom edge to the bottom of the hotbar.
-    static constexpr f32 kBottomMargin = 0.04f;
+    /// Half-hearts per heart, which is what makes ten hearts show twenty health.
+    static constexpr u32 kHealthPerHeart = 2;
 
     void push(const vec4& rect, const vec4& tint, Mode mode, u32 layer = 0);
     /// Lays out `value` right-aligned inside the given slot rect.
     void pushNumber(u32 value, const vec4& slot, f32 aspect);
+    /// A slot's backing plate, its block icon and its count. Shared by the hotbar and
+    /// the window, so a slot looks the same wherever it is drawn.
+    void pushSlot(const UiRect& rect, const struct ItemStack& stack, bool highlight,
+                  f32 aspect);
+    void pushHearts(const InventoryLayout& layout, const State& state, f32 aspect);
 
     rhi::Shader m_shader;
     rhi::VertexArray m_vao;

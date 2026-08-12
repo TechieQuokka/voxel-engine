@@ -4,6 +4,7 @@
 #include "core/Types.hpp"
 #include "world/Coords.hpp"
 
+#include <algorithm>
 #include <vector>
 
 namespace mc {
@@ -63,6 +64,39 @@ public:
         u32 count = 0;
     };
     std::vector<Pickup> collect(const vec3& position, f32 radius);
+
+    /// Offers everything in range to `accept`, which takes what it can and returns
+    /// how many it could not. Anything left over stays on the ground.
+    ///
+    /// **This exists because stack limits made a full inventory possible.** The
+    /// simple form above removes an item whether or not the caller had room for it,
+    /// which was fine when the inventory was an unbounded count per block type and
+    /// silently deletes a stack now that it is 36 slots of 64. A player walking over
+    /// a diamond with a full pack should see it stay there, which is also what
+    /// vanilla does.
+    template <typename F>
+    void collectInto(const vec3& position, f32 radius, F&& accept) {
+        if (m_items.empty()) {
+            return;
+        }
+        const f32 radiusSquared = radius * radius;
+
+        for (ItemEntity& item : m_items) {
+            if (item.pickupDelay > 0.0f || item.count == 0) {
+                continue;
+            }
+            const vec3 delta = item.position - position;
+            if (math::dot(delta, delta) > radiusSquared) {
+                continue;
+            }
+            const u32 leftover = accept(item.block, item.count);
+            // Clamped rather than trusted: an acceptor that returned more than it was
+            // offered would otherwise create items out of nothing.
+            item.count = std::min(leftover, item.count);
+        }
+
+        std::erase_if(m_items, [](const ItemEntity& item) { return item.count == 0; });
+    }
 
     const std::vector<ItemEntity>& items() const noexcept { return m_items; }
     usize size() const noexcept { return m_items.size(); }

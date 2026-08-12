@@ -41,6 +41,8 @@ int main(int argc, char** argv) {
             options.thirdPerson = false;
         } else if (arg == "--fly") {
             options.flying = true;
+        } else if (arg == "--inventory") {
+            options.openInventory = true;
         } else if (arg == "--mesh-benchmark") {
             options.meshBenchmark = true;
         } else if (arg == "--warm-up") {
@@ -58,7 +60,8 @@ int main(int argc, char** argv) {
             mc::logError("Unknown argument: {}", arg);
             mc::logError("Usage: minecraft [--capture <path.ppm>] [--mesh-benchmark]"
                          " [--render-distance N] [--warm-up] [--bench-seconds S]"
-                         " [--probe [--probe-columns N]] [--first-person] [--fly]");
+                         " [--probe [--probe-columns N]] [--first-person] [--fly]"
+                         " [--inventory]");
             return EXIT_FAILURE;
         }
     }

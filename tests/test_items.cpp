@@ -157,27 +157,28 @@ TEST_CASE("an item that falls out of the world is removed rather than falling fo
     CHECK(items.size() == 0);
 }
 
-TEST_CASE("the inventory counts, spends and refuses") {
-    Inventory inventory;
+TEST_CASE("a full inventory leaves the item on the ground") {
+    auto world = floorWorld();
+    ItemEntities items;
+    items.spawn(vec3{8.5f, 65.0f, 8.5f}, kStoneBlock, 40);
+    simulate(items, *world, 1.0f);
 
-    CHECK(inventory.count(kStoneBlock) == 0);
-    CHECK_FALSE(inventory.take(kStoneBlock));
+    // An acceptor with no room at all. Before stack limits existed the item was
+    // removed whether the caller could take it or not, which with a bounded
+    // inventory would silently delete it.
+    items.collectInto(vec3{8.5f, 65.0f, 8.5f}, 3.0f,
+                      [](BlockId, u32 count) { return count; });
+    CHECK(items.size() == 1);
 
-    inventory.add(kStoneBlock, 3);
-    inventory.add(kDirtBlock, 1);
-    CHECK(inventory.count(kStoneBlock) == 3);
-    CHECK(inventory.distinctBlocks() == 2);
+    // Room for half of it: the rest stays, rather than the whole stack going or
+    // the whole stack staying.
+    items.collectInto(vec3{8.5f, 65.0f, 8.5f}, 3.0f,
+                      [](BlockId, u32 count) { return count / 2; });
+    REQUIRE(items.size() == 1);
+    CHECK(items.items()[0].count == 20);
 
-    CHECK(inventory.take(kStoneBlock));
-    CHECK(inventory.count(kStoneBlock) == 2);
-
-    CHECK(inventory.take(kDirtBlock));
-    CHECK_FALSE(inventory.take(kDirtBlock)); // Spent.
-    CHECK(inventory.distinctBlocks() == 1);
-
-    // Air is not a thing you can carry.
-    inventory.add(kAirBlock, 10);
-    CHECK(inventory.count(kAirBlock) == 0);
+    items.collectInto(vec3{8.5f, 65.0f, 8.5f}, 3.0f, [](BlockId, u32) { return 0u; });
+    CHECK(items.size() == 0);
 }
 
 TEST_CASE("blocks drop what vanilla says they drop") {

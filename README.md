@@ -40,12 +40,17 @@ sprint, `LeftShift` to sneak, mouse to look. A full block has to be jumped, not 
 up — vanilla's 0.6-block step height.
 
 **Hold left click to break the highlighted block, right click to place one, `1`-`9` to
-choose what to place.** Reach is 5 blocks, cracks spread across the block while you
+pick a hotbar slot.** Reach is 5 blocks, cracks spread across the block while you
 mine it, and the time is vanilla's hardness — 0.75 s for dirt, 2.25 s for stone,
 6.75 s for an ore in deepslate. Bedrock is unbreakable.
 
 Broken blocks drop as items. Walk over one to pick it up; the hotbar shows what you
-are carrying and placing spends it.
+are carrying and placing spends it. **`E` opens the inventory** — 36 slots with
+vanilla's stack limit of 64, click to pick a stack up and put it down, right click to
+split it in half or place one at a time.
+
+Ten hearts, and falling more than three blocks costs you some. Nothing else damages
+you yet.
 
 Sand and gravel fall. Dig out from under a stack and it comes down one block at a
 time, on a 20 Hz tick rather than at your frame rate.
@@ -57,7 +62,7 @@ Dig down. The caves, ores and darkness are the point, and they are not visible f
 surface.
 
 ```bash
-ctest --preset debug                       # 198 test cases
+ctest --preset debug                       # 213 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
@@ -121,16 +126,16 @@ tracks remain, independent of each other:
 
 - **Performance** — indirect draw with GPU culling, four-level LOD, brickmap ray marching
   for the far field, occlusion culling. This is what the render-distance target needs.
-- **Interaction** — block placement and breaking, trees, item drops, an inventory, a
-  HUD and block updates are all **done**. Still open: water, the rest of vegetation,
-  and persistence.
+- **Interaction** — block placement and breaking, trees, item drops, a slot inventory
+  with its window, a HUD, health and block updates are all **done**. Still open: water,
+  the rest of vegetation, and persistence.
 
-Entities, an inventory and a game tick exist now, as the subsystems item drops, a
-hotbar and falling sand needed — not as a commitment to build a game on top of them.
+Entities, a slot inventory with a UI layer under it, and a game tick all exist now.
 Water is the next thing wanted and is three changes at once: aquifers, a mesher that
-can cull water against water, and a translucent draw pass. Crafting, mobs and combat
-remain unplanned; crafting in particular would force items to stop being block types,
-which is a redesign rather than an addition.
+can cull water against water, and a translucent draw pass. Mobs and combat remain
+unplanned. Crafting is closer than it was — the window, cursor, hit testing and stack
+limits it needs are built — but it still forces items to stop being block types, which
+is a redesign rather than an addition.
 
 ## Dependencies
 

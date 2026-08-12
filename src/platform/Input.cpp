@@ -20,6 +20,7 @@ constexpr std::array<int, static_cast<usize>(Key::Count)> kGlfwKeys{{
     GLFW_KEY_LEFT_SHIFT,
     GLFW_KEY_LEFT_CONTROL,
     GLFW_KEY_ESCAPE,
+    GLFW_KEY_E,
     GLFW_KEY_F,
     GLFW_KEY_F1,
     GLFW_KEY_F3,

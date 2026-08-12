@@ -13,6 +13,10 @@ enum class Key : u32 {
     W, A, S, D,
     Space, LeftShift, LeftControl,
     Escape,
+    /// Opens and closes the inventory. `E` rather than `I` because that is the key
+    /// Minecraft uses, and muscle memory is most of what "feels like the game" means
+    /// for a control.
+    E,
     F, F1, F3, F5,
     /// The hotbar. Contiguous and in order, so a slot is `Num1 + n` -- the block
     /// selector indexes them arithmetically rather than through a switch.
@@ -57,6 +61,12 @@ public:
 
     f64 mouseDeltaX() const noexcept { return m_mouseDeltaX; }
     f64 mouseDeltaY() const noexcept { return m_mouseDeltaY; }
+
+    /// Cursor position in window pixels, y down -- the coordinates the windowing
+    /// system reports. Meaningful only while the cursor is released; a captured
+    /// cursor has no position, which is the point of capturing it.
+    f64 mouseX() const noexcept { return m_mouseX; }
+    f64 mouseY() const noexcept { return m_mouseY; }
 
     /// Hides and grabs the cursor for mouse-look.
     void setCursorCaptured(bool captured);

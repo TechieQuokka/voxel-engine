@@ -84,6 +84,21 @@ void writePpm(const std::filesystem::path& path,
 Engine::Engine(Options options) : m_options(std::move(options)) {
     m_thirdPerson = m_options.thirdPerson;
     m_flying = m_options.flying;
+
+    if (m_options.openInventory) {
+        m_inventoryOpen = true;
+        // Something to look at. A capture of an empty grid proves the panel draws
+        // and nothing else -- not the icons, not the counts, not the two-digit
+        // layout, which are the parts with arithmetic in them.
+        m_inventory.add(blockIdOf("stone"), 64);
+        m_inventory.add(blockIdOf("dirt"), 7);
+        m_inventory.add(blockIdOf("grass"), 12);
+        m_inventory.add(blockIdOf("sand"), 3);
+        m_inventory.add(blockIdOf("oak_log"), 128);
+        m_inventory.add(blockIdOf("cobblestone"), 45);
+        m_inventory.add(blockIdOf("gravel"), 1);
+        m_health = 13.0f; // An odd number, so a half heart is in the frame too.
+    }
     m_window = std::make_unique<Window>(Window::Config{
         .width = 1280,
         .height = 720,
@@ -652,7 +667,12 @@ void Engine::updateCamera(f64 deltaTime) {
     const f32 dt = static_cast<f32>(deltaTime);
 
     if (m_input->wasPressed(Key::Escape)) {
-        if (m_input->cursorCaptured()) {
+        if (m_inventoryOpen) {
+            // Escape closes the window before it does anything else, which is what
+            // every game does and what stops the reflex to back out of a menu from
+            // quitting instead.
+            toggleInventory();
+        } else if (m_input->cursorCaptured()) {
             m_input->setCursorCaptured(false);
         } else {
             m_window->requestClose();
@@ -838,16 +858,85 @@ void Engine::placeTargetBlock() {
         return;
     }
 
-    const BlockId block = kHotbar[m_hotbarSlot];
-    if (m_inventory.count(block) == 0) {
-        return; // Nothing to place. The hotbar shows the slot dimmed.
+    // Whatever is in the selected slot, which is now a real slot rather than a fixed
+    // block type. An empty slot places nothing, and the hotbar already shows it empty.
+    const ItemStack& held = m_inventory.at(m_hotbarSlot);
+    if (held.empty()) {
+        return;
     }
+    const BlockId block = held.block;
 
     // Taken only once the edit is known to have landed, so a placement refused for
     // being outside the world does not silently cost a block.
     if (applyEdit(target, block)) {
-        m_inventory.take(block);
+        m_inventory.takeOne(m_hotbarSlot);
         ++m_blocksPlaced;
+    }
+}
+
+vec2 Engine::cursorNdc() const {
+    const auto width = static_cast<f32>(std::max(1, m_window->framebufferWidth()));
+    const auto height = static_cast<f32>(std::max(1, m_window->framebufferHeight()));
+
+    // Window pixels are y-down and the HUD is y-up, so the vertical axis flips here
+    // and nowhere else. Getting this wrong makes the top row of slots respond to
+    // clicks on the bottom row, which looks like a layout bug rather than a sign
+    // error.
+    return vec2{static_cast<f32>(m_input->mouseX()) / width * 2.0f - 1.0f,
+                1.0f - static_cast<f32>(m_input->mouseY()) / height * 2.0f};
+}
+
+void Engine::toggleInventory() {
+    m_inventoryOpen = !m_inventoryOpen;
+
+    if (m_inventoryOpen) {
+        m_input->setCursorCaptured(false);
+        return;
+    }
+
+    // Closing with a stack in hand must not delete it. It goes back into the
+    // inventory, and whatever does not fit is dropped at the player's feet -- which
+    // is vanilla's answer and is why `releaseCursor` hands the remainder back rather
+    // than swallowing it.
+    const ItemStack leftover = m_inventory.releaseCursor();
+    if (!leftover.empty()) {
+        m_items.spawn(m_camera.position(), leftover.block, leftover.count);
+    }
+
+    m_input->setCursorCaptured(true);
+}
+
+void Engine::updateInventoryScreen() {
+    const vec2 cursor = cursorNdc();
+
+    const auto aspect = static_cast<f32>(m_window->framebufferWidth())
+                      / static_cast<f32>(std::max(1, m_window->framebufferHeight()));
+    const InventoryLayout layout{aspect};
+
+    const bool left = m_input->wasPressed(MouseButton::Left);
+    const bool right = m_input->wasPressed(MouseButton::Right);
+    if (!left && !right) {
+        return;
+    }
+
+    const std::optional<usize> slot = layout.hitTest(cursor.x, cursor.y);
+    if (!slot.has_value()) {
+        // Clicking outside every slot. Vanilla throws the held stack into the world;
+        // this drops it at the player's feet, which is the same idea without needing
+        // a throw velocity nothing else would use.
+        if (left && !m_inventory.cursorEmpty()) {
+            const ItemStack thrown = m_inventory.releaseCursor();
+            if (!thrown.empty()) {
+                m_items.spawn(m_camera.position(), thrown.block, thrown.count);
+            }
+        }
+        return;
+    }
+
+    if (left) {
+        m_inventory.clickSlot(*slot);
+    } else {
+        m_inventory.splitSlot(*slot);
     }
 }
 
@@ -890,11 +979,29 @@ void Engine::updateInteraction(f32 dt) {
     m_items.tick(*m_world, dt);
     m_itemSpin += dt;
 
-    for (const ItemEntities::Pickup& pickup : m_items.collect(m_camera.position(),
-                                                              kPickupRadius)) {
-        m_inventory.add(pickup.block, pickup.count);
-        m_itemsCollected += pickup.count;
-        logDebug("Picked up {} x{}", kBlocks[pickup.block].name, pickup.count);
+    // Offered rather than taken: with stack limits the inventory can be full, and a
+    // stack that does not fit stays on the ground instead of being deleted.
+    m_items.collectInto(m_camera.position(), kPickupRadius,
+                        [this](BlockId block, u32 count) {
+                            const u32 leftover = m_inventory.add(block, count);
+                            m_itemsCollected += count - leftover;
+                            return leftover;
+                        });
+
+    if (m_input->wasPressed(Key::E)) {
+        toggleInventory();
+    }
+
+    if (m_inventoryOpen) {
+        // The world is not aimed at, broken, placed into or looked around while the
+        // window is up. Clearing the target rather than leaving the last one is what
+        // stops a stale selection box hanging in the world behind the panel.
+        m_target.reset();
+        m_breakingBlock.reset();
+        m_breakProgress = 0.0f;
+        updateSwing(dt, false);
+        updateInventoryScreen();
+        return;
     }
 
     // Aim from the player's eye, never from the render camera. In third person the
@@ -914,11 +1021,13 @@ void Engine::updateInteraction(f32 dt) {
         return;
     }
 
-    for (usize slot = 0; slot < kHotbar.size(); ++slot) {
+    for (usize slot = 0; slot < Inventory::kHotbarSlots; ++slot) {
         const auto key = static_cast<Key>(static_cast<u32>(Key::Num1) + slot);
         if (m_input->wasPressed(key)) {
             m_hotbarSlot = slot;
-            logInfo("Holding: {}", kBlocks[kHotbar[slot]].name);
+            const ItemStack& held = m_inventory.at(slot);
+            logInfo("Holding: {}",
+                    held.empty() ? "nothing" : kBlocks[held.block].name);
         }
     }
 
@@ -994,11 +1103,17 @@ void Engine::updateWalk(f32 dt) {
     if (math::dot(forward, forward) > 1e-6f) { forward = math::normalize(forward); }
     if (math::dot(right, right) > 1e-6f) { right = math::normalize(right); }
 
+    // Movement keys are ignored while the inventory is up -- W would otherwise walk
+    // the player off a cliff behind the panel. **Gravity is not**: the world does not
+    // pause in singleplayer Minecraft either, and a player who opens their inventory
+    // mid-fall should still land.
     vec3 wish{0.0f};
-    if (m_input->isDown(Key::W)) { wish += forward; }
-    if (m_input->isDown(Key::S)) { wish -= forward; }
-    if (m_input->isDown(Key::D)) { wish += right; }
-    if (m_input->isDown(Key::A)) { wish -= right; }
+    if (!m_inventoryOpen) {
+        if (m_input->isDown(Key::W)) { wish += forward; }
+        if (m_input->isDown(Key::S)) { wish -= forward; }
+        if (m_input->isDown(Key::D)) { wish += right; }
+        if (m_input->isDown(Key::A)) { wish -= right; }
+    }
 
     if (math::dot(wish, wish) > 0.0f) {
         const f32 speed = m_input->isDown(Key::LeftControl)  ? kSprintSpeed
@@ -1020,13 +1135,15 @@ void Engine::updateWalk(f32 dt) {
         }
     }
 
-    if (m_onGround && m_input->isDown(Key::Space)) {
+    if (!m_inventoryOpen && m_onGround && m_input->isDown(Key::Space)) {
         m_verticalVelocity = kJumpVelocity;
         m_onGround = false;
     }
 
     m_verticalVelocity = std::max(m_verticalVelocity - kGravity * dt, -kTerminalVelocity);
     feet.y += m_verticalVelocity * dt;
+
+    const bool wasOnGround = m_onGround;
 
     const auto ground = groundBelow(feet.x, feet.z, feet.y + 0.01f);
     if (!ground.has_value()) {
@@ -1035,15 +1152,72 @@ void Engine::updateWalk(f32 dt) {
         // is the same call followGround makes in the benchmark.
         feet.y -= m_verticalVelocity * dt;
         m_verticalVelocity = 0.0f;
+
+        // And do not let that count as a fall. A column arriving late is an engine
+        // detail, and taking damage for it would be the game punishing the player
+        // for the streaming pipeline.
+        m_trackingFall = false;
     } else if (feet.y <= *ground) {
         feet.y = *ground;
         m_verticalVelocity = 0.0f;
         m_onGround = true;
+
+        if (m_trackingFall) {
+            applyFallDamage(m_fallFromY, feet.y);
+            m_trackingFall = false;
+        }
     } else {
         m_onGround = false;
+
+        // Start measuring from the height we left the ground at, not from the peak.
+        // A jump therefore costs its own arc, which is why the three-block grace
+        // exists at all -- vanilla measures the same way.
+        if (wasOnGround) {
+            m_fallFromY = feet.y;
+            m_trackingFall = true;
+        } else if (feet.y > m_fallFromY) {
+            // Still rising. The fall has not started yet.
+            m_fallFromY = feet.y;
+        }
     }
 
     m_camera.setPosition(feet + Camera::up() * CharacterRenderer::kEyeHeight);
+}
+
+void Engine::applyFallDamage(f32 fromY, f32 toY) {
+    const f32 distance = fromY - toY;
+    if (distance <= kSafeFallBlocks) {
+        return;
+    }
+
+    // Vanilla's formula: one half-heart per block past the third, rounded down. At
+    // 20 health that means a 23-block drop is fatal, which is close enough to the
+    // real thing that the height a player learns to fear transfers.
+    const auto damage = static_cast<f32>(
+        static_cast<i32>(std::floor(distance - kSafeFallBlocks)));
+    if (damage <= 0.0f) {
+        return;
+    }
+
+    m_health = std::max(0.0f, m_health - damage);
+    logInfo("Fell {:.1f} blocks: -{:.0f} health, {:.0f} left",
+            distance, damage, m_health);
+
+    if (m_health <= 0.0f) {
+        respawn();
+    }
+}
+
+void Engine::respawn() {
+    // No death screen and no dropped inventory: both are real vanilla behaviour and
+    // both need a decision this has not earned yet -- a screen needs the UI layer to
+    // grow a second window, and dropping the inventory needs somewhere for it to go
+    // that the player can get back to. Full health where you stand is the honest
+    // placeholder, and it says so in the log rather than pretending nothing happened.
+    m_health = kMaxHealth;
+    m_verticalVelocity = 0.0f;
+    m_trackingFall = false;
+    logWarn("You died. Respawning with full health where you stand.");
 }
 
 void Engine::updateFly(f32 dt) {
@@ -1380,8 +1554,18 @@ void Engine::renderFrame() {
     // The HUD is genuinely last: it draws over everything, including the hand.
     const auto width = static_cast<f32>(m_window->framebufferWidth());
     const auto height = static_cast<f32>(m_window->framebufferHeight());
-    m_hud->draw(*m_device, m_chunkRenderer->textures(), kHotbar, m_hotbarSlot,
-                m_inventory, width / std::max(1.0f, height));
+    const vec2 cursor = cursorNdc();
+
+    HudRenderer::State hud;
+    hud.hotbarSlot = m_hotbarSlot;
+    hud.health = m_health;
+    hud.maxHealth = kMaxHealth;
+    hud.inventoryOpen = m_inventoryOpen;
+    hud.cursorX = cursor.x;
+    hud.cursorY = cursor.y;
+
+    m_hud->draw(*m_device, m_chunkRenderer->textures(), m_inventory, hud,
+                width / std::max(1.0f, height));
 }
 
 void Engine::updateRenderCamera() {

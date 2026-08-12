@@ -62,6 +62,17 @@ public:
         /// anything inspecting the underground wants this.
         bool flying = false;
 
+        /// Open the inventory window at startup, and seed it with something to look
+        /// at.
+        ///
+        /// **This exists because `--capture` cannot click.** The window is the only
+        /// part of the engine that needs a pointer to appear at all, so without a
+        /// flag it is the one thing that can never be checked without a compositor
+        /// screenshot -- which this desktop does not allow (see the note on
+        /// `--capture`). Same purpose as `--fly` and `--first-person`: reach a state
+        /// a still frame cannot otherwise be taken of.
+        bool openInventory = false;
+
         /// Streams the whole region in before the first frame and logs how long it
         /// took, instead of filling in over several seconds. For measurement.
         bool warmUp = false;
@@ -368,15 +379,50 @@ private:
     /// is a third of a second, which is far longer than a pin should ever be held.
     static constexpr u32 kMaxEditAge = 20;
 
-    /// The hotbar. Nine blocks that are worth building with and easy to tell apart;
-    /// bedrock is deliberately absent, and so are the ores, which are worth finding
-    /// rather than spawning.
-    static constexpr std::array<BlockId, 9> kHotbar{
-        blockIdOf("stone"),    blockIdOf("dirt"),     blockIdOf("grass"),
-        blockIdOf("sand"),     blockIdOf("granite"),  blockIdOf("diorite"),
-        blockIdOf("andesite"), blockIdOf("tuff"),     blockIdOf("gravel"),
-    };
+    /// Which of the inventory's first nine slots is selected.
+    ///
+    /// **The hotbar used to be a fixed array of nine block types here**, drawn
+    /// whether the player held any of them or not. That is what made the bottom of
+    /// the screen show nine blocks in an empty world, which is not what vanilla does
+    /// and was the first thing anyone said about the HUD. The hotbar is inventory
+    /// slots 0-8 now, and an empty slot is empty.
     usize m_hotbarSlot = 0;
+
+    /// The inventory window, and whether it has the pointer.
+    ///
+    /// While it is open the world is not interacted with at all -- no aim ray, no
+    /// breaking, no placing, no mouse-look. That is a mode, and modes are worth being
+    /// suspicious of, but this one is exactly vanilla's and the alternative is aiming
+    /// a crosshair the player cannot see.
+    bool m_inventoryOpen = false;
+
+    void toggleInventory();
+    /// Resolves a click inside the window to a slot and applies it.
+    void updateInventoryScreen();
+    /// The pointer in NDC, for hit testing and for drawing the dragged stack.
+    vec2 cursorNdc() const;
+
+    // ---------------------------------------------------------------------------
+    // Health (Phase 15).
+    // ---------------------------------------------------------------------------
+
+    /// In half-hearts, as vanilla counts: 20 is ten full hearts.
+    f32 m_health = 20.0f;
+    static constexpr f32 kMaxHealth = 20.0f;
+
+    /// Y the player was at when they last left the ground, and whether they are
+    /// falling from it. Fall damage is the distance between that and where they land.
+    f32 m_fallFromY = 0.0f;
+    bool m_trackingFall = false;
+
+    /// Vanilla's rule: no damage for the first three blocks, then one half-heart per
+    /// block after that. Three is what makes a jump free and a two-storey drop hurt.
+    static constexpr f32 kSafeFallBlocks = 3.0f;
+
+    /// Applies fall damage for a landing from `fromY` to `toY`, and respawns the
+    /// player if it kills them.
+    void applyFallDamage(f32 fromY, f32 toY);
+    void respawn();
 
     bool m_thirdPerson = false;
     /// Advances with distance travelled, not with time, so the limbs stop when the
