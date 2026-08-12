@@ -25,6 +25,7 @@ constexpr std::array<int, static_cast<usize>(Key::Count)> kGlfwKeys{{
     GLFW_KEY_F1,
     GLFW_KEY_F3,
     GLFW_KEY_F5,
+    GLFW_KEY_F11,
     GLFW_KEY_1,
     GLFW_KEY_2,
     GLFW_KEY_3,

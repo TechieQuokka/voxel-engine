@@ -18,6 +18,9 @@ enum class Key : u32 {
     /// for a control.
     E,
     F, F1, F3, F5,
+    /// Fullscreen toggle. F11 is what every other game on this desktop uses;
+    /// Minecraft's own binding is the same.
+    F11,
     /// The hotbar. Contiguous and in order, so a slot is `Num1 + n` -- the block
     /// selector indexes them arithmetically rather than through a switch.
     Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9,

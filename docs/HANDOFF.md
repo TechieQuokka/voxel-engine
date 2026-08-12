@@ -442,6 +442,10 @@ convert /tmp/shot.ppm /tmp/shot.png     # ImageMagick is installed
 # First person, if the character is in the way of what is being looked at.
 ./build/release/src/app/minecraft --first-person --capture /tmp/shot.ppm
 
+# Start fullscreen. `F11` toggles it at runtime; this is for starting there, and it
+# is also how a capture at the monitor's native resolution is taken.
+./build/release/src/app/minecraft --fullscreen --capture /tmp/shot.ppm
+
 # Open the inventory and seed it, then capture. The window is the only thing in the
 # engine that needs a pointer to exist, so --capture cannot otherwise reach it.
 ./build/release/src/app/minecraft --inventory --capture /tmp/shot.ppm
@@ -460,6 +464,7 @@ meaningless.
 | `Space` | jump, clears one block | ascend |
 | `F` | switch to flying | switch to walking |
 | `F5` | first person / third person | same |
+| `F11` | **fullscreen at the monitor's native resolution** | same |
 | `Escape` | release cursor, then quit | same |
 | **Left mouse** | **hold to break the highlighted block** | same |
 | **Right mouse** | **place the held block against it** | same |
@@ -526,7 +531,8 @@ src/core/               no dependencies
   Log, Assert, Profile (Tracy macros), Paths, RangeAllocator,
   MpmcQueue (Vyukov bounded lock-free), JobSystem (worker pool)
 src/platform/           GLFW lives here and nowhere else
-  Window, Input, Clock
+  Window (also fullscreen: monitor selection, the Wayland caveats in section 5),
+  Input, Clock
 src/rhi/                GL abstraction; no GL type in any header
   Device, Buffer, Shader, Texture, VertexArray
 src/world/              pure data; knows nothing about rendering
@@ -739,6 +745,25 @@ Learned the hard way; all of them cost real time.
   had a build directory older than the HUD — compiled it fresh. **`ctest --preset asan`
   had been failing to build since the HUD landed.** If a documented command has not
   been run in a while, run it before trusting it.
+- **Wayland does not tell a client where its own window is, and GLFW reports that as
+  an error.** `glfwGetWindowPos` logs `65548: the platform does not provide the window
+  position` on every call. `Window::hasWindowPosition()` guards each one; the
+  fullscreen path falls back to the primary monitor, which is also the platform's own
+  answer since the compositor decides where a fullscreen surface goes.
+- **A Wayland resize is a round trip, so the new framebuffer size does not exist on
+  the line after the call that asked for it.** `glfwSetWindowMonitor` followed
+  immediately by `glfwGetFramebufferSize` returns the *old* size, and a tight
+  `glfwPollEvents` loop spins through its whole budget before the compositor can
+  reply -- it has to be `glfwWaitEventsTimeout`. Interactively this is invisible
+  because the next frame corrects it; `--capture --fullscreen` has no next frame and
+  wrote a 1280x720 image of a 2560x1440 window until `setFullscreen` learned to wait.
+- **`--probe` samples a sparse diagonal, not a neighbourhood, and reading it as
+  coverage is a mistake that has now been made.** It walks `ChunkPos{i*3, i*5}`, so 24
+  columns are 24 scattered samples strung out to chunk (72, 120) -- deliberately, so
+  continentalness varies across them. "water: never placed" over that set was read as
+  "there is no ocean near spawn" and used to answer a question about what the player
+  could see. A capture from the spawn point shows a lake with a sand shore. **When the
+  question is what the player sees, look at a frame.**
 - **Reading a voxel from the main thread is a race unless the column is `Ready`.**
   `World::blockAt` looked like a pure lookup and was called every frame by walking's
   ground probe and the benchmark camera long before anything else used it. It is not

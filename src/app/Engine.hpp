@@ -58,6 +58,11 @@ public:
         /// anything. F5 toggles it at runtime.
         bool thirdPerson = true;
 
+        /// Start borderless-fullscreen at the monitor's native resolution. `F11`
+        /// toggles it at runtime, and is the way most people will reach it -- the
+        /// flag exists so a session can start there without a keypress.
+        bool fullscreen = false;
+
         /// Start in fly mode rather than walking. Walking cannot reach a cave, so
         /// anything inspecting the underground wants this.
         bool flying = false;

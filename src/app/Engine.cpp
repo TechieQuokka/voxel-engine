@@ -105,6 +105,7 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
         .title = "minecraft",
         .vsync = true,
         .debugContext = true,
+        .fullscreen = m_options.fullscreen,
     });
 
     m_device = std::make_unique<rhi::Device>(Window::glProcLoader());
@@ -682,6 +683,13 @@ void Engine::updateCamera(f64 deltaTime) {
     if (m_input->wasPressed(Key::F5)) {
         m_thirdPerson = !m_thirdPerson;
         logInfo("Camera: {} person", m_thirdPerson ? "third" : "first");
+    }
+
+    // Nothing else to do: the window switches to the monitor's native mode and the
+    // resize path already running in `renderFrame` picks up the new framebuffer, so
+    // the viewport, the projection aspect and the HUD layout all follow on their own.
+    if (m_input->wasPressed(Key::F11)) {
+        m_window->toggleFullscreen();
     }
 
     if (m_input->cursorCaptured()) {

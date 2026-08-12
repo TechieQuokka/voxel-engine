@@ -39,6 +39,8 @@ int main(int argc, char** argv) {
             options.capturePath = args[++i];
         } else if (arg == "--first-person") {
             options.thirdPerson = false;
+        } else if (arg == "--fullscreen") {
+            options.fullscreen = true;
         } else if (arg == "--fly") {
             options.flying = true;
         } else if (arg == "--inventory") {
@@ -61,7 +63,7 @@ int main(int argc, char** argv) {
             mc::logError("Usage: minecraft [--capture <path.ppm>] [--mesh-benchmark]"
                          " [--render-distance N] [--warm-up] [--bench-seconds S]"
                          " [--probe [--probe-columns N]] [--first-person] [--fly]"
-                         " [--inventory]");
+                         " [--inventory] [--fullscreen]");
             return EXIT_FAILURE;
         }
     }

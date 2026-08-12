@@ -50,6 +50,8 @@ shows what you are carrying. **`E` opens the inventory** — 36 slots with
 vanilla's stack limit of 64, click to pick a stack up and put it down, right click to
 split it in half or place one at a time.
 
+`F11` goes fullscreen at your monitor's native resolution, and back.
+
 Ten hearts, and falling more than three blocks costs you some. Nothing else damages
 you yet.
 
