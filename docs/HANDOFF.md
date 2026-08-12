@@ -104,6 +104,40 @@ a real "is this column loaded" test.
 Everything *else* crafting needs now exists: a window, a cursor, a hit test and stack
 limits, so a 2x2 grid is a layout change plus a recipe table.
 
+### The fourth session, and what the counters caught on their first outing
+
+**2026-08-12, about 56 seconds, a locked 60 FPS, no GL messages, clean exit.** The
+first session whose log can say what the player *did*, and it immediately earned its
+keep:
+
+```
+broke 2 | placed 0 | collected 0 | 2 items, 0 falling, 0 updates queued
+```
+
+Two blocks broken. Two items still lying in the world when the session ended. **Zero
+collected.**
+
+**Picking items up does not work, and the arithmetic says it never has.** Pickup is a
+1.4-block sphere measured from `m_camera.position()`, which is the *eye*. An item
+comes to rest at ground + `kHalfSize` (0.12) and the eye sits at ground + `kEyeHeight`
+(1.62). Standing directly on top of an item is therefore 1.50 away from it, against a
+radius of 1.4 — **out of range while standing on it**, on flat ground, always.
+
+Two things about this are worth keeping:
+
+- **It predates the counters and shipped in 7.10**, which claimed the loop was closed:
+  "break a block, watch it drop, walk over it, see the count go up". The break, the
+  drop and the count all work. The walk-over never did.
+- **Three play sessions could not have caught it**, because nothing on that path
+  logged. The counters existed for one session before finding it, which is the whole
+  argument for them stated better than the argument was.
+
+**The fix is not just a bigger radius.** Vanilla measures from the player's bounding
+box, not from a point, which is why it does not care where the eye is. Measuring to a
+vertical segment from the feet to head height is the same shape of fix that
+`placeTargetBlock` already uses for "am I standing here", and both would be better
+served by the real collider that section 8 already wants.
+
 ### Three sessions in a row, the log could not say what happened — **fixed**
 
 **This was a real gap and it was the same gap three times.** Session three (84 seconds,
@@ -275,8 +309,9 @@ between them is the argument for Phase 8.
 Sky light costs **24 KiB per column**, about 26 MiB at distance 16, because 87.5 % of
 sections are uniform and allocate nothing. The naive figure was over 400 MiB.
 
-**Interactively verified five times**, most recently on 2026-08-11 after 7.10 landed.
-Nothing since has been played -- 7.11 and 7.12 are checked by test and by capture only.
+**Interactively verified six times**, most recently on 2026-08-12 after water landed.
+That session is written up in section 1: it found that item pickup has never worked.
+7.13's water was in it but the underwater view was not checked -- see below.
 The last three sessions ran 83, 83 and 84 seconds at a vsync-locked 60 FPS (min 58.8,
 median 59.9), with no dropped frames, no GL debug messages and a clean exit each time.
 Rendering has stayed flat across caves, ores, light, trees, entities and the HUD.
@@ -850,6 +885,15 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
 - **Trees leave a two-block band along every column edge with no trees in it.** The
   deliberate cost of trees not crossing columns; see `TreeSpec` and DESIGN.md 7.9.
   Fixing it properly means a chunk-status pipeline like vanilla's.
+- **Items cannot be picked up.** The 1.4-block radius is measured from the eye and an
+  item at the player's feet is 1.5 away, so standing on one is out of range. Found by
+  the stats counters in their first session; section 1 has the arithmetic. **This is
+  the first thing to fix** -- it is the one part of the break-drop-collect-place loop
+  that has never worked.
+- **Nobody has looked at water from underneath.** Back-face culling is turned off for
+  the translucent pass precisely so the surface is visible from below, and that is
+  the one thing `--capture` cannot reach: there is no way to put the camera under the
+  sea headlessly. Swim down and look up.
 - **Placing a block is refused only where the player stands, and the test is crude.**
   A two-block column at the feet with no width, matching the walk code's own shape.
   Since walking has no collision volume either, the two are at least consistent — but

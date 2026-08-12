@@ -1624,6 +1624,19 @@ Two failure modes are pinned by tests rather than by care:
   something else has taken drops an item, which is vanilla's answer and needed no new
   machinery.
 
+#### What the counters found, one session later
+
+Worth adding here rather than only in the handoff, because it is the clearest
+evidence any argument in this document has produced. The first session that ran with
+the counters reported `broke 2 | placed 0 | collected 0 | 2 items` — and **item pickup
+turned out never to have worked**. The radius is 1.4 measured from the eye; an item
+rests 1.5 below it. Standing on an item is out of range.
+
+7.10 shipped that and said the loop was closed. Three sessions played it and none
+could tell, because nothing on the path logged anything. The counters cost four
+integers and found it in 56 seconds. That is the argument for them, made better by
+events than it was made in prose.
+
 #### The counters that should have existed three sessions ago
 
 Shipped first, before any of the above, because HANDOFF.md had been asking for them
