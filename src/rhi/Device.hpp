@@ -81,10 +81,14 @@ public:
 
     /// The same, as line segments -- vertex pairs, one segment each.
     ///
-    /// Here for the block selection outline, which is twelve edges and would
-    /// otherwise have to be twelve thin boxes. Line width stays at the default 1.0:
-    /// `glLineWidth` above 1.0 is not required to be supported in a core profile and
-    /// is one of the few places where a driver will silently do nothing.
+    /// **Currently unused, and the reason it stopped being used is the reason to
+    /// think twice before reaching for it.** The block selection outline was drawn
+    /// with this, one pixel wide, because `glLineWidth` above 1.0 is not required to
+    /// be supported in a core profile and is one of the few places where a driver
+    /// will silently do nothing. A one-pixel outline turned out not to be visible
+    /// enough to tell which block was about to be mined, so selection.vert expands
+    /// each edge into a screen-space quad instead. Anything wanting a line of a
+    /// chosen width needs that treatment, not this.
     void drawLines(u32 vertexCount, u32 first = 0);
 
     /// One GL call for many sections.

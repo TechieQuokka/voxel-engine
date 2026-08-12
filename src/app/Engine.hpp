@@ -131,8 +131,13 @@ private:
     /// streamed in yet, or there is nothing solid within reach.
     std::optional<f32> groundBelow(f32 x, f32 z, f32 fromY) const;
 
+    /// Where the aim ray lands on screen, in NDC. The centre in first person; offset
+    /// in third, because the frame is drawn from over the shoulder and the ray is
+    /// cast from the eye. This is what the crosshair follows.
+    vec2 aimNdc() const;
+
     /// Points `m_renderCamera` at wherever the frame should be seen from: the
-    /// player's eye in first person, a few blocks behind it in third.
+    /// player's eye in first person, a few blocks behind and to the right in third.
     void updateRenderCamera();
 
     /// Casts the aim ray, applies clicks, and retries edits that lost a race with a

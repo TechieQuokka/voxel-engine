@@ -11,6 +11,7 @@
 #include "rhi/VertexArray.hpp"
 
 #include <optional>
+#include <string_view>
 #include <vector>
 
 namespace mc {
@@ -49,6 +50,18 @@ public:
         f32 health = 20.0f;
         f32 maxHealth = 20.0f;
 
+        /// Where the crosshair goes, in NDC. **Not always the centre**: in third
+        /// person the frame is drawn from over the player's shoulder while the aim
+        /// ray is still cast from their eye, so the point being aimed at projects
+        /// off-centre. The crosshair marks where the ray lands, not where the screen
+        /// happens to be.
+        f32 aimX = 0.0f;
+        f32 aimY = 0.0f;
+
+        /// Name of the block under the crosshair, or empty when nothing is targeted.
+        /// Drawn under the crosshair, uppercased, underscores as spaces.
+        std::string_view targetName;
+
         bool inventoryOpen = false;
         /// Where the pointer is, in NDC. Only read while the window is open, which
         /// is the only time there is a pointer to read.
@@ -58,6 +71,12 @@ public:
 
     void draw(rhi::Device& device, const BlockTextures& textures,
               const Inventory& inventory, const State& state, f32 aspect);
+
+private:
+    /// Layer of 'A' in the glyph atlas. Public because the atlas is built by a free
+    /// function in the translation unit rather than by a member.
+public:
+    static constexpr u32 kFirstLetterGlyph = 12;
 
 private:
     /// Matches the mode constants in hud.frag.
@@ -89,7 +108,10 @@ private:
     static constexpr u32 kDigitGlyphs = 10;
     static constexpr u32 kHeartFullGlyph = 10;
     static constexpr u32 kHeartHalfGlyph = 11;
-    static constexpr u32 kGlyphCount = 12;
+    static constexpr u32 kHeartGlyphs = 2;
+    /// A-Z follow the hearts, so `kFirstLetterGlyph + (c - 'A')` is a letter's layer.
+    static constexpr u32 kLetterCount = 26;
+    static constexpr u32 kGlyphCount = kDigitGlyphs + kHeartGlyphs + kLetterCount;
     static constexpr u32 kGlyphSize = 8;
 
     /// Half-hearts per heart, which is what makes ten hearts show twenty health.
@@ -103,6 +125,10 @@ private:
     void pushSlot(const UiRect& rect, const struct ItemStack& stack, bool highlight,
                   f32 aspect);
     void pushHearts(const InventoryLayout& layout, const State& state, f32 aspect);
+    /// Draws `text` centred on `centreX`, with its top at `topY`, in NDC. Letters
+    /// only: anything that is not a-z or A-Z advances the cursor as a space, which
+    /// is what turns `oak_log` into `OAK LOG` without a second table.
+    void pushText(std::string_view text, f32 centreX, f32 topY, f32 height, f32 aspect);
 
     rhi::Shader m_shader;
     rhi::VertexArray m_vao;

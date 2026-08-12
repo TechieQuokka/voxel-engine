@@ -1635,7 +1635,9 @@ void Engine::renderFrame() {
         const vec3 origin{static_cast<f32>(m_target->block.x),
                           static_cast<f32>(m_target->block.y),
                           static_cast<f32>(m_target->block.z)};
-        m_selection->draw(*m_device, m_renderCamera, origin);
+        const auto aspect = static_cast<f32>(m_window->framebufferWidth())
+                            / static_cast<f32>(std::max(1, m_window->framebufferHeight()));
+        m_selection->draw(*m_device, m_renderCamera, origin, aspect);
 
         // Only while a break is actually running on *this* block. Progress is reset
         // the moment the crosshair leaves it, so the cracks cannot be left behind on
@@ -1667,6 +1669,13 @@ void Engine::renderFrame() {
     hud.cursorX = cursor.x;
     hud.cursorY = cursor.y;
 
+    const vec2 aim = aimNdc();
+    hud.aimX = aim.x;
+    hud.aimY = aim.y;
+    if (m_target.has_value()) {
+        hud.targetName = kBlocks[m_world->blockAt(m_target->block)].name;
+    }
+
     m_hud->draw(*m_device, m_chunkRenderer->textures(), m_inventory, hud,
                 width / std::max(1.0f, height));
 }
@@ -1677,25 +1686,71 @@ void Engine::updateRenderCamera() {
         return;
     }
 
-    // Back along the view direction, pulled in when terrain is in the way.
+    // Back along the view direction and **over the right shoulder**, pulled in when
+    // terrain is in the way.
     //
     // This used to be an unconditional step backwards, with a note that fixing it
     // needed a voxel raycast the engine did not have. Phase 9 built one for aiming,
-    // and this is the second caller: cast backwards from the eye and stop short of
-    // whatever is hit. Minecraft does exactly this.
+    // and this is the second caller: cast from the eye along the displacement and
+    // stop short of whatever is hit.
+    //
+    // **The shoulder offset came out of play.** Straight back put the camera on the
+    // view axis, which is where the character is standing -- so the model sat exactly
+    // on the crosshair and hid the block being aimed at. A capture from the spawn
+    // point shows the selection box completely behind the character's head. The
+    // player could not tell whether they were mining wood or stone, which is a
+    // reasonable thing not to be able to tell and an unreasonable thing to be unable
+    // to see.
+    //
+    // The offset separates them because the character is nearer the camera than the
+    // target is, so it swings further across the screen for the same displacement.
     constexpr f32 kThirdPersonDistance = 4.0f;
+    constexpr f32 kShoulderRight = 1.5f;
+    constexpr f32 kShoulderUp = 0.4f;
     /// Kept between the camera and the wall, so the near plane does not clip into it
     /// and show the inside of the block.
     constexpr f32 kWallMargin = 0.25f;
 
-    const vec3 back = -m_camera.forward();
-    f32 distance = kThirdPersonDistance;
+    // One cast along the whole displacement rather than one per axis. A lateral
+    // offset can put the camera through a wall just as a backward one can, and
+    // casting along the direction actually travelled is what covers both at once.
+    const vec3 displacement = -m_camera.forward() * kThirdPersonDistance
+                              + m_camera.right() * kShoulderRight
+                              + Camera::up() * kShoulderUp;
 
-    if (const auto hit = raycast(*m_world, m_camera.position(), back, kThirdPersonDistance)) {
+    const f32 reach = std::sqrt(math::dot(displacement, displacement));
+    if (reach < 1e-4f) {
+        return;
+    }
+    const vec3 direction = displacement / reach;
+
+    f32 distance = reach;
+    if (const auto hit = raycast(*m_world, m_camera.position(), direction, reach)) {
         distance = std::max(0.0f, hit->distance - kWallMargin);
     }
 
-    m_renderCamera.setPosition(m_camera.position() + back * distance);
+    m_renderCamera.setPosition(m_camera.position() + direction * distance);
+}
+
+vec2 Engine::aimNdc() const {
+    // Where the aim ray actually lands, in the render camera's screen space.
+    //
+    // **The crosshair cannot simply sit at the centre of the screen any more.** The
+    // ray is cast from the eye, which is where the player is; the frame is drawn from
+    // over their shoulder. Those two points do not project to the same place, so a
+    // centred crosshair in third person would mark a spot the player is not aiming
+    // at -- which is a worse lie than the problem the shoulder offset fixed.
+    //
+    // In first person the render camera *is* the eye, so this returns the centre and
+    // the crosshair does not move.
+    const f32 distance = m_target.has_value() ? m_target->distance : kReachDistance;
+    const vec3 aimPoint = m_camera.position() + m_camera.forward() * distance;
+
+    const vec4 clip = m_renderCamera.viewProjectionMatrix() * vec4{aimPoint, 1.0f};
+    if (clip.w <= 1e-4f) {
+        return vec2{0.0f, 0.0f}; // Behind the camera; nothing sensible to mark.
+    }
+    return vec2{clip.x / clip.w, clip.y / clip.w};
 }
 
 } // namespace mc

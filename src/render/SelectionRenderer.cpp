@@ -114,18 +114,24 @@ SelectionRenderer::SelectionRenderer()
 }
 
 void SelectionRenderer::draw(rhi::Device& device, const Camera& camera,
-                             const vec3& blockOrigin) {
+                             const vec3& blockOrigin, f32 aspect) {
     MC_PROFILE_SCOPE_N("SelectionRenderer::draw");
 
     m_shader.bind();
     m_shader.setUniform("u_viewProjection", camera.viewProjectionMatrix());
     m_shader.setUniform("u_blockOrigin", blockOrigin);
     m_shader.setUniform("u_inflate", kInflate);
+    m_shader.setUniform("u_thickness", kOutlineThickness);
+    m_shader.setUniform("u_aspect", aspect);
 
     // A VAO must still be bound for an attribute-less draw; this one describes
     // nothing, which is the point.
+    //
+    // Triangles now, not lines: each edge is a quad. The outline still writes depth
+    // and is still inflated just enough to win against its own block's faces, so a
+    // wall in front of the target hides it exactly as before.
     m_vao.bind();
-    device.drawLines(kVertexCount);
+    device.drawTriangles(kVertexCount);
 }
 
 void SelectionRenderer::drawCracks(rhi::Device& device, const Camera& camera,

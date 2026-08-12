@@ -28,7 +28,8 @@ public:
 
     /// `blockOrigin` is the block's minimum corner in world space, i.e. its integer
     /// position. The box drawn is the unit cube from there.
-    void draw(rhi::Device& device, const Camera& camera, const vec3& blockOrigin);
+    void draw(rhi::Device& device, const Camera& camera, const vec3& blockOrigin,
+              f32 aspect);
 
     /// Overlays destroy stage `stage` (0 to kStageCount - 1) on the same cube.
     ///
@@ -47,8 +48,19 @@ public:
     }
 
 private:
-    /// Twelve edges, two vertices each.
-    static constexpr u32 kVertexCount = 24;
+    /// Twelve edges, **six vertices each**: every edge is a quad rather than a GL
+    /// line, so the outline has a width that does not depend on whether the driver
+    /// honours `glLineWidth`. See the header of selection.vert.
+    static constexpr u32 kVertexCount = 12 * 6;
+
+    /// Half-thickness of the outline, in NDC height units -- so roughly
+    /// `kOutlineThickness * framebufferHeight` pixels wide on screen, at any
+    /// distance within reach.
+    ///
+    /// Tuned against the complaint that produced this: a one-pixel outline could not
+    /// be picked out of a textured world quickly enough to tell which block was
+    /// about to be mined. Wider than this starts hiding the block's own edges.
+    static constexpr f32 kOutlineThickness = 0.0015f;
     /// Six faces of two triangles.
     static constexpr u32 kCrackVertexCount = 36;
     /// Crack tiles are 16x16, like the block textures.

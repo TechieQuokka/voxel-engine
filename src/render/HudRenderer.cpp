@@ -49,6 +49,48 @@ constexpr std::array<u8, kHeartHeight> kHeart{{
     0b0001000u,
 }};
 
+/// 5x7 uppercase letters, row-major from the top, bit 4 leftmost.
+///
+/// **Added so the HUD can name the block under the crosshair.** In third person the
+/// character stands between the camera and anything within arm's reach, so a player
+/// mining a block at their feet cannot see it however the camera is placed -- the
+/// name is what works when the picture does not.
+///
+/// 5x7 rather than the digits' 3x5: three columns cannot make a legible M or W, and
+/// these are read as words rather than deciphered as figures. Hand-coded for the same
+/// reason the digits are -- no font file, no parser, and no binary asset in the
+/// repository.
+constexpr u32 kLetterWidth = 5;
+constexpr u32 kLetterHeight = 7;
+constexpr std::array<std::array<u8, kLetterHeight>, 26> kLetters{{
+    {{0b01110u, 0b10001u, 0b10001u, 0b11111u, 0b10001u, 0b10001u, 0b10001u}}, // A
+    {{0b11110u, 0b10001u, 0b10001u, 0b11110u, 0b10001u, 0b10001u, 0b11110u}}, // B
+    {{0b01110u, 0b10001u, 0b10000u, 0b10000u, 0b10000u, 0b10001u, 0b01110u}}, // C
+    {{0b11110u, 0b10001u, 0b10001u, 0b10001u, 0b10001u, 0b10001u, 0b11110u}}, // D
+    {{0b11111u, 0b10000u, 0b10000u, 0b11110u, 0b10000u, 0b10000u, 0b11111u}}, // E
+    {{0b11111u, 0b10000u, 0b10000u, 0b11110u, 0b10000u, 0b10000u, 0b10000u}}, // F
+    {{0b01110u, 0b10001u, 0b10000u, 0b10111u, 0b10001u, 0b10001u, 0b01110u}}, // G
+    {{0b10001u, 0b10001u, 0b10001u, 0b11111u, 0b10001u, 0b10001u, 0b10001u}}, // H
+    {{0b01110u, 0b00100u, 0b00100u, 0b00100u, 0b00100u, 0b00100u, 0b01110u}}, // I
+    {{0b00111u, 0b00010u, 0b00010u, 0b00010u, 0b00010u, 0b10010u, 0b01100u}}, // J
+    {{0b10001u, 0b10010u, 0b10100u, 0b11000u, 0b10100u, 0b10010u, 0b10001u}}, // K
+    {{0b10000u, 0b10000u, 0b10000u, 0b10000u, 0b10000u, 0b10000u, 0b11111u}}, // L
+    {{0b10001u, 0b11011u, 0b10101u, 0b10101u, 0b10001u, 0b10001u, 0b10001u}}, // M
+    {{0b10001u, 0b11001u, 0b10101u, 0b10011u, 0b10001u, 0b10001u, 0b10001u}}, // N
+    {{0b01110u, 0b10001u, 0b10001u, 0b10001u, 0b10001u, 0b10001u, 0b01110u}}, // O
+    {{0b11110u, 0b10001u, 0b10001u, 0b11110u, 0b10000u, 0b10000u, 0b10000u}}, // P
+    {{0b01110u, 0b10001u, 0b10001u, 0b10001u, 0b10101u, 0b10010u, 0b01101u}}, // Q
+    {{0b11110u, 0b10001u, 0b10001u, 0b11110u, 0b10100u, 0b10010u, 0b10001u}}, // R
+    {{0b01111u, 0b10000u, 0b10000u, 0b01110u, 0b00001u, 0b00001u, 0b11110u}}, // S
+    {{0b11111u, 0b00100u, 0b00100u, 0b00100u, 0b00100u, 0b00100u, 0b00100u}}, // T
+    {{0b10001u, 0b10001u, 0b10001u, 0b10001u, 0b10001u, 0b10001u, 0b01110u}}, // U
+    {{0b10001u, 0b10001u, 0b10001u, 0b10001u, 0b10001u, 0b01010u, 0b00100u}}, // V
+    {{0b10001u, 0b10001u, 0b10001u, 0b10101u, 0b10101u, 0b11011u, 0b10001u}}, // W
+    {{0b10001u, 0b10001u, 0b01010u, 0b00100u, 0b01010u, 0b10001u, 0b10001u}}, // X
+    {{0b10001u, 0b10001u, 0b01010u, 0b00100u, 0b00100u, 0b00100u, 0b00100u}}, // Y
+    {{0b11111u, 0b00001u, 0b00010u, 0b00100u, 0b01000u, 0b10000u, 0b11111u}}, // Z
+}};
+
 /// Keeps the left four columns. A half heart is the full one cut down the middle
 /// rather than a second drawing, so the two cannot drift apart by a pixel.
 constexpr u8 kLeftHalfMask = 0b1111000u;
@@ -101,6 +143,22 @@ std::vector<u8> buildGlyphAtlas(u32 size, u32 count) {
                     continue;
                 }
                 blit(pixels, size, glyph, heartX + column, heartY + row);
+            }
+        }
+    }
+
+    for (u32 letter = 0; letter < kLetters.size(); ++letter) {
+        const u32 glyph = HudRenderer::kFirstLetterGlyph + letter;
+        const u32 originX = (size - kLetterWidth) / 2;
+        const u32 originY = (size - kLetterHeight) / 2;
+
+        for (u32 row = 0; row < kLetterHeight; ++row) {
+            const u8 bits = kLetters[letter][row];
+            for (u32 column = 0; column < kLetterWidth; ++column) {
+                if (((static_cast<u32>(bits) >> (kLetterWidth - 1 - column)) & 1u) == 0u) {
+                    continue;
+                }
+                blit(pixels, size, glyph, originX + column, originY + row);
             }
         }
     }
@@ -164,6 +222,43 @@ void HudRenderer::pushNumber(u32 value, const vec4& slot, f32 aspect) {
 
         x -= width;
     } while (remaining > 0);
+}
+
+void HudRenderer::pushText(std::string_view text, f32 centreX, f32 topY, f32 height,
+                           f32 aspect) {
+    // Advance is a little wider than the glyph so letters do not touch. The glyph
+    // itself is square in the atlas, so its NDC width is the height over the aspect.
+    const f32 glyphWidth = height / aspect;
+    const f32 advance = glyphWidth * 0.72f;
+    const f32 total = advance * static_cast<f32>(text.size());
+
+    f32 x = centreX - total * 0.5f;
+    const f32 y = topY - height;
+
+    for (const char c : text) {
+        u32 letter = 0;
+        bool printable = false;
+        if (c >= 'a' && c <= 'z') {
+            letter = static_cast<u32>(c - 'a');
+            printable = true;
+        } else if (c >= 'A' && c <= 'Z') {
+            letter = static_cast<u32>(c - 'A');
+            printable = true;
+        }
+
+        if (printable) {
+            const vec4 rect{x, y, x + glyphWidth, y + height};
+            // The same hard shadow the stack counts use, and for the same reason:
+            // white letters over a bright block texture are otherwise unreadable.
+            const f32 shadow = height * 0.11f;
+            push(vec4{rect.x + shadow / aspect, rect.y - shadow,
+                      rect.z + shadow / aspect, rect.w - shadow},
+                 vec4{0.0f, 0.0f, 0.0f, 0.85f}, Mode::Glyph, kFirstLetterGlyph + letter);
+            push(rect, kWhite, Mode::Glyph, kFirstLetterGlyph + letter);
+        }
+
+        x += advance;
+    }
 }
 
 void HudRenderer::pushSlot(const UiRect& rect, const ItemStack& stack, bool highlight,
@@ -282,10 +377,29 @@ void HudRenderer::draw(rhi::Device& device, const BlockTextures& textures,
         constexpr f32 kArm = 0.018f;
         constexpr f32 kThickness = 0.0022f;
         const vec4 crosshairTint{1.0f, 1.0f, 1.0f, 0.75f};
-        push(vec4{-kArm / aspect, -kThickness, kArm / aspect, kThickness}, crosshairTint,
-             Mode::Solid);
-        push(vec4{-kThickness / aspect, -kArm, kThickness / aspect, kArm}, crosshairTint,
-             Mode::Solid);
+
+        // Centred on the aim point rather than on the screen -- see State::aimX.
+        const f32 cx = state.aimX;
+        const f32 cy = state.aimY;
+        push(vec4{cx - kArm / aspect, cy - kThickness, cx + kArm / aspect, cy + kThickness},
+             crosshairTint, Mode::Solid);
+        push(vec4{cx - kThickness / aspect, cy - kArm, cx + kThickness / aspect, cy + kArm},
+             crosshairTint, Mode::Solid);
+
+        // The name of whatever is under the crosshair, just below it.
+        //
+        // **This is the part that still works when the picture does not.** In third
+        // person the character stands between the camera and anything within arm's
+        // reach, so a block being mined at the player's feet is hidden however the
+        // camera is placed. Vanilla answers the same question with the F3 screen;
+        // this is one line under the crosshair and always on, because "what am I
+        // mining" is not a debugging question.
+        if (!state.targetName.empty()) {
+            constexpr f32 kNameHeight = 0.038f;
+            constexpr f32 kNameGap = 0.030f;
+            pushText(state.targetName, state.aimX, state.aimY - kNameGap, kNameHeight,
+                     aspect);
+        }
 
         for (usize i = 0; i < Inventory::kHotbarSlots; ++i) {
             pushSlot(layout.closedHotbarSlot(i), inventory.at(i), i == state.hotbarSlot,
