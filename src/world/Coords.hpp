@@ -116,6 +116,30 @@ struct ChunkPosHash {
     }
 };
 
+/// Hash for using BlockPos as a map or set key.
+///
+/// The same splitmix64 finalizer as ChunkPosHash, over three coordinates rather than
+/// two. They do not pack losslessly into 64 bits, so the two horizontal axes are
+/// folded in at a shift that keeps a 21-bit range distinct -- far wider than a
+/// loaded region ever is, and the mixing covers the rest.
+///
+/// The clustering argument is the same one and is stronger here: the positions this
+/// hashes are a block and its six face neighbours, which differ by one on a single
+/// axis.
+struct BlockPosHash {
+    usize operator()(BlockPos pos) const noexcept {
+        u64 h = static_cast<u64>(static_cast<u32>(pos.x)) * 0x9E3779B97F4A7C15ull;
+        h ^= static_cast<u64>(static_cast<u32>(pos.z)) * 0xC2B2AE3D27D4EB4Full;
+        h ^= static_cast<u64>(static_cast<u32>(pos.y)) << 21;
+        h ^= h >> 30;
+        h *= 0xBF58476D1CE4E5B9ull;
+        h ^= h >> 27;
+        h *= 0x94D049BB133111EBull;
+        h ^= h >> 31;
+        return static_cast<usize>(h);
+    }
+};
+
 constexpr bool isValidWorldY(i32 y) {
     return y >= kWorldMinY && y < kWorldMaxY;
 }

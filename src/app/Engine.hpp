@@ -15,6 +15,8 @@
 #include "render/SelectionRenderer.hpp"
 #include "rhi/Device.hpp"
 #include "world/BlockTable.hpp"
+#include "world/BlockUpdates.hpp"
+#include "world/FallingBlocks.hpp"
 #include "world/Inventory.hpp"
 #include "world/ItemEntities.hpp"
 #include "world/Raycast.hpp"
@@ -139,6 +141,17 @@ private:
     /// column. Returns false only when the edit is impossible rather than merely
     /// early.
     bool applyEdit(BlockPos pos, BlockId block);
+
+    /// Runs the fixed-rate half of the simulation: block updates, and whatever else
+    /// later has to happen at a rate rather than at a frame.
+    ///
+    /// **The engine had no game tick before Phase 12.** Everything ran on frame
+    /// delta time, which is right for anything a camera watches move and wrong for
+    /// anything whose *rate* is part of the behaviour. Vanilla notifies neighbours
+    /// 20 times a second, and a cascade that ran at frame rate would collapse a sand
+    /// pillar three times faster on a 180 FPS machine than on a 60 FPS one. Flowing
+    /// water is on the same clock and will use this unchanged.
+    void updateTicks(f32 dt);
 
     ChunkPos cameraColumn() const;
 
@@ -322,6 +335,24 @@ private:
     ItemEntities m_items;
     Inventory m_inventory;
 
+    /// Blocks on their way down, and the queue that decides which ones start.
+    FallingBlocks m_falling;
+    BlockUpdates m_blockUpdates;
+
+    /// Time owed to the fixed tick. See `updateTicks`.
+    f32 m_tickAccumulator = 0.0f;
+
+    /// Minecraft's tick rate, and the clock every block update runs on.
+    static constexpr f32 kTickSeconds = 1.0f / 20.0f;
+    /// Ticks one frame may run before the remainder is discarded.
+    ///
+    /// Without a cap, a two-second stall owes forty ticks and spends them all in the
+    /// frame after it -- which is a second stall, caused by the first. Dropping the
+    /// backlog makes the world lag real time by the length of the stall, which is
+    /// the same trade `ItemEntities` and `FallingBlocks` make for their substeps and
+    /// is invisible next to the stall itself.
+    static constexpr u32 kMaxTicksPerFrame = 4;
+
     /// Shared spin clock for every dropped item, so a pile turns together.
     f32 m_itemSpin = 0.0f;
 
@@ -393,6 +424,22 @@ private:
     f64 m_fpsAccumulator = 0.0;
     u32 m_framesSinceReport = 0;
     bool m_reportedWarm = false;
+
+    /// Interaction counters, for the once-a-second stats line.
+    ///
+    /// **Three play sessions in a row could not say whether a single block was
+    /// broken.** Nothing on the interaction path logged anything -- pickup went in as
+    /// `logDebug`, which is off by default and therefore printed nothing -- so the
+    /// only evidence those sessions left was which keys were pressed. Four integers
+    /// make every future session self-documenting, which matters more in this project
+    /// than in most: the last three phases of direction all came out of play rather
+    /// than out of reasoning.
+    ///
+    /// Main thread only. Every one of these is incremented from the frame loop, so
+    /// none of them needs to be atomic.
+    u64 m_blocksBroken = 0;
+    u64 m_blocksPlaced = 0;
+    u64 m_itemsCollected = 0;
 };
 
 } // namespace mc

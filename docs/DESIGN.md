@@ -722,7 +722,7 @@ and 9 is the next thing being built.
 | 9 **(done)** | Voxel raycast; block placement and breaking | A player can dig from the surface into a cave |
 | 10 | Vegetation — non-cube geometry, second mesher path | Flowers and grass on the surface |
 | 11 | Persistence — chunk save format | An edited world survives a restart |
-| 12 | Block updates — neighbour notification and scheduled ticks | Sand falls when its support goes |
+| 12 **(done)** | Block updates — neighbour notification and scheduled ticks | Sand falls when its support goes |
 | 13 **(done)** | Entities — the first thing in the world that is not a voxel | A broken block drops an item |
 | 14 **(done)** | Inventory and a HUD | That item can be picked up and placed again |
 
@@ -734,9 +734,14 @@ still exists for everything that is genuinely not a cube.
 Phases 12 to 14 were the subsystems this engine did not have, listed in the order
 their dependencies force. **13 and 14 landed together** (7.10) because separately each
 is half a feature: a drop nobody can pick up is scenery, and an inventory with nothing
-to put in it is an empty array. **12 is the one still missing**, and it is what falling
-sand and flowing water both wait on. Water additionally needs the mesher and draw-pass
-work in RESEARCH.md 5.3, which is why it is not a phase of its own here.
+to put in it is an empty array. **12 landed last** (7.11), and with it all three exist.
+
+**Water is the next thing and it is still not a phase of its own**, because it is
+three changes that have to land together: aquifers inside the noise stage, water
+against water face culling in a mesher that only knows `isOpaque`, and a translucent
+second draw pass. RESEARCH.md 5.3 has the detail. What 12 removed from that list is
+the fourth item — the tick to flow on — which now exists and is the same one falling
+sand uses.
 
 Phase 9 was deliberately first of the three, and both halves of that argument held.
 It reused the dirty mask, the remeshing path, `Palette::set` and the light recompute
@@ -1508,6 +1513,166 @@ resolve and not evidence either way. Entities cost one pass over a list that is
 usually empty, and the HUD is one draw call of about thirty quads.
 
 185 tests, up from 176. asan clean.
+
+---
+
+### 7.11 Phase 12 — block updates, and the game tick underneath them
+
+The last of the three missing subsystems. Its exit criterion is one sentence — "sand
+falls when its support goes" — and the interesting part is that almost none of the
+work is about sand.
+
+#### The engine had no game tick, and that was the actual gap
+
+Everything in this engine ran on frame delta time. That is right for anything a
+camera watches move, and wrong for anything whose *rate* is part of the behaviour.
+Minecraft notifies neighbours twenty times a second, and a cascade running at frame
+rate would collapse a sand pillar three times faster on a 180 FPS machine than on a
+60 FPS one — the same class of bug as the benchmark camera advancing by a fixed 1/60
+step while frames ran at 5,000 FPS (7.7).
+
+So `Engine::updateTicks` accumulates delta time and spends it in fixed 1/20 second
+steps, capped at four per frame. The cap is the same trade `ItemEntities` makes for
+its substeps: a two-second stall owes forty ticks, and spending them all in the frame
+after it would be a second stall caused by the first. Dropping the backlog makes the
+world lag real time by the length of the stall, which is invisible next to the stall.
+
+**Flowing water is on this clock and will use it unchanged.** That is most of what
+Phase 12 buys.
+
+#### Notification is a queue, not recursion
+
+`World::setBlock` already worked out which *meshes* an edit invalidates. Nothing
+worked out which *blocks* it invalidates, which is why sand sat unsupported in
+mid-air: no code anywhere asked it to look down.
+
+An edit now queues its six face neighbours, and the next tick examines them. Six
+rather than the twenty-six a mesher wants, because this is a support-and-adjacency
+question rather than a shading one, and vanilla notifies the same six.
+
+The queue matters more than it looks:
+
+- **A collapsing pillar must not blow the stack**, and recursion through
+  `setBlock → notify → setBlock` on a 384-block column would.
+- **One block per tick is vanilla's look**, and it falls out of the queue rather than
+  being arranged. A block that falls notifies the cell it left; the block above is
+  examined on the *next* tick.
+- **A refused edit comes back.** `setBlock` returns `Busy` when a meshing job holds
+  the column, and every other writer in this engine retries rather than giving up.
+  Here it is load-bearing rather than polite: giving up would leave sand hanging with
+  nothing left to ask about it again.
+
+Deduplication is a set, not a scan. A cascade queues hundreds of positions and each
+of them notifies seven more, most of which are already queued; the quadratic version
+is measurable and `BlockPosHash` is ten lines.
+
+#### One behaviour, deliberately not a table of behaviours
+
+`examine` decides one thing today: does this block fall. There is no virtual on a
+block type and no dispatch table, for the same reason DESIGN.md 7.10 gives for not
+pre-splitting items from blocks — an abstraction with one implementation is not an
+abstraction. Flowing water is the second behaviour and the point at which the shape
+of the dispatch becomes obvious. The queue above it does not change either way.
+
+Which blocks fall is one `bool` in `world/BlockTable.hpp`, appended rather than
+inserted so that the entries which spell themselves out positionally keep their
+meaning. Sand and gravel, which is vanilla's whole list among the blocks this engine
+has.
+
+#### The safe read that will not stay safe
+
+`examine` asks whether the block below is air. `World::blockAt` answers air for a
+column that is not loaded or is still generating, so that reading looks like it could
+mistake "I do not know" for "there is nothing holding this up" — and drop sand at the
+edge of the loaded region into a column that has simply not arrived yet.
+
+It cannot, and the reason is narrow: the block below is in the *same column*, so if
+that column were not `Ready` the block being examined would have read as air too and
+`isFalling(air)` is false. **Flowing water spreads sideways and this argument does not
+survive it.** It is written down at the read rather than in a header, because that is
+where the next person will be standing.
+
+#### A falling block is an entity, and it cost one loop
+
+Vanilla turns unsupported sand into a falling entity rather than stepping the block
+down a cell at a time, and the difference is visible: stepping reads as a stutter,
+falling reads as falling. `FallingBlocks` sits beside `ItemEntities` rather than
+inside it — a dropped item spins, bobs, merges, despawns and can be picked up, and a
+falling block does none of those and turns back into world geometry.
+
+Its horizontal position is `i32`, because a falling block drops straight down the
+column it left. There is no axis for float drift to live on.
+
+**Rendering cost nothing.** `ItemRenderer`'s SSBO already carried the half-extent as
+a per-entity field rather than as a constant, so a falling block is the same struct
+with 0.5 in it and no spin: same shader, same buffer, same draw call. That was luck
+rather than foresight, and it is why Phase 12 needed no fourth render path.
+
+Physics runs on **frame** time while the scheduler runs on the tick. A cube
+descending in 20 Hz steps against a 60 FPS camera visibly stutters, and interpolating
+a position the simulation already knows exactly would be work to hide work.
+
+Two failure modes are pinned by tests rather than by care:
+
+- **A long delta must not drop a block through the floor.** The landing test asks
+  which cell the bottom is in rather than sweeping to it, so this is the same bug a
+  299-second `dt` found in `ItemEntities` (7.10). Substepping is the fix, and a
+  `static_assert` that terminal velocity times the maximum substep stays under one
+  block is what keeps it a fact rather than a hope.
+- **A landing the world refuses must not delete the block.** The entity is the only
+  copy that exists. A `Busy` landing holds position and retries; a landing into a cell
+  something else has taken drops an item, which is vanilla's answer and needed no new
+  machinery.
+
+#### The counters that should have existed three sessions ago
+
+Shipped first, before any of the above, because HANDOFF.md had been asking for them
+since the second play session and asking again after the third. Blocks broken,
+placed, collected, plus items and falling blocks alive and updates queued, on the
+once-a-second stats line. Four integers, and every future session documents itself.
+
+The gap they close is specific: three sessions in a row produced logs that could say
+which *keys* were pressed and nothing about whether a single block was broken, because
+the only pickup logging went in as `logDebug` and is off by default.
+
+#### Known cost, not yet measured in play
+
+`World::setBlock` recomputes a column's sky light, about 0.5 ms. That was documented
+as a per-click cost; a falling block now spends it twice, once leaving and once
+landing, and a six-block collapse is a dozen of them spread over as many ticks. In
+open desert, where sand is at the surface and light genuinely moves, that is roughly
+1 ms on one frame in three during a collapse. Acceptable, and the incremental relight
+that World.hpp already names as the escape hatch is still the thing to reach for if it
+appears in a profile.
+
+#### Measurements
+
+198 tests, up from 185, thirteen of them covering the queue, the cascade, the retry
+discipline and both physics failures above. asan clean. tsan over the live pipeline
+reports one race, entirely inside pulseaudio — GTK plays an event sound through
+libcanberra, which starts a thread that races its own mutex allocation. Suppressed
+with the rest of the desktop stack; no `mc::` frame appears as a racing access.
+
+Warm-up **3.29–3.52 s** and frame p99 **4.40–5.86 ms** over three runs, with clean
+sanity lines (1,089 of 1,089 columns loaded, none generating, none pinned).
+
+Two things about that, and the second matters more than the first:
+
+- **It is not evidence the feature is cheap, because the benchmark never triggers
+  it.** The flight does not edit the world, so nothing is ever notified and nothing
+  ever falls. What these numbers check is that an idle tick loop costs nothing, which
+  is worth knowing and is not what the feature does. A sand collapse can only be
+  measured by a person causing one.
+- **The p99 came out *below* 7.10's 6.20 ms, and the honest explanation is that this
+  is the first batch measured on a deliberately idle machine.** An earlier run in this
+  same session, taken while an asan build occupied the other cores, reported a 4.02 s
+  warm-up against the 3.29–3.52 s measured minutes later on the same binary. That is a
+  ~20 % swing from background load alone — wider than several of the differences these
+  documents have discussed and reasoned about. **No measurement in 7.5 through 7.10
+  controlled for machine load**, so the older figures are not strictly comparable to
+  these, and a difference of a millisecond between any two of them says less than it
+  appears to. Nothing in Phase 12 should have made rendering faster, and the claim
+  here is not that it did.
 
 ---
 

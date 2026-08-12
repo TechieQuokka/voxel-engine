@@ -183,14 +183,28 @@ struct BlockInfo {
     /// matches something -- so a typo is still a compile error, which is the
     /// property this whole file exists to keep.
     std::string_view drops = {};
+
+    /// Falls when whatever it was standing on goes away. Sand and gravel, which is
+    /// exactly vanilla's list among the blocks this engine has.
+    ///
+    /// Read only by `BlockUpdates`, the block-update tick. A flag here rather than a
+    /// `switch` on BlockId inside that tick, for the reason the whole file exists --
+    /// see the note at the top and the one in HANDOFF.md 5.
+    ///
+    /// **Last field on purpose.** Every existing `BlockInfo{...}` in the table below
+    /// is positional, so a new field anywhere else would silently shift the meaning
+    /// of the entries that spell themselves out rather than going through
+    /// `uniformBlock`. Appending cannot.
+    bool falls = false;
 };
 
 /// A block that draws the same layer on all six faces, which is most of them.
 consteval BlockInfo uniformBlock(std::string_view name, std::string_view layer,
                                  char glyph, f32 hardness, bool stoneLike = false,
-                                 std::string_view drops = {}) {
+                                 std::string_view drops = {}, bool falls = false) {
     const u16 index = layerOf(layer);
-    return BlockInfo{name, true, index, index, index, glyph, stoneLike, hardness, drops};
+    return BlockInfo{name, true, index, index, index, glyph, stoneLike, hardness,
+                     drops, falls};
 }
 
 /// Block types, in BlockId order. The index of an entry *is* its BlockId.
@@ -211,7 +225,9 @@ inline constexpr std::array kBlocks{
     // type, three different textures.
     BlockInfo{"grass", true, layerOf("grass_top"), layerOf("grass_side"),
                              layerOf("dirt"), 'g', false, 0.6f, "dirt"},
-    uniformBlock("sand", "sand", 's', 0.5f),
+    // Sand and gravel fall. The trailing `true` is `BlockInfo::falls`, and it is the
+    // whole of what makes a sand ceiling collapse when it is dug out from under.
+    uniformBlock("sand", "sand", 's', 0.5f, false, {}, true),
     uniformBlock("cobblestone", "cobblestone", 'c', 2.0f, true),
 
     // -1 is vanilla's spelling of "never". See BlockInfo::hardness.
@@ -222,7 +238,7 @@ inline constexpr std::array kBlocks{
     uniformBlock("diorite", "diorite", 'o', 1.5f, true),
     uniformBlock("andesite", "andesite", 'a', 1.5f, true),
     uniformBlock("tuff", "tuff", 't', 1.5f, true),
-    uniformBlock("gravel", "gravel", 'v', 0.6f),
+    uniformBlock("gravel", "gravel", 'v', 0.6f, false, {}, true),
 
     // Ores. Each is two block types, because replacing deepslate has to yield the
     // deepslate variant -- the ore keeps its speckle colour and takes the host
@@ -274,6 +290,7 @@ inline constexpr BlockId kStoneBlock     = blockIdOf("stone");
 inline constexpr BlockId kDirtBlock      = blockIdOf("dirt");
 inline constexpr BlockId kGrassBlock     = blockIdOf("grass");
 inline constexpr BlockId kSandBlock      = blockIdOf("sand");
+inline constexpr BlockId kGravelBlock    = blockIdOf("gravel");
 inline constexpr BlockId kBedrockBlock   = blockIdOf("bedrock");
 inline constexpr BlockId kDeepslateBlock = blockIdOf("deepslate");
 inline constexpr BlockId kOakLogBlock    = blockIdOf("oak_log");
@@ -282,6 +299,11 @@ inline constexpr BlockId kOakLeavesBlock = blockIdOf("oak_leaves");
 /// True for the rock a blob feature may replace. See BlockInfo::stoneLike.
 constexpr bool isStoneLike(BlockId id) {
     return id < kBlocks.size() && kBlocks[id].stoneLike;
+}
+
+/// True for the blocks that fall when unsupported. See BlockInfo::falls.
+constexpr bool isFalling(BlockId id) {
+    return id < kBlocks.size() && kBlocks[id].falls;
 }
 
 /// What breaking `id` yields. `kAirBlock` means nothing drops.

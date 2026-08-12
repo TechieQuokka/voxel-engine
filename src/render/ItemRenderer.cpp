@@ -3,6 +3,7 @@
 #include "core/Paths.hpp"
 #include "core/Profile.hpp"
 #include "world/BlockTable.hpp"
+#include "world/FallingBlocks.hpp"
 #include "world/ItemEntities.hpp"
 
 #include <cmath>
@@ -33,7 +34,7 @@ void ItemRenderer::ensureCapacity(usize count) {
 
 void ItemRenderer::draw(rhi::Device& device, const Camera& camera,
                         const BlockTextures& textures, const ItemEntities& items,
-                        f32 spinSeconds) {
+                        const FallingBlocks& falling, f32 spinSeconds) {
     MC_PROFILE_SCOPE_N("ItemRenderer::draw");
 
     m_drawn = 0;
@@ -58,6 +59,23 @@ void ItemRenderer::draw(rhi::Device& device, const Camera& camera,
             // The top layer, because that is the face of a block people recognise --
             // grass reads as grass rather than as a dirt cube with a green lid.
             vec4{yaw, static_cast<f32>(kBlocks[item.block].top), 0.0f, 0.0f},
+        });
+    }
+
+    // Falling blocks go in the same buffer, which is the whole reason there is no
+    // fourth render path. Full size, no spin and no bob: a block of sand coming down
+    // should read as the terrain it is about to become, and any motion of its own
+    // would say "entity" instead.
+    for (const FallingBlock& block : falling.blocks()) {
+        if (block.block == kAirBlock || block.block >= kBlocks.size()) {
+            continue;
+        }
+
+        // `y` is the bottom face, and the shader wants the centre.
+        m_gpuItems.push_back(GpuItem{
+            vec4{static_cast<f32>(block.x) + 0.5f, block.y + kFallingHalfExtent,
+                 static_cast<f32>(block.z) + 0.5f, kFallingHalfExtent},
+            vec4{0.0f, static_cast<f32>(kBlocks[block.block].top), 0.0f, 0.0f},
         });
     }
 

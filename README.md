@@ -47,6 +47,9 @@ mine it, and the time is vanilla's hardness — 0.75 s for dirt, 2.25 s for ston
 Broken blocks drop as items. Walk over one to pick it up; the hotbar shows what you
 are carrying and placing spends it.
 
+Sand and gravel fall. Dig out from under a stack and it comes down one block at a
+time, on a 20 Hz tick rather than at your frame rate.
+
 `F` switches to flying, `F5` to first person, `Escape` releases the cursor and again
 quits.
 
@@ -54,7 +57,7 @@ Dig down. The caves, ores and darkness are the point, and they are not visible f
 surface.
 
 ```bash
-ctest --preset debug                       # 185 test cases
+ctest --preset debug                       # 198 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
@@ -118,12 +121,14 @@ tracks remain, independent of each other:
 
 - **Performance** — indirect draw with GPU culling, four-level LOD, brickmap ray marching
   for the far field, occlusion culling. This is what the render-distance target needs.
-- **Interaction** — block placement and breaking, trees, item drops, an inventory and
-  a HUD are all **done**. Still open: block updates (what falling sand and flowing
-  water both need), the rest of vegetation, and persistence.
+- **Interaction** — block placement and breaking, trees, item drops, an inventory, a
+  HUD and block updates are all **done**. Still open: water, the rest of vegetation,
+  and persistence.
 
-Entities and an inventory exist now, as the subsystems item drops and a hotbar needed
-— not as a commitment to build a game on top of them. Crafting, mobs and combat
+Entities, an inventory and a game tick exist now, as the subsystems item drops, a
+hotbar and falling sand needed — not as a commitment to build a game on top of them.
+Water is the next thing wanted and is three changes at once: aquifers, a mesher that
+can cull water against water, and a translucent draw pass. Crafting, mobs and combat
 remain unplanned; crafting in particular would force items to stop being block types,
 which is a redesign rather than an addition.
 

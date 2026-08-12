@@ -19,6 +19,12 @@
 # those race internally on their own refcounts and caches during window creation.
 # Engine frames appear in those stacks only as the caller of glfwCreateWindow.
 #
+# The audio libraries at the bottom joined the list on 2026-08-12 for the same
+# reason and by a stranger route: GTK plays an event sound through libcanberra, which
+# starts a pulseaudio thread that races its own mutex allocation. It surfaced inside
+# `runBenchmark` purely because that is whatever engine frame happened to be on the
+# stack when the desktop decided to make a noise.
+#
 # This file exists because leaving them unsuppressed defeats the purpose of running
 # TSan at all: a real race in the streaming pipeline would be one report among thirty
 # that are always there, and would simply be skimmed past.
@@ -39,3 +45,6 @@ called_from_lib:libpango-1.0.so
 called_from_lib:libpangoft2-1.0.so
 called_from_lib:libpangocairo-1.0.so
 called_from_lib:libcairo.so
+called_from_lib:libcanberra.so
+called_from_lib:libpulsecommon-16.1.so
+called_from_lib:libpulse.so

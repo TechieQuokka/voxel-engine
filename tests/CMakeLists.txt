@@ -27,6 +27,7 @@ add_executable(mc_tests
   test_block_table.cpp
   test_trees.cpp
   test_items.cpp
+  test_block_updates.cpp
 )
 
 target_link_libraries(mc_tests PRIVATE

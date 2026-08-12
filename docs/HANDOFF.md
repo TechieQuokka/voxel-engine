@@ -1,7 +1,7 @@
 # Handoff
 
-Snapshot for resuming work. Written 2026-08-09; last updated 2026-08-11, after the
-interaction track's first three phases and the play sessions that steered them.
+Snapshot for resuming work. Written 2026-08-09; last updated 2026-08-12, after
+Phase 12 closed the last of the three missing subsystems.
 
 Read `docs/DESIGN.md` for the full design and the reasoning behind every
 decision, and `docs/RESEARCH.md` for the vanilla Minecraft numbers the remaining
@@ -62,11 +62,22 @@ expected to be replaced rather than extended.
 Worth noting for sequencing: **crafting needs exactly the same things**, plus the
 item/block split. Doing (B) with recipes in mind is cheaper than doing it twice.
 
-**Two of the three missing subsystems are now built.** Entities (13) and the HUD (14)
-landed together. **Block updates (12) is the one still missing**, and it is what
-falling sand and flowing water both wait on -- "this block changed, tell its
-neighbours" is a concept the engine still does not have. Water needs the mesher and
-draw-pass work in RESEARCH.md 5.3 on top of it.
+**All three of the missing subsystems are now built.** Entities (13) and the HUD (14)
+landed together; **block updates (12) landed on 2026-08-12** and brought a 20 Hz game
+tick with it, which the engine did not have at all. Sand and gravel fall. See
+DESIGN.md 7.11.
+
+**Water is next, and it is the one item the documents describe without giving a
+number to.** It is three changes that have to land together -- aquifers inside the
+noise stage, water-against-water face culling in a mesher that only knows `isOpaque`,
+and a translucent second draw pass. RESEARCH.md 5.3 has the detail. What Phase 12
+removed from that list is the clock to flow on, which now exists.
+
+Worth knowing before starting it: **the safe voxel read in `BlockUpdates::examine`
+stops being safe for water.** It asks about the block below, which is in the same
+column, so an unloaded neighbour cannot be mistaken for "nothing is holding this up".
+Water spreads sideways and that argument does not survive. The note is written at the
+read itself.
 
 **Crafting is the next thing that forces a redesign, not just an addition.** Items are
 `BlockId`s today; a stick is not a block, so the item/block split happens then and
@@ -74,23 +85,26 @@ draw-pass work in RESEARCH.md 5.3 on top of it.
 pre-built — and since the inventory is being replaced anyway (above), the two are
 worth planning together.
 
-### Three sessions in a row, the log could not say what happened
+### Three sessions in a row, the log could not say what happened — **fixed**
 
-**This is a real gap and it is the same gap three times.** Session three (84 seconds,
-clean 60 FPS, no GL messages) can be read for what was *not* pressed, because those
+**This was a real gap and it was the same gap three times.** Session three (84 seconds,
+clean 60 FPS, no GL messages) could be read for what was *not* pressed, because those
 keys log: `F5`, `F` and `1`-`9` were never touched. So the first-person hand shipped in
 7.10 **was never seen**, and the hotbar never left slot one.
 
-What the log cannot say is whether a single block was broken, dropped or picked up,
-because none of those log anything. The gap was written down after session two, and
+What the log could not say is whether a single block was broken, dropped or picked up,
+because none of those logged anything. The gap was written down after session two, and
 then repeated: pickup logging went in as `logDebug`, which is off by default and
-therefore prints nothing.
+therefore printed nothing.
 
-**The fix, not yet built:** counters on the existing once-a-second stats line —
-blocks broken, blocks placed, items collected, items alive in the world. It costs four
-integers and makes every future session self-documenting, which matters more here than
-in most projects because *play* is where the last three phases of direction came from.
-Do this before the next feature, not after.
+**Fixed on 2026-08-12, before Phase 12 rather than after it**, which is what the
+previous version of this section asked for. The once-a-second stats line now carries a
+second row: blocks broken, blocks placed, items collected, and how many items, falling
+blocks and queued updates are alive. Every future session documents itself.
+
+**The next session is therefore worth more than the last three were.** It is also the
+first one that can confirm anything about Phase 12: a benchmark flight never edits the
+world, so it cannot make a single block fall.
 
 **4d — biomes** is the last Phase 4 step and is no longer next. It still has the
 unresolved input recorded in section 6, which wants settling before any code.
@@ -159,17 +173,38 @@ over to collect. The **hotbar** shows what is held and how many, and placing spe
 one. Breaking and placing go through the existing dirty mask, so nothing was added to
 the streaming pipeline.
 
+**Sand and gravel fall.** Dig the support out from under a sand pillar and it comes
+down one block per tick, as a real falling entity rather than a block stepping down a
+cell at a time. That runs on a **20 Hz game tick**, which is new -- everything before
+Phase 12 ran on frame delta time. Flowing water will use the same clock unchanged.
+Generated sand does not fall until something disturbs it, which is also vanilla.
+
 A character is drawn at the player position on a second render path; `F5` toggles third
 person, and the camera now pulls in when terrain is behind it rather than clipping
 through — a second use of Phase 9's raycast.
 
-| Distance 16 | No caves | Caves | + ores | + sky light | + editing | + trees | + items |
-|---|---|---|---|---|---|---|---|
-| Frame p99 | 0.85 ms | 6.00 ms | 5.93 ms | 5.91 ms | 6.4–8.0 | 7.55 | **6.20** |
-| Quads drawn | 260 k | 4.1 M | 4.15 M | 4.18 M | 4.20 M | 4.33 M | **4.33 M** |
-| Arena used | 8 MiB | 112 MiB | 112 MiB | 113 MiB | 112 MiB | 115 MiB | **115 MiB** |
-| Warm-up, 1,089 columns | — | 2.29 s | 2.99 s | 3.58 s | 3.40 s | 3.52 s | **3.26 s** |
-| Sections with an empty mesh | 2,509 of 4,967 | **0** | **0** | **0** | **0** | **0** | **0** |
+| Distance 16 | No caves | Caves | + ores | + sky light | + editing | + trees | + items | + falling |
+|---|---|---|---|---|---|---|---|---|
+| Frame p99 | 0.85 ms | 6.00 ms | 5.93 ms | 5.91 ms | 6.4–8.0 | 7.55 | 6.20 | **4.40–5.86** |
+| Quads drawn | 260 k | 4.1 M | 4.15 M | 4.18 M | 4.20 M | 4.33 M | 4.33 M | **4.08 M** |
+| Arena used | 8 MiB | 112 MiB | 112 MiB | 113 MiB | 112 MiB | 115 MiB | 115 MiB | **115 MiB** |
+| Warm-up, 1,089 columns | — | 2.29 s | 2.99 s | 3.58 s | 3.40 s | 3.52 s | 3.26 s | **3.29–3.52 s** |
+| Sections with an empty mesh | 2,509 of 4,967 | **0** | **0** | **0** | **0** | **0** | **0** | **0** |
+
+**The last column is three runs on a deliberately idle machine, and that is a change
+of method rather than of code.** Earlier in the same session, with an asan build
+occupying the other cores, the same binary reported a 4.02 s warm-up against the
+3.29–3.52 s it gives when nothing else is running — a ~20 % swing from background
+load alone. **No column before this one controlled for that**, so comparing them at
+a resolution of one millisecond is not sound, and the p99 dropping below 7.10's 6.20
+is much more likely to be the quiet machine than anything in Phase 12. Nothing in
+Phase 12 touches the render path. The quad count differs because the flight ends
+somewhere slightly different each time, not because geometry changed.
+
+**And none of this measures the feature.** A benchmark flight never edits the world,
+so nothing is ever notified and no block ever falls. These numbers say an idle tick
+loop is free. What a sand collapse costs — chiefly the sky-light recompute, twice per
+block — has not been measured, and needs a person to cause one.
 
 **Read the last column carefully; it is the one place in this document where a number
 got worse and the honest answer is "cannot tell".** The p99 figure is a *range over
@@ -206,6 +241,14 @@ Rendering has stayed flat across caves, ores, light, trees, entities and the HUD
 **What those sessions could not confirm is anything about interaction** -- see section
 1. They are evidence the engine runs, not evidence the game works.
 
+**Phase 12 has not been seen by a person either, and a benchmark cannot see it.** The
+flight never edits the world, so no block is ever notified and nothing ever falls;
+the p99 above is a measurement of the tick loop costing nothing when idle. What is
+checked is 198 unit tests including the cascade, the retry discipline and both
+physics failure modes, plus asan and tsan. What is not checked is whether a sand
+collapse *looks* right -- the timing, the one-block-per-tick cascade, and whether the
+relight cost is felt. **Place a stack of sand and knock the bottom out.**
+
 **Neither session ever pressed `F` or `F5`** — both keys log when they are, and the logs
 are empty. So neither of them saw a cave, an ore, deepslate, or the sky light: all of
 that is underground, and walking cannot get there. Both sessions saw the surface only,
@@ -236,7 +279,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (185 cases, doctest)
+# Test  (198 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
@@ -310,6 +353,11 @@ A left click with the cursor released re-captures it instead of breaking anythin
 **Bedrock cannot be broken** — it is the world's floor, and vanilla refuses for the
 same reason.
 
+**Sand and gravel fall when you dig under them**, one block per 20 Hz tick, which is
+the fastest way to see Phase 12 without going looking for a desert: place a few sand
+blocks in a stack from the hotbar and knock the bottom one out. Placing sand in
+mid-air also works — it falls on the next tick, exactly as vanilla does.
+
 **Walking can now reach a cave: dig down.** That is the point of Phase 9, and it is
 the first time the ores, deepslate and sky light of the previous three phases are
 reachable without `--fly`.
@@ -364,8 +412,11 @@ src/world/              pure data; knows nothing about rendering
   Raycast      — voxel DDA; aiming, and the third-person camera's collision
   ItemEntities — dropped blocks: gravity, merging, despawn. The first non-voxel
                  thing that exists in the world
+  FallingBlocks— sand and gravel between two cells. Straight down, i32 x and z
+  BlockUpdates — "this block changed, tell its neighbours": the tick queue, the
+                 dedupe set and the retry discipline. **Where water plugs in**
   Inventory    — one count per block type; not slots, deliberately
-  BlockTable also carries **hardness** and **drops**
+  BlockTable also carries **hardness**, **drops** and **falls**
 src/worldgen/           knows world, nothing above it; FastNoise2 is PRIVATE
   DensityField — the 4x8x4 interpolation grid (no FastNoise2, so it is testable)
   DensityGraph — the noise router; the only file that includes FastNoise2
@@ -381,7 +432,7 @@ src/render/
   SectionMeshStore (one persistently mapped arena), ChunkRenderer (one multi-draw),
   CharacterRenderer (the second render path; not voxels),
   SelectionRenderer (the block outline and the breaking cracks; no buffer at all),
-  ItemRenderer (every dropped item in one draw call),
+  ItemRenderer (every dropped item *and every falling block* in one draw call),
   HudRenderer (hotbar, counts, crosshair — the first screen-space layer)
 src/app/
   main, Engine (streaming pipeline: submit-only frame loop, upload thread)
@@ -499,6 +550,26 @@ Learned the hard way; all of them cost real time.
   aged an item by 299 seconds in one tick found it falling out of the world instead.
   Physics is substepped and clamped now; ageing still uses the real elapsed time.
   Walking's ground probe has the same shape and the same latent issue.
+- **`blockAt` answers air for a column that is not loaded, and "air below me" is what
+  makes a block fall.** Those two facts together are a bug waiting to happen: sand at
+  the edge of the loaded region dropping into a column that has simply not arrived
+  yet. `BlockUpdates::examine` is safe from it by a *narrow* argument -- the block it
+  asks about is directly below, so it is in the same column, and if that column were
+  not Ready the block being examined would have read as air too. **Flowing water
+  spreads sideways and the argument does not survive it.** Anything that reads a
+  horizontal neighbour to decide an edit needs a real "is this loaded" test.
+- **A block update that gives up leaves the world wrong for ever.** `setBlock` returns
+  `Busy` while a meshing job holds the column, and unlike a player's click -- which the
+  player will simply repeat -- nothing will ever ask about that block again. Both new
+  writers retry: the update re-queues itself, and a falling block that cannot land
+  holds position rather than being swept, because the entity is the only copy of that
+  block that exists.
+- **A physics test that samples the destination will tunnel, and this is the second
+  time.** `FallingBlocks` has the same shape of landing test `ItemEntities` does and
+  therefore the same failure at long delta times. It is substepped for the same
+  reason, and a `static_assert` pins the relationship that makes it safe: terminal
+  velocity times the maximum substep must stay under one block. Adding speed without
+  reading that assert is how it comes back.
 - **Reading a voxel from the main thread is a race unless the column is `Ready`.**
   `World::blockAt` looked like a pure lookup and was called every frame by walking's
   ground probe and the benchmark camera long before anything else used it. It is not
@@ -701,12 +772,10 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   *inside* the noise stage on their own grid (RESEARCH.md 4), the mesher only knows the
   `isOpaque` yes/no and would need water-against-water culling, and translucency needs a
   second draw pass. Three changes that have to land together.
-- **Three subsystems are missing, and most of what is still wanted needs one of
-  them.** Block updates (a block changing tells its neighbours) is what falling sand
-  and flowing water both wait on; entities is what item drops wait on; a UI layer is
-  what an inventory waits on. DESIGN.md 7 lists them as phases 12, 13 and 14. Water
-  additionally needs the mesher and draw-pass work in RESEARCH.md 5.3, so it is not
-  one phase.
+- ~~**Three subsystems are missing.**~~ **All three are built** — entities and the HUD
+  in 7.10, block updates in 7.11. Water is still not one phase: it needs the mesher
+  and draw-pass work in RESEARCH.md 5.3 on top of aquifers, and those three have to
+  land together.
 - **Trees leave a two-block band along every column edge with no trees in it.** The
   deliberate cost of trees not crossing columns; see `TreeSpec` and DESIGN.md 7.9.
   Fixing it properly means a chunk-status pipeline like vanilla's.
@@ -723,9 +792,14 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   The split, and the `Inventory` rewrite that comes with it, is deferred on purpose
   -- see DESIGN.md 7.10. Since the inventory is being rewritten anyway, plan both at
   once.
-- **Nothing in the interaction path logs.** Breaking, placing and picking up are all
-  silent, so three play sessions produced no record of whether any of them happened.
-  Counters on the stats line are the fix; section 1 has the detail.
+- ~~**Nothing in the interaction path logs.**~~ **Fixed on 2026-08-12.** The stats
+  line carries broken, placed, collected, and how many items, falling blocks and
+  queued updates are alive.
+- **A sand collapse pays the sky-light recompute twice per block.** `World::setBlock`
+  relights the whole column, about 0.5 ms, and a falling block edits the world once
+  leaving and once landing. Documented as a per-*click* cost when it was one; in open
+  desert a six-block collapse is a dozen recomputes over as many ticks. Not measured
+  in play yet. The incremental relight World.hpp already names is the escape hatch.
 - **No test covers `SectionMeshStore`.** It holds the trickiest lifetime logic in the
   engine — deferred reuse, the pending list, arena exhaustion — and `RangeAllocator`
   underneath it is unit-tested while the combination is not.

@@ -701,6 +701,10 @@ bool Engine::applyEdit(BlockPos pos, BlockId block) {
     switch (m_world->setBlock(pos, block)) {
         case World::EditStatus::Applied:
         case World::EditStatus::Unchanged:
+            // Tell the neighbours. Digging the block out from under a sand pillar is
+            // the only thing that makes it fall, and this is where the engine learns
+            // that anything happened at all.
+            m_blockUpdates.notify(pos);
             return true;
 
         case World::EditStatus::Busy:
@@ -728,6 +732,7 @@ void Engine::breakTargetBlock() {
     if (!applyEdit(m_target->block, kAirBlock)) {
         return; // Not loaded, or outside the world. Nothing was removed, so nothing drops.
     }
+    ++m_blocksBroken;
 
     const BlockId drop = dropOf(broken);
     if (drop == kAirBlock) {
@@ -842,6 +847,7 @@ void Engine::placeTargetBlock() {
     // being outside the world does not silently cost a block.
     if (applyEdit(target, block)) {
         m_inventory.take(block);
+        ++m_blocksPlaced;
     }
 }
 
@@ -858,6 +864,13 @@ void Engine::updateInteraction(f32 dt) {
         for (PendingEdit& edit : retry) {
             const World::EditStatus status = m_world->setBlock(edit.pos, edit.block);
             if (status != World::EditStatus::Busy) {
+                // Landing late is still landing, and the neighbours have to hear
+                // about it. This path does not go through `applyEdit`, so the
+                // notification has to be repeated here rather than inherited.
+                if (status == World::EditStatus::Applied
+                    || status == World::EditStatus::Unchanged) {
+                    m_blockUpdates.notify(edit.pos);
+                }
                 continue;
             }
             if (++edit.age >= kMaxEditAge) {
@@ -880,6 +893,7 @@ void Engine::updateInteraction(f32 dt) {
     for (const ItemEntities::Pickup& pickup : m_items.collect(m_camera.position(),
                                                               kPickupRadius)) {
         m_inventory.add(pickup.block, pickup.count);
+        m_itemsCollected += pickup.count;
         logDebug("Picked up {} x{}", kBlocks[pickup.block].name, pickup.count);
     }
 
@@ -915,6 +929,41 @@ void Engine::updateInteraction(f32 dt) {
 
     if (m_input->wasPressed(MouseButton::Right)) {
         placeTargetBlock();
+    }
+}
+
+void Engine::updateTicks(f32 dt) {
+    MC_PROFILE_SCOPE_N("Engine::updateTicks");
+
+    // Falling blocks move on frame time, not on the tick. A cube descending in 20 Hz
+    // steps against a 60 FPS camera visibly stutters, and interpolating a position
+    // the simulation already knows exactly would be work to hide work.
+    // `ItemEntities` made the same call for the same reason.
+    const FallingBlocks::Result landings = m_falling.tick(*m_world, dt);
+
+    for (const BlockPos& pos : landings.landed) {
+        // A landing is an edit like any other: it can be what a block above was
+        // waiting for.
+        m_blockUpdates.notify(pos);
+    }
+    for (const FallingBlocks::Displaced& lost : landings.displaced) {
+        // Landed where something else had appeared. Vanilla drops it rather than
+        // deleting it, and the item system to do that with already exists.
+        m_items.spawn(lost.position, lost.block, 1);
+    }
+
+    // The scheduler itself is on the fixed clock, because "one block per tick" is
+    // what gives a collapse its cascade and it must not depend on the frame rate.
+    m_tickAccumulator += dt;
+
+    const f32 backlog = kTickSeconds * static_cast<f32>(kMaxTicksPerFrame);
+    if (m_tickAccumulator > backlog) {
+        m_tickAccumulator = backlog;
+    }
+
+    while (m_tickAccumulator >= kTickSeconds) {
+        m_tickAccumulator -= kTickSeconds;
+        m_blockUpdates.tick(*m_world, m_falling);
     }
 }
 
@@ -1055,6 +1104,15 @@ void Engine::reportStats(f64 fps, f64 frameMs) {
             stats.sectionsDrawn, stats.quadsDrawn,
             stats.columnsCulled, stats.sectionsCulled,
             m_meshStore->usedBytes() / (1024 * 1024));
+
+    // The interaction half of the line. Separate from the rendering half because it
+    // answers a different question -- "did the player do anything" rather than "is
+    // the engine keeping up" -- and because three sessions of logs that could answer
+    // only the second one is what put it here.
+    logInfo("  broke {} | placed {} | collected {} | {} items, {} falling, "
+            "{} updates queued",
+            m_blocksBroken, m_blocksPlaced, m_itemsCollected,
+            m_items.size(), m_falling.size(), m_blockUpdates.pending());
 }
 
 void Engine::stepFrame(f64 deltaTime) {
@@ -1066,6 +1124,10 @@ void Engine::stepFrame(f64 deltaTime) {
     // Before submitting, so a block broken this frame is remeshed this frame rather
     // than sitting visibly intact until the next one.
     updateInteraction(static_cast<f32>(deltaTime));
+
+    // After interaction and before streaming, for the same reason: a block that
+    // falls because of this frame's click should be gone from the mesh this frame.
+    updateTicks(static_cast<f32>(deltaTime));
 
     updateLoadedRegion();
 
@@ -1286,7 +1348,7 @@ void Engine::renderFrame() {
     }
 
     m_itemRenderer->draw(*m_device, m_renderCamera, m_chunkRenderer->textures(), m_items,
-                         m_itemSpin);
+                         m_falling, m_itemSpin);
 
     // Last, so the outline sits on top of the block it surrounds and of the
     // character if one is in the way. It still depth-tests -- it is inflated just

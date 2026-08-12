@@ -15,13 +15,20 @@
 namespace mc {
 
 class ItemEntities;
+class FallingBlocks;
 
-/// Draws every dropped item in the world, in one call.
+/// Draws every dropped item and every falling block in the world, in one call.
 ///
-/// The third render path, and the cheapest of them. Each item is a spinning cube one
-/// quarter of a block across; the SSBO carries a centre, a yaw and a texture layer,
-/// and the cube's 36 vertices come out of `gl_VertexID` exactly as the chunk and
-/// character paths do theirs. No vertex buffer, no per-item draw.
+/// The third render path, and the cheapest of them. Each entity is a cube; the SSBO
+/// carries a centre, a half-extent, a yaw and a texture layer, and the cube's 36
+/// vertices come out of `gl_VertexID` exactly as the chunk and character paths do
+/// theirs. No vertex buffer, no per-entity draw.
+///
+/// **Falling blocks cost nothing here beyond the loop that appends them.** The
+/// half-extent was already a per-entity field rather than a constant, so a falling
+/// sand block is the same struct with 0.5 in it and no spin -- same shader, same
+/// buffer, same draw. That was luck rather than foresight, but it is why Phase 12
+/// needed no fourth render path.
 ///
 /// It borrows `BlockTextures` rather than owning one -- an item *is* a block here,
 /// so it has to use the same layer the terrain does or a dropped stone would not
@@ -32,9 +39,11 @@ public:
 
     /// `spinSeconds` is a clock, not a delta: every item shares one rotation so a
     /// pile turns together, which is what Minecraft does and what stops a heap
-    /// looking like scattered debris.
+    /// looking like scattered debris. Falling blocks ignore it -- a tumbling block
+    /// of sand is not what vanilla does and reads as debris rather than as terrain
+    /// coming down.
     void draw(rhi::Device& device, const Camera& camera, const BlockTextures& textures,
-              const ItemEntities& items, f32 spinSeconds);
+              const ItemEntities& items, const FallingBlocks& falling, f32 spinSeconds);
 
     usize drawnLastFrame() const noexcept { return m_drawn; }
 
@@ -54,6 +63,8 @@ private:
 
     /// A quarter block, which is Minecraft's dropped-item size.
     static constexpr f32 kHalfExtent = 0.125f;
+    /// A falling block is a whole block, because it is one.
+    static constexpr f32 kFallingHalfExtent = 0.5f;
     /// How far the bob rises and falls, and how fast.
     static constexpr f32 kBobHeight = 0.06f;
     static constexpr f32 kSpinRate = 1.1f;
