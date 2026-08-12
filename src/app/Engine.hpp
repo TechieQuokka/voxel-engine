@@ -302,6 +302,46 @@ private:
     /// How far down to look for something to stand on before giving up.
     static constexpr i32 kGroundSearchDepth = 96;
 
+    /// Longest physics step walking takes, and how many of them one frame may run.
+    ///
+    /// Same discipline and the same numbers as `ItemEntities` and `FallingBlocks`,
+    /// because it is the same failure: `groundBelow` samples the destination instead
+    /// of sweeping the path, so a step that covers a whole block goes through the
+    /// floor. The static_assert at the bottom of this header is what keeps that
+    /// impossible; adding speed without reading it is how this comes back.
+    static constexpr f32 kMaxWalkStep = 1.0f / 120.0f;
+    /// Twelve steps covers the frame clamp below with room to spare.
+    static constexpr u32 kMaxWalkSubsteps = 12;
+
+    /// Longest frame the *simulation* is willing to believe in, in seconds.
+    ///
+    /// **This is the bound that matters, and it exists because of Alt-Tab.** A hidden
+    /// Wayland surface gets no frame callbacks, so `swapBuffers` blocks until the
+    /// window is visible again and the next frame's delta is the whole absence --
+    /// seconds of it. Every consumer of the frame delta then integrates that in one
+    /// step. At 0.1 s the worst case is 0.28 blocks of fall, which is imperceptible;
+    /// unclamped, half a second is seven blocks and lands the player inside terrain.
+    ///
+    /// The cost is that the world lags real time by the length of the stall, which is
+    /// the same trade `kMaxTicksPerFrame` already makes and is invisible next to the
+    /// stall itself. Item despawn timers slow by the same amount, which is arguably
+    /// what should happen to a world nobody is looking at.
+    static constexpr f64 kMaxFrameSeconds = 0.1;
+
+    // A walking substep at terminal velocity must stay inside one block, or the
+    // ground probe can step over the floor it was meant to find. The same assert
+    // `FallingBlocks` carries, for the same reason -- read it before raising
+    // `kTerminalVelocity` or `kMaxWalkStep`.
+    static_assert(kTerminalVelocity * kMaxWalkStep < 1.0f,
+                  "a walking substep at terminal velocity must stay inside one block, "
+                  "or the ground probe tunnels");
+
+    // And the substep budget has to cover a whole clamped frame, or a long frame
+    // silently runs slower than real time rather than merely lagging it.
+    static_assert(static_cast<f64>(kMaxWalkStep) * static_cast<f64>(kMaxWalkSubsteps)
+                      >= kMaxFrameSeconds,
+                  "the walking substep budget must cover a full clamped frame");
+
     /// Swimming. Not vanilla's model -- there is no air meter, no drowning and no
     /// swimming pose -- but enough that water is somewhere to be rather than a hole
     /// in the world that drops you to the sea bed.

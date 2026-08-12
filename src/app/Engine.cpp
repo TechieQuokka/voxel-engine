@@ -1163,15 +1163,10 @@ void Engine::updateWalk(f32 dt) {
         }
     }
 
-    // **Swimming, such as it is.** Water holds nothing up, so without this the player
-    // sinks to the sea bed at full gravity and walks around down there. Buoyancy is a
-    // quarter of gravity with a low sink speed, and Space paddles upward -- which is
-    // enough to swim out to an island and back, and is not vanilla's model (no air
-    // meter, no drowning, no swimming pose).
-    const bool swimming = inWater(feet);
-
+    // **Jump input is read once**, outside the substep loop below. Reading it per
+    // substep would apply the same keypress several times over.
     if (!m_inventoryOpen && m_input->isDown(Key::Space)) {
-        if (swimming) {
+        if (inWater(feet)) {
             m_verticalVelocity = kSwimSpeed;
         } else if (m_onGround) {
             m_verticalVelocity = kJumpVelocity;
@@ -1179,54 +1174,82 @@ void Engine::updateWalk(f32 dt) {
         }
     }
 
-    if (swimming) {
-        m_verticalVelocity =
-            std::max(m_verticalVelocity - kGravity * kSwimGravityScale * dt, -kSinkSpeed);
-        // Entering water cancels a fall, which is vanilla's rule and the reason
-        // jumping off a cliff into a lake is a thing people do.
-        m_trackingFall = false;
-    } else {
-        m_verticalVelocity =
-            std::max(m_verticalVelocity - kGravity * dt, -kTerminalVelocity);
-    }
+    // **Substepped, and this is the third time in this engine for the same reason.**
+    // The ground probe below asks what is solid under the player's *destination*
+    // rather than sweeping the path to it, so any step longer than a block passes
+    // straight through the floor -- `ItemEntities` and `FallingBlocks` both had this
+    // and both were fixed this way. Walking was left with the latent version of it,
+    // and an Alt-Tab is what collected: the frame after a hidden window carries the
+    // whole absence, gravity reaches terminal velocity inside one step, and the
+    // player lands somewhere under the terrain.
+    //
+    // The frame delta is clamped in the loop as well, which is what actually bounds
+    // the stall. This is the structural half: even a legitimately long frame cannot
+    // tunnel, because the static_assert in Engine.hpp pins a substep at terminal
+    // velocity to less than one block.
+    f32 remaining = std::min(dt, kMaxWalkStep * static_cast<f32>(kMaxWalkSubsteps));
+    while (remaining > 0.0f) {
+        const f32 step = std::min(remaining, kMaxWalkStep);
+        remaining -= step;
 
-    feet.y += m_verticalVelocity * dt;
-
-    const bool wasOnGround = m_onGround;
-
-    const auto ground = groundBelow(feet.x, feet.z, feet.y + 0.01f);
-    if (!ground.has_value()) {
-        // Nothing under us -- almost always a column that has not streamed in yet.
-        // Hold height rather than falling through the world while it arrives, which
-        // is the same call followGround makes in the benchmark.
-        feet.y -= m_verticalVelocity * dt;
-        m_verticalVelocity = 0.0f;
-
-        // And do not let that count as a fall. A column arriving late is an engine
-        // detail, and taking damage for it would be the game punishing the player
-        // for the streaming pipeline.
-        m_trackingFall = false;
-    } else if (feet.y <= *ground) {
-        feet.y = *ground;
-        m_verticalVelocity = 0.0f;
-        m_onGround = true;
-
-        if (m_trackingFall) {
-            applyFallDamage(m_fallFromY, feet.y);
+        // **Swimming, such as it is.** Water holds nothing up, so without this the
+        // player sinks to the sea bed at full gravity and walks around down there.
+        // Buoyancy is a quarter of gravity with a low sink speed, and Space paddles
+        // upward -- which is enough to swim out to an island and back, and is not
+        // vanilla's model (no air meter, no drowning, no swimming pose).
+        //
+        // Re-tested each substep because the feet move within the loop: a step that
+        // enters the water has to start floating on the next one, not at the next
+        // frame.
+        if (inWater(feet)) {
+            m_verticalVelocity = std::max(
+                m_verticalVelocity - kGravity * kSwimGravityScale * step, -kSinkSpeed);
+            // Entering water cancels a fall, which is vanilla's rule and the reason
+            // jumping off a cliff into a lake is a thing people do.
             m_trackingFall = false;
+        } else {
+            m_verticalVelocity =
+                std::max(m_verticalVelocity - kGravity * step, -kTerminalVelocity);
         }
-    } else {
-        m_onGround = false;
 
-        // Start measuring from the height we left the ground at, not from the peak.
-        // A jump therefore costs its own arc, which is why the three-block grace
-        // exists at all -- vanilla measures the same way.
-        if (wasOnGround) {
-            m_fallFromY = feet.y;
-            m_trackingFall = true;
-        } else if (feet.y > m_fallFromY) {
-            // Still rising. The fall has not started yet.
-            m_fallFromY = feet.y;
+        feet.y += m_verticalVelocity * step;
+
+        const bool wasOnGround = m_onGround;
+
+        const auto ground = groundBelow(feet.x, feet.z, feet.y + 0.01f);
+        if (!ground.has_value()) {
+            // Nothing under us -- almost always a column that has not streamed in
+            // yet. Hold height rather than falling through the world while it
+            // arrives, which is the same call followGround makes in the benchmark.
+            feet.y -= m_verticalVelocity * step;
+            m_verticalVelocity = 0.0f;
+
+            // And do not let that count as a fall. A column arriving late is an
+            // engine detail, and taking damage for it would be the game punishing
+            // the player for the streaming pipeline.
+            m_trackingFall = false;
+        } else if (feet.y <= *ground) {
+            feet.y = *ground;
+            m_verticalVelocity = 0.0f;
+            m_onGround = true;
+
+            if (m_trackingFall) {
+                applyFallDamage(m_fallFromY, feet.y);
+                m_trackingFall = false;
+            }
+        } else {
+            m_onGround = false;
+
+            // Start measuring from the height we left the ground at, not from the
+            // peak. A jump therefore costs its own arc, which is why the three-block
+            // grace exists at all -- vanilla measures the same way.
+            if (wasOnGround) {
+                m_fallFromY = feet.y;
+                m_trackingFall = true;
+            } else if (feet.y > m_fallFromY) {
+                // Still rising. The fall has not started yet.
+                m_fallFromY = feet.y;
+            }
         }
     }
 
@@ -1332,10 +1355,25 @@ void Engine::reportStats(f64 fps, f64 frameMs) {
     // answers a different question -- "did the player do anything" rather than "is
     // the engine keeping up" -- and because three sessions of logs that could answer
     // only the second one is what put it here.
+    // Where the player is, and whether they are standing inside the world.
+    //
+    // **Added because a bug moved the player ten blocks into solid rock and no log
+    // line changed.** A stall spent as simulation time dropped the feet through the
+    // floor, and the ground probe snapped them to whatever was under the *new*
+    // position -- silently, because nothing was tracking a fall and nothing reported
+    // a position. `buried` is the tell: feet inside a solid block is never a legal
+    // state, so it says "this happened" without needing to know what did it.
+    const vec3 feet = playerFeet();
+    const bool buried = isSolidBlock(m_world->blockAt(
+        BlockPos{static_cast<i32>(std::floor(feet.x)),
+                 static_cast<i32>(std::floor(feet.y + 0.5f)),
+                 static_cast<i32>(std::floor(feet.z))}));
+
     logInfo("  broke {} | placed {} | collected {} | {} items, {} falling, "
-            "{} updates queued",
+            "{} updates queued | at ({:.1f}, {:.1f}, {:.1f}){}",
             m_blocksBroken, m_blocksPlaced, m_itemsCollected,
-            m_items.size(), m_falling.size(), m_blockUpdates.pending());
+            m_items.size(), m_falling.size(), m_blockUpdates.pending(),
+            feet.x, feet.y, feet.z, buried ? " BURIED" : "");
 }
 
 void Engine::stepFrame(f64 deltaTime) {
@@ -1519,8 +1557,20 @@ void Engine::run() {
         MC_PROFILE_SCOPE_N("frame");
 
         const f64 now = clock.elapsed();
-        const f64 deltaTime = now - m_lastFrameTime;
+        const f64 elapsed = now - m_lastFrameTime;
         m_lastFrameTime = now;
+
+        // **A stall is not simulation time, and spending it as such throws the player
+        // through the floor.** Alt-Tab away and the compositor stops sending frame
+        // callbacks, so `swapBuffers` blocks for as long as the window is hidden; the
+        // frame that comes back carries the whole absence as one delta. Gravity then
+        // integrates seconds of falling in a single step and the ground probe -- which
+        // asks what is under the player's *new* position -- never sees the floor it
+        // started on. Half a second away is seven blocks down and inside the terrain.
+        //
+        // The same trade the tick backlog makes in `updateTicks`: the world lags real
+        // time by the length of the stall, which is invisible next to the stall.
+        const f64 deltaTime = std::min(elapsed, kMaxFrameSeconds);
 
         m_window->pollEvents();
         m_input->update();
@@ -1538,7 +1588,11 @@ void Engine::run() {
 
         MC_PROFILE_FRAME();
 
-        m_fpsAccumulator += deltaTime;
+        // **Real elapsed time, not the clamped delta.** The simulation is entitled to
+        // ignore a stall; the frame-time report is not, and one that read a steady 60
+        // FPS across a window that was hidden for five seconds would be a lie told by
+        // the one instrument this project uses to judge a session.
+        m_fpsAccumulator += elapsed;
         ++m_framesSinceReport;
         if (m_fpsAccumulator >= kFpsReportInterval) {
             const f64 fps = static_cast<f64>(m_framesSinceReport) / m_fpsAccumulator;
