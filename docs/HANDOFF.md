@@ -238,7 +238,7 @@ Two older items are still open and still worth doing, in any order:
 | `83c573c` | Water — oceans, a translucent pass, and the fluid/solid split |
 | `af62782` | The fourth play session: item pickup has never worked (section 1) |
 | `af8cd6e` | Audit the docs against the code, and fix three stale numbers |
-| _pending_ | Item pickup measured from the body; the asan build unbroken (7.14) |
+| `240c8a7` | Item pickup measured from the body; the asan build unbroken (7.14) |
 
 Working tree is clean. **Published publicly** at the `origin` remote as of
 2026-08-10; the earlier local-only rule was lifted by the user at that point.
