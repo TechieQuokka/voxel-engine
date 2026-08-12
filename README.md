@@ -50,6 +50,10 @@ shows what you are carrying. **`E` opens the inventory** — 36 slots with
 vanilla's stack limit of 64, click to pick a stack up and put it down, right click to
 split it in half or place one at a time.
 
+The block under the crosshair is **named on the HUD**, and the selection outline is
+thick enough to pick out of a textured world. Third person is over the shoulder, so
+the character is not standing on what you are aiming at.
+
 `F11` goes fullscreen at your monitor's native resolution, and back.
 
 Ten hearts, and falling more than three blocks costs you some. Nothing else damages

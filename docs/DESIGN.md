@@ -2036,6 +2036,85 @@ because nothing on the path logged; one session with four integers found it
 immediately. **The lesson is that a subsystem's tests do not cover the seam where two
 subsystems meet, and the cheapest instrument at that seam is a counter, not a test.**
 
+### 7.15 What the sixth session found, and fixed
+
+Two defects reported from one 68-second session, both of them about things the player
+could not see.
+
+#### Alt-Tab dropped the player through the floor
+
+A hidden Wayland surface gets no frame callbacks, so `swapBuffers` blocks for as long
+as the window is away and the frame that comes back carries the whole absence as one
+delta. **Nothing clamped it.** Gravity integrated seconds in a single step, and
+`groundBelow` -- which asks what is solid under the player's *destination* rather than
+sweeping the path to it -- never saw the floor they started on.
+
+From y=91, a 0.6 s absence puts the feet at 80.9, where the probe finds rock at 81 and
+snaps them there: ten blocks inside the terrain. The worst case is a *middle-length*
+stall. A very long one overshoots the 96-block search depth, finds nothing, and takes
+the "hold height" path, which restores.
+
+**It was silent, and that is why five sessions never reported it as more than "it
+moved".** `m_trackingFall` is false in that path, so no fall damage fired and no logged
+number changed. Position was not printed at all.
+
+The fix is two-part and the first bounds the problem: `kMaxFrameSeconds` clamps the
+frame delta, on the same reasoning `kMaxTicksPerFrame` already used for the tick
+backlog -- the world lags real time by the length of the stall, which is invisible next
+to the stall. The second is structural: walking's vertical integration is substepped,
+which HANDOFF.md 5 had asked for ever since `ItemEntities` was fixed the same way. It
+is the **third** instance in this engine of a collision test that samples its
+destination, and two `static_assert`s pin it now.
+
+**The instrument mattered as much as the fix.** The stats line grew a position and a
+`BURIED` flag -- feet inside a solid block is never a legal state -- and the frame-time
+accumulator deliberately kept using *real* elapsed time while the simulation clamps its
+delta. That is what made the confirmation possible: the same session's log shows a
+7.5 FPS second, the stall, with the position identical either side of it and `BURIED`
+never set. Clamping both would have printed a steady 60 FPS and left no evidence at all.
+
+#### You could not see what you were about to mine
+
+Reported as "the aim point is dead centre, and I cannot tell whether I am mining wood
+or stone". A capture from the spawn point shows exactly why: the character stands on
+the view axis, so his head sits on the crosshair and the selection box is entirely
+behind him.
+
+Three changes, covering different parts of it:
+
+- **The third-person camera goes over the right shoulder.** The separation works
+  because the character is nearer the camera than the target is, so it swings further
+  across the screen for the same displacement: at a four-block target the character
+  sits 20.6 degrees off centre and the aim point 10.3. One raycast along the whole
+  displacement handles walls, since a lateral offset can push the camera through one
+  just as a backward offset can.
+- **The crosshair follows the aim ray.** It has to. The ray is cast from the eye and
+  the frame is drawn from the shoulder, so a centred crosshair in third person would
+  mark a spot the player is not aiming at -- a worse lie than the problem being fixed.
+  In first person the render camera *is* the eye, so it stays centred.
+- **The selection outline is thick.** It was GL lines at one pixel because
+  `rhi/Device.hpp` had already recorded that `glLineWidth` above 1.0 may be silently
+  ignored in a core profile. Width has to be geometry, so `selection.vert` expands each
+  of the twelve edges into a screen-space quad: constant thickness at any distance
+  within reach, aspect-corrected, which fullscreen made necessary.
+
+**And the HUD names the block under the crosshair, which is the part that still works
+when the picture does not.** In third person the character covers anything within arm's
+reach whatever the camera does -- a block at the player's feet cannot be seen past the
+model. Vanilla answers this with the F3 screen; here it is one line under the crosshair
+and always on, because "what am I mining" is not a debugging question.
+
+That needed letters. The glyph atlas held ten digits and two hearts, so this added 5x7
+uppercase A-Z as hand-coded bit patterns, keeping the rule that no binary asset ships
+with this repository. 3x5 was not an option: three columns cannot make a legible M or W.
+
+#### The limit that remains
+
+The shoulder offset cannot fix the close-range case, and the geometry says so: a block
+within arm's reach is behind the character from *any* third-person camera position.
+The name label covers it, and fading the character when it occludes the aim point would
+cover it properly. Recorded in HANDOFF.md 8 rather than built.
+
 ---
 
 ## 8. Open Questions
