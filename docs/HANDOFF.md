@@ -203,6 +203,7 @@ Three older items are still open and still worth doing, in any order:
 | `acdbf07` | Phase 12 — a 20 Hz game tick, block updates, falling sand; stats counters |
 | `3dd2f4b` | Slot inventory, the UI layer and window on `E`, hearts and fall damage |
 | `83c573c` | Water — oceans, a translucent pass, and the fluid/solid split |
+| `af62782` | The fourth play session: item pickup has never worked (section 1) |
 
 Working tree is clean. **Published publicly** at the `origin` remote as of
 2026-08-10; the earlier local-only rule was lifted by the user at that point.
@@ -213,8 +214,8 @@ spaghetti and noodle tunnels carved per block, a surface pass that grasses the t
 the terrain (and only the terrain — not cave ceilings), a bedrock floor, a deepslate
 band that fades in from Y 8 to Y 0, blob features placing granite, diorite, andesite,
 tuff, gravel and seven ores, and **sky light**, so caves are actually dark.
-**29 block types**, up from five -- oak logs, leaves and cobblestone are the newest,
-and there are now **trees** on the surface. It streams
+**30 block types**, up from five -- water is the newest and the only one that is
+neither solid nor opaque -- and there are now **trees** on the surface. It streams
 infinitely and draws the whole visible set with **one** `glMultiDrawArrays`. Generation
 and meshing run on a 6-worker pool, uploads on their own thread, and the main thread
 only ever submits.
@@ -357,7 +358,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (222 cases, doctest)
+# Test  (221 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything

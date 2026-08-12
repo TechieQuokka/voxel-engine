@@ -1922,7 +1922,7 @@ a fluid, and none of them is what "the world has oceans" was asking for.
 
 #### Measurements
 
-222 tests, up from 213. Nine new ones, and the ones worth naming are the mesher's:
+221 tests, up from 213. Eight new ones, and the ones worth naming are the mesher's:
 a slab of water meshes to six quads rather than to its 8,192 internal faces, an
 ocean section surrounded by ocean meshes to none, the opaque/translucent split is a
 real partition rather than a hint, and the culled mesher — the oracle — covers the
