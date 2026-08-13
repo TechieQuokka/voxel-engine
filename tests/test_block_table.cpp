@@ -106,13 +106,26 @@ TEST_CASE("bedrock and water are the only unbreakable blocks") {
     CHECK(isUnbreakable(kWaterBlock));
     CHECK(breakSeconds(kWaterBlock) == doctest::Approx(0.0f));
 
-    usize unbreakable = 0;
+    // **Bedrock is the only unbreakable block that is not a fluid**, which is the
+    // invariant worth pinning. Counting to a literal broke the moment water grew
+    // seven flow levels, and it would have broken again for lava -- the number was
+    // never the point.
+    usize unbreakableSolids = 0;
     for (usize id = 0; id < kBlocks.size(); ++id) {
-        if (isUnbreakable(static_cast<BlockId>(id))) {
-            ++unbreakable;
+        const auto block = static_cast<BlockId>(id);
+        if (isUnbreakable(block) && !isFluid(block)) {
+            ++unbreakableSolids;
         }
     }
-    CHECK(unbreakable == 2);
+    CHECK(unbreakableSolids == 1);
+
+    // And every fluid is unbreakable, at every level. A flow level that could be
+    // punched out would leave a hole in a river that nothing refills.
+    for (usize id = 0; id < kBlocks.size(); ++id) {
+        const auto block = static_cast<BlockId>(id);
+        CAPTURE(kBlocks[id].name);
+        CHECK((!isFluid(block) || isUnbreakable(block)));
+    }
 }
 
 TEST_CASE("fluid and solid are different questions from opaque") {
@@ -132,11 +145,51 @@ TEST_CASE("fluid and solid are different questions from opaque") {
     CHECK(isSolidBlock(kStoneBlock));
     CHECK(isSolidBlock(kOakLeavesBlock));
 
+    // Water is the only fluid, in nine block types: a source, a falling block, and
+    // seven flowing levels.
     usize fluids = 0;
     for (usize id = 0; id < kBlocks.size(); ++id) {
         fluids += isFluid(static_cast<BlockId>(id)) ? 1u : 0u;
     }
-    CHECK(fluids == 1);
+    CHECK(fluids == kMaxFluidLevel + 2u);
+
+    // Every level resolves to exactly the block that claims it, and nothing beyond
+    // level 7 exists -- vanilla turns that into air rather than a tenth block.
+    for (u8 level = 0; level <= kMaxFluidLevel; ++level) {
+        const BlockId water = waterAtLevel(level);
+        CAPTURE(level);
+        CHECK(isFluid(water));
+        CHECK(fluidLevelOf(water) == level);
+        CHECK_FALSE(isSolidBlock(water));
+        CHECK(isFluidReplaceable(water));
+    }
+    CHECK(waterAtLevel(kMaxFluidLevel + 1u) == kAirBlock);
+}
+
+TEST_CASE("a source and a falling block are both full strength and only one persists") {
+    // **`waterAtLevel(0)` is the falling block, not the source, and that is the point
+    // of the distinction.** Both are level 0, so both spread the full seven blocks --
+    // vanilla resets the depth at each new elevation, which is why a waterfall reaches
+    // as far as a lake edge does. But a flow must never *manufacture* a source: a
+    // source never drains, so one created by accident is a leak that fills the world.
+    CHECK(waterAtLevel(0) != kWaterBlock);
+    CHECK(fluidLevelOf(waterAtLevel(0)) == 0);
+    CHECK(fluidLevelOf(kWaterBlock) == 0);
+
+    CHECK(isFluidSource(kWaterBlock));
+    CHECK_FALSE(isFluidSource(waterAtLevel(0)));
+    for (u8 level = 1; level <= kMaxFluidLevel; ++level) {
+        CAPTURE(level);
+        CHECK_FALSE(isFluidSource(waterAtLevel(level)));
+    }
+
+    // Exactly one source block type. A second would be a second thing that never
+    // drains, and the reason to notice is that nothing else in the engine would.
+    usize sources = 0;
+    for (usize id = 0; id < kBlocks.size(); ++id) {
+        sources += isFluidSource(static_cast<BlockId>(id)) ? 1u : 0u;
+    }
+    CHECK(sources == 1);
 }
 
 TEST_CASE("every ore is harder in deepslate than in stone") {

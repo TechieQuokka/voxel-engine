@@ -558,6 +558,14 @@ private:
     u64 m_blocksBroken = 0;
     u64 m_blocksPlaced = 0;
     u64 m_itemsCollected = 0;
+    /// Water blocks created, moved or removed, and how many spreads had to wait for a
+    /// neighbouring column to finish generating.
+    ///
+    /// Both exist so that "did the water actually flow" is a number rather than an
+    /// impression. **The lesson is 7.14's**: item pickup was dead for four play
+    /// sessions because nothing printed a figure that would have been zero.
+    u64 m_blocksFlowed = 0;
+    u64 m_fluidSuspends = 0;
 };
 
 } // namespace mc

@@ -29,9 +29,15 @@ class FallingBlocks;
 /// The second half is deliberately concrete rather than a table of behaviours or a
 /// virtual on a block. An abstraction with one implementation is not an abstraction
 /// -- the same argument DESIGN.md 7.10 makes for not pre-splitting items from
-/// blocks. Flowing water is the second behaviour and the point at which the shape of
-/// the dispatch will be obvious; `examine` is where it goes, and the queue above it
-/// does not change.
+/// blocks.
+///
+/// **Flowing water is the second behaviour, and it arrived without changing the queue
+/// at all.** The prediction above was that the shape of the dispatch would become
+/// obvious once there were two; what it turned out to be is an `if` on the block type
+/// at the top of `examine` and a second function under it. Two behaviours is still
+/// not enough to justify a table, and the day a third arrives is the day to look
+/// again -- but the *queue*, the dedupe set, the delay and the retry discipline were
+/// all reused unchanged, which is what the split was for.
 ///
 /// **Main thread only.** It calls `World::setBlock`, which is main-thread-only for
 /// the pin reasons in World.hpp, and it holds no pointers into the world between
@@ -55,10 +61,16 @@ public:
     struct Stats {
         usize examined = 0;
         usize fell = 0;
+        /// Water blocks created, moved or removed.
+        usize flowed = 0;
         /// The world was busy; re-queued rather than lost.
         usize retried = 0;
         /// Outside the world, or in a column that has gone away.
         usize discarded = 0;
+        /// A neighbouring column had not finished generating, so the spread was
+        /// suspended and re-queued. **Vanilla does exactly this** rather than
+        /// solving it -- see `World::isReadyAt`.
+        usize suspended = 0;
     };
 
     /// One game tick: examines everything due, and re-queues what the world refused.
@@ -81,11 +93,30 @@ private:
     enum class Outcome {
         Done,     ///< Nothing to do. Air, a block that does not fall, or a supported one.
         Fell,     ///< Became a falling entity.
+        Flowed,   ///< Water was created, moved or removed here.
         Retry,    ///< The column is pinned. Ask again next tick.
+        Suspend,  ///< A neighbouring column is not Ready. Ask again next tick.
         Discard,  ///< Outside the world, or the column is gone.
     };
 
     Outcome examine(World& world, FallingBlocks& falling, BlockPos pos);
+
+    /// The fluid half. Decides what level this position *should* hold and edits
+    /// toward it, then spreads down and sideways. See the write-up in the .cpp.
+    Outcome examineFluid(World& world, BlockPos pos, BlockId block);
+
+    /// Queues `pos` and its six face neighbours `kFluidDelayTicks` out.
+    ///
+    /// **The delay is the flow speed.** Vanilla water moves one block per 5 ticks --
+    /// 4 blocks a second at 20 Hz -- and since each block's spread queues the next
+    /// one, the schedule delay *is* the rate. Using `notify`'s single tick here would
+    /// make water run at 20 blocks a second, which reads as a burst rather than a
+    /// flow.
+    void notifyFluid(BlockPos pos);
+
+    /// Water's speed is one block per 5 ticks, which is vanilla's and is why the
+    /// fluid half schedules itself further out than the falling half does.
+    static constexpr u32 kFluidDelayTicks = 5;
 
     struct Entry {
         BlockPos pos{};

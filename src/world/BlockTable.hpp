@@ -294,6 +294,38 @@ struct BlockInfo {
     /// would be unsatisfiable, since nothing can match a `ToolKind::None` requirement.
     /// The static_assert at the bottom of the file enforces it.
     ToolTier minTier = ToolTier::None;
+
+    /// How empty this fluid is: 0 is a source block, 1-7 are flowing, one further
+    /// from the source each step. Meaningless unless `fluid`.
+    ///
+    /// **Vanilla's fluid level, spelled as separate block types.** Minecraft carries
+    /// it as block state on one block; this engine has no block state, and a section
+    /// stores one `BlockId` per voxel through a palette already built to make
+    /// near-uniform data free. Eight ids for water widens the palette only in the
+    /// sections where water is actually flowing -- an ocean is uniform level 0 and
+    /// stays a single palette entry, which is the whole reason this was affordable
+    /// without inventing block state first.
+    ///
+    /// **Second to last field, and the rule that puts it here has now caught two
+    /// bugs.** Every `BlockInfo{...}` in the table below is positional, so a field
+    /// inserted rather than appended silently shifts the meaning of the ones after
+    /// it -- the first draft of this put it before `minTier` and turned every ore's
+    /// harvest tier into a fluid level. See the note on `falls` above.
+    u8 fluidLevel = 0;
+
+    /// A fluid that replenishes itself: an ocean block, or one placed by a bucket.
+    ///
+    /// **Distinct from `fluidLevel == 0`, and that distinction is vanilla's.** Water
+    /// falling down a shaft is *also* full-strength -- it spreads seven blocks when it
+    /// lands, because "the depth resets at a new elevation" -- but it is not a source:
+    /// cut the supply above it and it drains, where a source stays forever. Vanilla
+    /// spells the difference as levels 8-15 versus level 0; this engine spells it as
+    /// one more block type and this flag.
+    ///
+    /// **A source is never consumed by flowing out of it.** That is the whole reason
+    /// water is affordable: a conservative fluid would need per-body global state,
+    /// which a chunk-streaming world cannot cheaply keep. RESEARCH.md 7.1.
+    bool fluidSource = false;
 };
 
 /// A block that draws the same layer on all six faces, which is most of them.
@@ -416,8 +448,46 @@ inline constexpr std::array kBlocks{
     // Unbreakable because a bucket is the only thing that removes water in vanilla
     // and there are no items yet -- and because the aim ray passes through it, the
     // player never gets the chance to try.
+    // The trailing `0, true` is `fluidLevel` then `fluidSource`.
     BlockInfo{"water", false, layerOf("water"), layerOf("water"), layerOf("water"),
-              '~', false, -1.0f, "air", false, true},
+              '~', false, -1.0f, "air", false, true, ToolKind::None, ToolTier::None,
+              0, true},
+
+    // **Water on its way down.** Full strength like a source -- it spreads seven
+    // blocks where it lands, because vanilla resets the depth at each new elevation --
+    // but not a source: remove what feeds it and it drains. Vanilla carries this as
+    // levels 8-15 on the same block; here it is one more block type, which is what
+    // an engine with no block state has instead.
+    BlockInfo{"water_falling", false, layerOf("water"), layerOf("water"),
+              layerOf("water"), 'v', false, -1.0f, "air", false, true, ToolKind::None,
+              ToolTier::None, 0, false},
+
+    // **Flowing water, one block type per level.** Level 1 is next to a source and
+    // level 7 is as far as water reaches on a flat floor; there is no level 8 because
+    // that is where vanilla stops and the block becomes air.
+    //
+    // Seven entries rather than a `level` field on one block type, because a section
+    // stores a `BlockId` per voxel and nothing else -- see BlockInfo::fluidLevel.
+    // They are identical to the source in every way that rendering and physics care
+    // about, which is why they share its texture and its `-1` hardness: a bucket is
+    // the only thing that removes water in vanilla, the aim ray passes through a
+    // fluid, and a player never gets the chance to try.
+    //
+    // The trailing `1`..`7` is `BlockInfo::fluidLevel`, the last field.
+    BlockInfo{"water_1", false, layerOf("water"), layerOf("water"), layerOf("water"),
+              '1', false, -1.0f, "air", false, true, ToolKind::None, ToolTier::None, 1},
+    BlockInfo{"water_2", false, layerOf("water"), layerOf("water"), layerOf("water"),
+              '2', false, -1.0f, "air", false, true, ToolKind::None, ToolTier::None, 2},
+    BlockInfo{"water_3", false, layerOf("water"), layerOf("water"), layerOf("water"),
+              '3', false, -1.0f, "air", false, true, ToolKind::None, ToolTier::None, 3},
+    BlockInfo{"water_4", false, layerOf("water"), layerOf("water"), layerOf("water"),
+              '4', false, -1.0f, "air", false, true, ToolKind::None, ToolTier::None, 4},
+    BlockInfo{"water_5", false, layerOf("water"), layerOf("water"), layerOf("water"),
+              '5', false, -1.0f, "air", false, true, ToolKind::None, ToolTier::None, 5},
+    BlockInfo{"water_6", false, layerOf("water"), layerOf("water"), layerOf("water"),
+              '6', false, -1.0f, "air", false, true, ToolKind::None, ToolTier::None, 6},
+    BlockInfo{"water_7", false, layerOf("water"), layerOf("water"), layerOf("water"),
+              '7', false, -1.0f, "air", false, true, ToolKind::None, ToolTier::None, 7},
 };
 
 /// Resolves a block name to its BlockId. Same reasoning as `layerOf`.
@@ -464,6 +534,46 @@ constexpr bool isFluid(BlockId id) {
     return id < kBlocks.size() && kBlocks[id].fluid;
 }
 
+/// How empty a fluid is: 0 for a source, 1-7 flowing. See BlockInfo::fluidLevel.
+/// Zero for anything that is not a fluid, so ask `isFluid` first.
+constexpr u8 fluidLevelOf(BlockId id) {
+    return id < kBlocks.size() ? kBlocks[id].fluidLevel : u8{0};
+}
+
+/// The furthest a fluid reaches from its source on a flat floor. Past this the block
+/// would be level 8, and vanilla makes that air instead.
+inline constexpr u8 kMaxFluidLevel = 7;
+
+/// A fluid that replenishes itself rather than draining. See BlockInfo::fluidSource.
+constexpr bool isFluidSource(BlockId id) {
+    return id < kBlocks.size() && kBlocks[id].fluidSource;
+}
+
+/// The *flowing* water block at `level`, or `kAirBlock` past `kMaxFluidLevel`.
+///
+/// Level 0 gives the falling block, not the source: a flow can produce full-strength
+/// water on its way down but must never produce a source, because a source never
+/// drains and one created by accident is a leak that fills the world.
+///
+/// A search rather than arithmetic on `kWaterBlock + level`. The ids happen to be
+/// consecutive today and relying on that would make inserting a block type between
+/// them a silent behaviour change rather than a compile error -- which is the failure
+/// mode this whole file exists to prevent.
+constexpr BlockId waterAtLevel(u8 level) {
+    if (level > kMaxFluidLevel) {
+        return kAirBlock;
+    }
+    for (usize i = 0; i < kBlocks.size(); ++i) {
+        if (kBlocks[i].fluid && !kBlocks[i].fluidSource && kBlocks[i].fluidLevel == level) {
+            return static_cast<BlockId>(i);
+        }
+    }
+    return kAirBlock;
+}
+
+/// True for water at any level, source or flowing.
+constexpr bool isWater(BlockId id) { return isFluid(id); }
+
 /// True for anything that holds things up: not air, and not a liquid.
 ///
 /// **This is the test almost every caller of `blockAt` actually wanted**, and until
@@ -473,6 +583,13 @@ constexpr bool isFluid(BlockId id) {
 constexpr bool isSolidBlock(BlockId id) {
     return id != kAirBlock && !isFluid(id);
 }
+
+/// Can a fluid move into this block and replace it?
+///
+/// Air and other fluid, which today is the same thing as "not solid". Vanilla also
+/// washes away torches and flowers; neither exists yet, and when they do this is the
+/// one place that has to learn about them.
+constexpr bool isFluidReplaceable(BlockId id) { return !isSolidBlock(id); }
 
 /// Bedrock, and anything else ever given a negative hardness.
 constexpr bool isUnbreakable(BlockId id) {

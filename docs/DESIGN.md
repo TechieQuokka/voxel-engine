@@ -810,8 +810,14 @@ against water face culling and the translucent second draw pass are built; **aqu
 are not**, so there are oceans and no flooded caves. RESEARCH.md 5.3 has the original
 statement of the three problems and 7.13 has what was done about them. What 12 had
 already removed from the list is the fourth item — the tick to flow on — which exists
-and is the same one falling sand uses; **flowing water still does not**, and the note
-at `BlockUpdates::examine` says why it is not a small addition.
+and is the same one falling sand uses.
+
+**Flowing water landed on 2026-08-13 and is also not a phase** (7.17), on the same
+argument: it is a second behaviour inside `BlockUpdates`, not a new subsystem. The note
+at `examine` that said sideways spread would break its safe-read argument was right,
+and the answer was vanilla's — suspend at the border and re-queue, rather than solve
+it. **Aquifers remain the only unbuilt part of water**, so caves under the sea are dry
+and there are no underground lakes; RESEARCH.md 7.2 now carries the algorithm.
 
 Phase 9 was deliberately first of the three, and both halves of that argument held.
 It reused the dirty mask, the remeshing path, `Palette::set` and the light recompute
@@ -2407,6 +2413,130 @@ and `BlockInfo` gained two bytes, neither of which the mesher's hot loop noticed
 - **No armour**, for the same reason one step further along: fall damage is the only
   thing in the world that can hurt the player, so armour would be a stat that never
   fires.
+
+### 7.17 Flowing water
+
+Built 2026-08-13, out of "water is not fixed at a coordinate, it runs downhill". Both
+halves of that were right. RESEARCH.md 7 has the vanilla mechanics this is measured
+against; this is what was built and what it cost.
+
+**Vanilla behaviour is the premise, stated by the user and worth writing down**, since
+the alternative is a defensible engineering choice that would have produced a
+different engine — see the mass-conservation note below.
+
+#### Levels as block types
+
+Vanilla carries a fluid's level as block state; this engine has no block state, so a
+level is a block type. Nine of them: a source, a falling block, and levels 1-7.
+
+That sounds expensive and is not, because of what a section already is. Blocks are
+stored through a palette built to make near-uniform data free, and **an ocean is
+uniform level 0** — one palette entry, exactly as before. The palette only widens in
+the sections where water is actually flowing, which are the ones a player made.
+
+**`waterAtLevel(0)` is the falling block, not the source**, and that distinction took
+a bug to find. Both are full strength: water that has fallen down a shaft spreads the
+full seven blocks when it lands, because the wiki is explicit that depth resets at each
+new elevation. But a flow must never *manufacture* a source, because a source never
+drains — one created by accident is a leak that fills the world. Vanilla spells the
+same difference as levels 8-15 against level 0.
+
+#### The rules, in the order they matter
+
+1. **Down wins outright.** A block that can fall does not also spread sideways. That
+   asymmetry — falling is free, sideways is metered at seven blocks — is the whole of
+   "water runs downhill" rather than "water diffuses".
+2. **The five-block slope search.** Before choosing a horizontal direction, the fluid
+   looks up to five blocks for somewhere it could fall and, finding one, flows *only*
+   that way. The wiki says this exists "for aesthetic purposes"; it is what makes
+   water seek a cliff edge instead of creeping outward as a disc, and it is the
+   difference between a flow that looks like it obeys gravity and one that does not.
+3. **Level is recomputed, never remembered.** Each flowing block takes the lowest
+   level any neighbour can give it, plus one. Past seven it becomes air. **Draining
+   needs no second mechanism**: remove the supply and each block in turn finds none
+   and deletes itself, one tick per block, out of the same queue the spread used.
+4. **A source is never consumed.** See below.
+5. **One block per five ticks**, vanilla's rate, expressed in the 20 Hz tick Phase 12
+   already built for falling sand. The schedule delay *is* the flow speed.
+
+#### Water is not mass-conserving, and that is the design
+
+A source block never depletes by flowing out of it. A hole dug in the sea bed floods
+forever and the sea does not drop.
+
+**This is the load-bearing decision and not an approximation of a better one.** A
+conservative fluid needs global per-body state — how much water is in this body, where
+its surface is now — which is exactly what a chunk-streaming world cannot cheaply
+keep: the body spans columns that load and unload independently. Vanilla makes no
+attempt at it, and the consequence is that underground does not "lose its water" when
+you dig into a lake; it gains the sea's, permanently, until something plugs the hole.
+
+#### The chunk-border problem, answered by refusing
+
+`BlockUpdates` was safe before this because it only ever read the block *below* — the
+same column, so an unloaded neighbour could not be misread as air. HANDOFF.md recorded
+that sideways spread would break the argument, and it does.
+
+Vanilla's answer is not to solve it. Fluid spreads into the first block of a
+non-ticking chunk and **suspends there until that chunk's load level rises**. So
+`World::isReadyAt` was added — the query `blockAt` cannot answer, because it collapses
+"air", "not loaded" and "still generating" into one value — and a spread that meets a
+column which is not Ready returns `Suspend` and re-queues itself. That reuses the retry
+discipline `BlockUpdates` already had for `EditStatus::Busy`.
+
+#### Two bugs worth keeping
+
+**Air blocks were deciding their own level, and the flow never settled.** The first
+version examined air next to water, reasoning that a block just broken beside a lake
+is air and air is where water goes. It does not converge: an air block that computes
+its own level from its neighbours **bypasses both the down-first rule and the slope
+search**, so water filled every reachable cell in every direction and the queue grew
+without bound — 176 pending and rising, with 74 edits a tick and no sign of stopping.
+The fix is vanilla's own split: recomputing the level of an *existing* fluid block and
+*spreading into a new* one are two different operations with two different rule sets.
+Air becomes water only by a neighbour spreading into it. A broken block still floods,
+because breaking it notifies its six neighbours and the water among them is what
+answers.
+
+**A one-block wall is not a dam**, and the test that assumed it was is kept. Water went
+around it in two steps. That was the engine being right and the test being wrong, and
+it is exactly the mistake a player makes when they try to plug a leak with one block.
+
+#### Cost
+
+249 tests, up from 240. The eight new cases cover the seven-block reach, the free fall,
+the slope search choosing a direction, draining, the source persisting, a dam breaking,
+two flows meeting, and the suspend-at-the-border case.
+
+**Nothing measurable in the benchmark, and for a structural reason**: a benchmark
+flight never edits the world, so no water is ever notified and the fluid path never
+runs. This is the same blind spot Phase 12 has, recorded in the same place.
+
+What *is* known is that flow is expensive per block, and the mechanism is already
+documented: `World::setBlock` relights the whole column, about 0.5 ms, and a flow is
+many setBlocks. **The test suite found this before a player could** — the first version
+of the flowing-water tests built their floor through `setBlock` and took six seconds
+per floor in an optimised build, minutes in the debug one, and timed the file out.
+Tests build terrain by writing into sections now, which is what a generator does. The
+per-flow cost in play is unmeasured, and a player digging into an ocean is how it will
+be found.
+
+A stats line carries `flowed` and `suspended` counters for that reason. 7.14's lesson
+is that a feature nobody can observe in a log is a feature that ships broken.
+
+#### What is not built
+
+- **No aquifers**, so caves under the sea are still dry and there are no underground
+  lakes. RESEARCH.md 7.2 now has the algorithm, which section 6 had recorded as
+  needing a decompilation; only the barrier noise is still undocumented.
+- **No infinite source rule.** Two adjacent sources do not make a third. It is moot
+  today because water is unbreakable and no bucket exists, so a source cannot be
+  removed in the first place.
+- **Flowing water renders as a full cube.** Vanilla slopes the surface by level. The
+  `Quad` is a lattice-integer full face, so this needs the same non-cube geometry path
+  Phase 10 builds for vegetation.
+- **No lava.** The tier machinery is there — `fluidLevel` and `fluidSource` are per
+  block type, and lava is the same algorithm with a step of 2 rather than 1.
 
 ---
 

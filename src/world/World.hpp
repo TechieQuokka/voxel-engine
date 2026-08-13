@@ -67,6 +67,25 @@ public:
     /// the generator's release store makes the column Ready.
     BlockId blockAt(BlockPos pos) const noexcept;
 
+    /// Whether `blockAt(pos)` is answering from real voxels rather than from the
+    /// "not here" fallback above.
+    ///
+    /// **This is the test that sideways spread needs and downward spread does not.**
+    /// `blockAt` conflates three different situations into `kAirBlock`: genuine air,
+    /// a column outside the loaded region, and a column a worker is still filling.
+    /// Every caller so far only ever read *down*, into the same column it was already
+    /// standing in, where that conflation is harmless -- `BlockUpdates::examine` has
+    /// the argument written out at the read.
+    ///
+    /// Flowing water reads its four horizontal neighbours, which are in up to four
+    /// different columns, and "air" there would mean water pouring off the edge of
+    /// the loaded region into a chunk that has simply not arrived. Vanilla answers
+    /// this by refusing rather than solving it: fluid spreads into the first block of
+    /// a non-ticking chunk and then suspends until that chunk loads. This is the
+    /// query that lets the same thing happen here, with the update re-queued rather
+    /// than dropped.
+    bool isReadyAt(BlockPos pos) const noexcept;
+
     /// Why an edit did or did not happen. Anything but `Applied` left the world
     /// untouched.
     enum class EditStatus {

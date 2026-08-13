@@ -1159,7 +1159,14 @@ void Engine::updateTicks(f32 dt) {
 
     while (m_tickAccumulator >= kTickSeconds) {
         m_tickAccumulator -= kTickSeconds;
-        m_blockUpdates.tick(*m_world, m_falling);
+        const BlockUpdates::Stats stats = m_blockUpdates.tick(*m_world, m_falling);
+        // **Counted so a play session can see it.** The lesson from 7.14 is that a
+        // feature nobody can observe in the log is a feature that ships broken: item
+        // pickup was dead for four sessions because nothing printed a number that
+        // would have been zero. Water flowing is invisible from a benchmark and hard
+        // to be sure of by eye in a cave.
+        m_blocksFlowed += stats.flowed;
+        m_fluidSuspends += stats.suspended;
     }
 }
 
@@ -1438,9 +1445,12 @@ void Engine::reportStats(f64 fps, f64 frameMs) {
                  static_cast<i32>(std::floor(feet.z))}));
 
     logInfo("  broke {} | placed {} | collected {} | {} items, {} falling, "
-            "{} updates queued | at ({:.1f}, {:.1f}, {:.1f}){}",
+            "{} updates queued | flowed {}{} | at ({:.1f}, {:.1f}, {:.1f}){}",
             m_blocksBroken, m_blocksPlaced, m_itemsCollected,
             m_items.size(), m_falling.size(), m_blockUpdates.pending(),
+            m_blocksFlowed,
+            m_fluidSuspends > 0 ? std::format(" ({} suspended)", m_fluidSuspends)
+                                : std::string{},
             feet.x, feet.y, feet.z, buried ? " BURIED" : "");
 }
 

@@ -93,6 +93,17 @@ const Section* World::sectionAt(SectionPos pos) const noexcept {
     return chunk != nullptr ? chunk->sectionAt(pos.y) : nullptr;
 }
 
+bool World::isReadyAt(BlockPos pos) const noexcept {
+    if (!isValidWorldY(pos.y)) {
+        return false;
+    }
+    const Chunk* chunk = find(toChunkPos(pos));
+    // The same acquire load `blockAt` relies on, and the same pairing: observing
+    // Ready means observing every voxel the generator wrote. A missing section is
+    // still Ready -- it is genuinely air, uniformly, and reading it is safe.
+    return chunk != nullptr && chunk->state() == ChunkState::Ready;
+}
+
 BlockId World::blockAt(BlockPos pos) const noexcept {
     if (!isValidWorldY(pos.y)) {
         return kAirBlock;
