@@ -1,312 +1,104 @@
 # Handoff
 
-Snapshot for resuming work. Written 2026-08-09; last updated 2026-08-13, when the
-crafting track was planned and **Phase 16 built** -- items stopped being blocks.
+Snapshot for resuming work. Written 2026-08-09; last updated 2026-08-13, after the
+crafting track was planned, **Phase 16 built** -- items stopped being blocks -- and
+**water learned to flow**.
 
-Read `docs/DESIGN.md` for the full design and the reasoning behind every
-decision, and `docs/RESEARCH.md` for the vanilla Minecraft numbers the remaining
-Phase 4 work is measured against. This file is the short version plus the
-practical details needed to pick the work back up cold.
+Read `docs/DESIGN.md` for the full design, the reasoning behind every decision, and the
+measured result of every phase; `docs/RESEARCH.md` for the vanilla Minecraft mechanics
+and numbers those are measured against.
+
+**This file is what those two are not: the practical detail needed to pick the work
+back up cold, and nothing that is already finished.** It carries what to do next, how
+to build and run it, where things live, and the mistakes that cost real time. It was
+cut back to that on 2026-08-13, for the second time -- both times because it had filled
+up with descriptions of completed work, which is the one kind of content a handoff has
+no use for.
 
 ---
 
 ## 1. Where things stand
 
-**Phases 0-3 complete. Phase 4 in progress** -- 4a, 4b and 4c done; 4d (biomes) is the
-last step and is *not* next, because it still has the unresolved input in section 6.
-**The interaction track is done** (9, 12, 13, 14, 15, plus trees, water and two
-follow-up batches) and **the crafting track has started: Phase 16 is built.** The
-tracks are independent, so 4d being open alongside them is not a contradiction.
-
-DESIGN.md 7 has the phase plan; 7.5-7.15 have the results and the reasoning.
-RESEARCH.md has the vanilla numbers and records which of them could not be confirmed.
-
-| Built | Write-up |
+| Track | State |
 |---|---|
-| Terrain, caves, ores, sky light | DESIGN.md 7.6 |
-| Block placement and breaking (9) | 7.8 |
-| Trees, per-block break times, the step-height fix | 7.9 |
-| Entities, item drops, HUD (13, 14) | 7.10 |
-| Block updates and the 20 Hz tick (12) | 7.11 |
-| Slot inventory, the UI layer, hearts (15) | 7.12 |
-| Water -- oceans and the translucent pass | 7.13 |
-| Item pickup, which had never worked | 7.14 |
-| The Alt-Tab stall fix, and seeing what you are mining | 7.15 |
-| **Items, crafting and tools (16)** | **7.16** |
+| **Performance** — phases 0-8 | 0-3 done. **4 in progress**: 4a-4c built, **4d (biomes) is the last step and is *not* next** — it still has the unresolved input in section 6. 5-8 untouched. |
+| **Interaction** — 9-15 | **Done**, plus trees, oceans and flowing water. |
+| **Crafting** — 16-19 | **16 done.** 17-19 open, below. |
 
-**Deliberately not built**, each for a recorded reason: aquifers (so no flooded
-caves) and flowing water. Section 8. The item/block split that used to head this
-list is built -- it was Phase 16.
+The two tracks are independent, so 4d being open alongside finished interaction work
+is not a contradiction.
+
+| | Next up | Blocked on |
+|---|---|---|
+| **17** | Crafting bench, **furnace and smelting**, iron/diamond tiers, durability | a **second UI window** |
+| **18** | Torches and block light | a torch is not a cube (Phase 10 geometry) |
+| **19** | Mobs, combat, weapons, armour | **mobs do not exist at all** |
+
+**17's real content is the furnace, not the bench.** Vanilla's harvest tiers are in the
+block table already — iron, copper and lapis need a stone pickaxe; gold, redstone and
+diamond need iron — so **half the ore table is deliberately out of reach today**, and
+the wall Phase 16 stops against is precisely what 17 opens. A sword is craftable now
+and does nothing, which is honest rather than finished.
+
+**18's bit budget is already settled** (DESIGN.md 3.7): the 64-bit quad is exactly
+full, so sky and block light combine into the brightness it already carries rather than
+the word widening to 128 bits. The tint is what that costs.
+
+**19 is last because armour has nothing to protect against.** Fall damage is the only
+thing in the world that can hurt the player and there is nothing to fight.
+
+> **What is built is written up in DESIGN.md 7.x, and this file does not repeat it.**
+> RESEARCH.md carries the vanilla numbers it was measured against. Duplicating either
+> here is how this document grew past a thousand lines twice; the second time it was
+> mostly descriptions of work that was already finished, which is exactly the content
+> a handoff does not need.
 
 ### Playing it is what has driven this project
 
 **Every change of direction came out of a play session rather than out of reasoning
 about scope.** That is the single most useful thing to know before picking this up.
-The lessons are in section 5 and the write-ups in DESIGN.md; this is the index.
+Six sessions so far, written up in DESIGN.md 7.12, 7.14 and 7.15. Two are worth
+carrying as method rather than as history:
 
-| # | Date | What it found |
-|---|---|---|
-| 1-2 | 08-10 | Twenty-one new block types, all underground, none reachable on foot. Produced the scope change and Phase 9. |
-| 3 | 08-11 | The count-based inventory falls short -- a container *is* the feature, not the bookkeeping behind it. Produced 7.12. |
-| 4 | 08-12 | `broke 2, collected 0`. **Item pickup had never worked**, found by the stats counters in their first outing. Produced 7.14. |
-| 5 | 08-12 | `broke 5, collected 5`. Pickup confirmed. Fall damage fired for the first time. |
-| 6 | 08-12 | **Alt-Tab dropped the player through the floor.** Fixed the same day, and the same session then confirmed the fix. First session to reach the water. |
-
-Two of these are worth keeping in full, because both reversed a decision made here.
-
-**Session 3 reversed a recommendation.** Two inventory models were put up: (A) counts
-only, one `u32` per block type, no slots and no window; (B) slots with a real screen.
-(A) was recommended and chosen, on the grounds that it closes the break-drop-collect-
-place loop for a fraction of the work. **The loop argument was right and the conclusion
-was wrong** -- carrying things is not felt as a number going up. No amount of reasoning
-about scope was going to produce that, and one session did. (B) is what is built now.
-
-**Session 6 confirmed a fix inside the session that reported the bug.** The player
-Alt-Tabbed away, came back, and fell through the world; after the fix, the log shows a
-7.5 FPS second (a 133 ms frame -- the stall) with the position identical either side of
-it and `BURIED` never set. The stall is *visible in the log at all* only because the
-frame-time accumulator deliberately uses real elapsed time while the simulation clamps
-its delta. Clamping both would have printed a steady 60 FPS and left no evidence.
+- **Session 3 reversed a recommendation made in this file.** A count-based inventory
+  was recommended and chosen on an argument that was *correct* — it closes the
+  break-drop-collect-place loop for a fraction of the work — and the conclusion was
+  wrong, because carrying things is not felt as a number going up. No amount of
+  reasoning about scope was going to produce that, and one session did.
+- **Item pickup had never worked, through four sessions and a full test suite**,
+  because nothing printed a figure that would have been zero. Every counter in the
+  stats line exists because of that, including the newest two.
 
 ### Where to resume
 
-**Nothing is half-finished.** The working tree is clean, everything is pushed, and
-240 tests, asan and tsan all pass. Pick any of these:
+**Nothing is half-finished.** Working tree clean, 249 tests, asan and tsan all pass.
 
-1. **Play it, and knock a sand pillar over.** Phase 12 has *still* never been seen by
-   a person: a benchmark flight never edits the world, so it cannot make a block fall.
-   Place a few sand blocks from the hotbar and dig out the bottom one. This is the
+Four of these need a person, and they are first on purpose — the list of things this
+project found by playing is longer than the list it found by reasoning.
+
+1. **Play Phase 16 and try to reach iron.** Punch a tree, craft planks, sticks and a
+   wooden pickaxe, mine stone, craft a stone pickaxe, find iron ore. That path has
+   tests behind it and **has never been walked by a person**.
+2. **Play the water.** Dig into the side of a lake and watch it pour in; wall it off
+   and break the wall. **Flowing water has never been seen by anyone either** — a
+   benchmark flight never edits the world, so it never notifies a fluid. The stats
+   line prints `flowed`, which is the number that should not be zero.
+3. **Knock a sand pillar over.** Phase 12 has *still* never been seen by a person, for
+   the same reason. Place a few sand blocks and dig out the bottom one. This is the
    oldest unverified thing in the project.
-2. **Look at water from underneath.** Back-face culling is off for the translucent
-   pass precisely so the surface reads from below, and `--capture` cannot put a camera
-   under the sea. Session 6 swam (its Y sat at 60.5-62.9 against a sea level of 62)
-   but did not report the view up. The water is a short walk **west of spawn**.
-3. **Press `F11` back to windowed.** Both fullscreen sessions started from
-   `--fullscreen`, so the path that restores the remembered windowed rectangle -- the
-   one with the Wayland caveat under it -- has never run.
-4. **Light does not cross column borders.** A cave lit through an opening one column
+4. **Look at water from underneath, and press `F11` back to windowed.** Back-face
+   culling is off for the translucent pass precisely so the surface reads from below,
+   and `--capture` cannot put a camera under the sea. Both fullscreen sessions started
+   from `--fullscreen`, so the path that restores the remembered windowed rectangle —
+   the one with the Wayland caveat under it — has never run. Water is a short walk
+   **west of spawn**.
+5. **Light does not cross column borders.** A cave lit through an opening one column
    over stays dark, with a straight vertical boundary. Needs a light-changed signal
    threaded into the dirty-mask and pin machinery meshing already uses, so it is a
    phase rather than a patch. Section 6 has the shape of it.
-5. **The `ChunkRenderer` buffer hazard**, section 8, which Phase 5 will otherwise
-   inherit -- and which is in **five** places rather than the one it was first
-   written up as. Fix it as one shared ring, not five.
-6. **Play Phase 16 and try to reach iron.** Punch a tree, craft planks, sticks and a
-   wooden pickaxe, mine stone, craft a stone pickaxe, find iron ore. That path has
-   240 tests behind it and **has never been walked by a person** -- which is the
-   condition that produced every bug in the table above.
-
-**The crafting track is now planned rather than pending: Phases 16 to 19**, added
-2026-08-13 out of the plainest statement of the gap anyone has made -- house-building,
-torches, and crafting weapons, pickaxes and armour. DESIGN.md 7's phase table has
-them and the section after it has the reasoning. The short version:
-
-| | | Blocked on |
-|---|---|---|
-| **16 (done)** | The item/block split, 3x3 crafting, wood and stone tools | -- |
-| **17** | Crafting bench, **furnace and smelting**, iron/diamond tiers, durability | a **second UI window** |
-| **18** | Torches and block light | a torch is not a cube (Phase 10 geometry) |
-| **19** | Mobs, combat, weapons, armour | **mobs do not exist at all** |
-
-**16 was the keystone and the other three waited on it.** Items were `BlockId`s; a
-stick is not a block, and neither is an ingot or a pickaxe. Item ids now extend the
-block id space rather than replacing it, so adding a block is still one line and gives
-it an item for free. DESIGN.md 7.16 has the whole account.
-
-**The grid is 3x3 and in the player's own window, which is not vanilla** -- a pickaxe
-is a 3x3 recipe, so 2x2 could not make the one thing the phase existed for, and a
-bench is a second window. **Phase 17 moves 3x3 to the bench and cuts the player's to
-2x2**, which is a reduction presented as a feature, exactly as vanilla does.
-
-**17's real content is the furnace, not the bench.** Vanilla's harvest tiers are in
-the block table already: iron, copper and lapis need a stone pickaxe; gold, redstone
-and diamond need iron. An iron pickaxe needs an ingot and an ingot needs smelting, so
-**half the ore table is deliberately out of reach today** and the wall Phase 16 stops
-against is precisely what Phase 17 opens.
-
-**18's bit-budget problem is already settled** (DESIGN.md 3.7): the 64-bit quad is
-exactly full, so sky and block light combine into the brightness it already carries
-rather than the quad widening to 128 bits. The tint is what that costs. **19 is the
-largest and is last because armour has nothing to protect against** -- fall damage is
-the only thing that hurts the player and there is nothing to fight. A sword is
-craftable today and does nothing, which is honest rather than finished.
-
-| Commit | Contents |
-|---|---|
-| `9c60ddd` | Phase 0 — project skeleton, GL 4.6 context, triangle |
-| `207fd7d` | Phase 1 — palette-compressed sections, culled meshing, camera |
-| `8180945` | Phase 2 — binary greedy meshing, block texture array |
-| `9945f21` | Cleanup pass before Phase 3 (DESIGN.md 7.4) |
-| `0d73b2b` | Phase 3a — lock-free MPMC queue and worker pool |
-| `1c84b5e` | Phase 3b — chunk columns, world streaming, placeholder generator |
-| `7c29082` | Phase 3c — neighbour-aware boundary culling and AO |
-| `17bfb20` | Phase 3d/3e — one draw call for the visible set, five-plane frustum |
-| `8e60532` | Phase 3f — streaming onto the worker pool; Phase 3 complete |
-| `5df5ca6` | Record the Phase 3f commit in the handoff table |
-| `111bf53` | Phase 4a — FastNoise2 terrain on a 4x8x4 interpolation grid |
-| `d669f31` | Fix the benchmark, which was measuring the wrong thing twice (DESIGN.md 7.7) |
-| `c63810e` | Phase 4b — noise caves; README and MIT licence; published publicly |
-| `132f29e` | RESEARCH.md — the vanilla block and ore parameters, with sources |
-| `e554277` | One block table, so adding a block type is one line |
-| `e6c0a3a` | Bedrock and deepslate, and `--probe` to check underground work with |
-| `b4faa6e` | Phase 4c — stone variants, gravel and seven ores on one blob feature |
-| `dd1438c` | A character, on a second render path (outside the documented scope) |
-| `79c4723` | Bring the handoff up to date with 4c, the probe and the character |
-| `742a0c6` | Sky light, and the Quad bit re-layout that made smooth lighting fit |
-| `5b124e2` | Record the lighting work in the handoff |
-| `2b961da` | Walking instead of flying; the character shown by default |
-| `a4b1674` | Record the engine-or-game discussion before it could be lost |
-| `c504948` | Widen the scope to include interaction, on purpose and in one commit |
-| `70b2359` | Phase 9 — voxel raycast, block placement and breaking; you can dig |
-| `2275242` | Trees, per-block break time with cracks, and the 0.6 step height fix |
-| `a204b83` | Phases 13/14 — mining swing, item drops, inventory, HUD |
-| `acdbf07` | Phase 12 — a 20 Hz game tick, block updates, falling sand; stats counters |
-| `3dd2f4b` | Slot inventory, the UI layer and window on `E`, hearts and fall damage |
-| `83c573c` | Water — oceans, a translucent pass, and the fluid/solid split |
-| `af62782` | The fourth play session: item pickup has never worked (section 1) |
-| `af8cd6e` | Audit the docs against the code, and fix three stale numbers |
-| `240c8a7` | Item pickup measured from the body; the asan build unbroken (7.14) |
-| `b8a703e` | Fullscreen on `F11` at the monitor's native resolution |
-| `bd87899` | Alt-Tab no longer drops the player through the floor |
-| `510f290` | Shoulder camera, thick outline, and the block name under the crosshair |
-| `85275bd` | Record the last two commits in the handoff |
-| `cd80f8e` | The sixth session; the handoff cut back to what it is for |
-| `9a422e7` | Phase 16 — items stop being blocks, and a pickaxe becomes necessary |
-
-Working tree is clean. **Published publicly** at the `origin` remote as of
-2026-08-10; the earlier local-only rule was lifted by the user at that point.
-
-What runs today: **FastNoise2 terrain with caves and ores** — continents, erosion,
-ridged peaks and valleys, a 3D warp for overhangs, cheese caverns on the density grid,
-spaghetti and noodle tunnels carved per block, a surface pass that grasses the top of
-the terrain (and only the terrain — not cave ceilings), a bedrock floor, a deepslate
-band that fades in from Y 8 to Y 0, blob features placing granite, diorite, andesite,
-tuff, gravel and seven ores, and **sky light**, so caves are actually dark.
-**31 block types**, up from five -- water is neither solid nor opaque, and oak planks
-are the newest and the only one nothing in the world generates -- and there are now
-**trees** on the surface. It streams
-infinitely and draws the whole visible set with **one** `glMultiDrawArrays`. Generation
-and meshing run on a 6-worker pool, uploads on their own thread, and the main thread
-only ever submits.
-
-**The world can be edited, and what you break you keep.** Hold left to break, right
-click to place, `1`-`9` pick the block. The arm swings while mining -- on the
-character in third person, on a first-person view model otherwise. A wireframe box
-shows what is under the crosshair and cracks spread across it as it is mined; break
-time is vanilla hardness, 0.75 s for dirt up to 6.75 s for a deepslate ore. Broken
-blocks **drop as spinning items**, fall, merge with nearby stacks and can be walked
-over to collect -- which is true as of 2026-08-12 and was not before it, see 7.14.
-Breaking and placing go through the existing dirty mask, so nothing was added to the
-streaming pipeline.
-
-**There is a real inventory**: 36 slots on vanilla's layout, stacks of 64, a window on
-`E` with a pointer, click to pick up and put down, right click to split. The hotbar is
-its first nine slots, so **an empty slot is empty** -- which is the fix for the nine
-grey blocks that used to sit along the bottom of an empty world. **Ten hearts**, and
-falling more than three blocks costs some; nothing else damages you yet.
-
-**And you can craft.** The inventory window carries a **3x3 grid and an output slot**,
-and ten vanilla recipes: a log makes four planks, planks make sticks, and planks or
-cobblestone plus sticks make a pickaxe, axe, shovel or sword. **Items are no longer
-block types** -- a stick and a lump of coal have no `BlockId` and could not be spelled
-before Phase 16 -- so coal ore drops coal, tools stack to one, and right-clicking with
-a pickaxe places nothing instead of placing a mysterious cube.
-
-**A pickaxe is necessary rather than merely faster.** Bare-handed stone takes 7.5
-seconds and yields *nothing*; a wooden pickaxe takes 1.125 and yields cobblestone.
-That is vanilla's no-harvest branch, which this engine deliberately never took until
-tools existed to make it mean something. The tool has to match the block's kind -- a
-shovel on stone is exactly as good as a fist. **Iron and everything past it is out of
-reach on purpose**: vanilla's tiers say iron ore needs a stone pickaxe and diamond
-needs an iron one, and an iron pickaxe needs smelting, which is Phase 17.
-
-**Sand and gravel fall.** Dig the support out from under a sand pillar and it comes
-down one block per tick, as a real falling entity rather than a block stepping down a
-cell at a time. That runs on a **20 Hz game tick**, which is new -- everything before
-Phase 12 ran on frame delta time. Flowing water will use the same clock unchanged.
-Generated sand does not fall until something disturbs it, which is also vanilla.
-
-**There are oceans.** Water fills every column from sea level 62 down to the terrain
-surface, drawn translucent in a second pass with depth writes and back-face culling
-off. You swim in it rather than standing on it, falling into it cancels fall damage,
-sand falls through it and the aim ray goes straight through to the sea bed. **No
-flooded caves and no flowing water** -- both are the aquifer system, which is not
-built; see section 1.
-
-A character is drawn at the player position on a second render path; `F5` toggles third
-person, and the camera now pulls in when terrain is behind it rather than clipping
-through — a second use of Phase 9's raycast.
-
-| Distance 16 | No caves | Caves | + ores | + sky light | + editing | + trees | + items | + falling | + water |
-|---|---|---|---|---|---|---|---|---|---|
-| Frame p99 | 0.85 ms | 6.00 ms | 5.93 ms | 5.91 ms | 6.4–8.0 | 7.55 | 6.20 | 4.40–5.86 | **4.88–5.18** |
-| Quads drawn | 260 k | 4.1 M | 4.15 M | 4.18 M | 4.20 M | 4.33 M | 4.33 M | 4.08 M | **4.08 M** |
-| Arena used | 8 MiB | 112 MiB | 112 MiB | 113 MiB | 112 MiB | 115 MiB | 115 MiB | 115 MiB | **115 MiB** |
-| Warm-up, 1,089 columns | — | 2.29 s | 2.99 s | 3.58 s | 3.40 s | 3.52 s | 3.26 s | 3.29–3.52 s | **3.36–3.47 s** |
-| Sections with an empty mesh | 2,509 of 4,967 | **0** | **0** | **0** | **0** | **0** | **0** | **0** | **0** |
-
-**Water is not distinguishable from noise in any of these**, and the reason is worth
-knowing rather than being pleased about: an ocean is a flat sheet, greedy meshing
-merges a flat sheet into very few quads, and the translucent pass is skipped whole
-for every section holding no fluid — everything above sea level and everything below
-the sea bed. A capture from the spawn point draws 0.27 % more quads with every ocean
-in the render distance included. The translucent surface that would cost something is
-one that is not flat.
-
-**The last column is three runs on a deliberately idle machine, and that is a change
-of method rather than of code.** Earlier in the same session, with an asan build
-occupying the other cores, the same binary reported a 4.02 s warm-up against the
-3.29–3.52 s it gives when nothing else is running — a ~20 % swing from background
-load alone. **No column before this one controlled for that**, so comparing them at
-a resolution of one millisecond is not sound, and the p99 dropping below 7.10's 6.20
-is much more likely to be the quiet machine than anything in Phase 12. Nothing in
-Phase 12 touches the render path. The quad count differs because the flight ends
-somewhere slightly different each time, not because geometry changed.
-
-**And none of this measures the feature.** A benchmark flight never edits the world,
-so nothing is ever notified and no block ever falls. These numbers say an idle tick
-loop is free. What a sand collapse costs — chiefly the sky-light recompute, twice per
-block — has not been measured, and needs a person to cause one.
-
-**Read the last column carefully; it is the one place in this document where a number
-got worse and the honest answer is "cannot tell".** The p99 figure is a *range over
-three consecutive runs* (6.37, 6.94, 7.98), and the mean over the same runs ranged
-3.92 to 4.78. Every earlier column in that row is a single run. A spread of 1.6 ms
-between identical runs is far wider than one 5-block DDA march plus one 24-vertex draw
-call could plausibly cost, so **do not read this as a regression, and do not read it as
-proof of no regression either** — it says the benchmark cannot resolve a change this
-small on this machine. Settling it means running the same binary several times before
-and after, which has not been done.
-
-Warm-up moved twice and both moves are understood. It *improved* 3.58 s to 3.40 s
-when light learned to detect changes -- the store pass stopped clearing each mixed
-section and re-expanding the nibble array on the first write, and comparing in place
-allocates nothing. It then went back up to 3.52 s when trees landed, which is the
-0.12 s they cost to place. Trees add 3 % to the quad count and 3 MiB of arena: leaves
-are opaque cubes that fragment a merge wherever they meet air, which is everywhere
-along a canopy.
-
-Neither ores nor light cost anything measurable to *draw*: ores add 0.6 % quads and
-light 0.7 %, both because they fragment a merge only where they change. Both cost
-generation time instead. Distance 24 has not been measured since caves landed and
-would be close to the budget. The earlier columns are kept only because the gap
-between them is the argument for Phase 8.
-
-Sky light costs **24 KiB per column**, about 26 MiB at distance 16, because 87.5 % of
-sections are uniform and allocate nothing. The naive figure was over 400 MiB.
-
-**Interactively verified in six play sessions**, most recently on 2026-08-12 in
-fullscreen at 2560x1440. Sessions have run 56-111 seconds at a vsync-locked 60 FPS,
-with no dropped frames, no GL debug messages and a clean exit every time. Rendering
-has stayed flat across caves, ores, light, trees, entities, the HUD and water.
-
-**What no session has exercised is Phase 12.** Falling sand has never been seen by a
-person and a benchmark cannot see it -- the flight never edits the world, so nothing
-is notified and nothing falls. The p99 above measures an idle tick loop costing
-nothing. What a sand collapse costs, chiefly the sky-light recompute twice per block,
-is unmeasured. See the resume pointer in section 1.
-
----
+6. **The persistent-buffer hazard**, section 8, which Phase 5 will otherwise inherit —
+   and which is in **five** places rather than the one it was first written up as. Fix
+   it as one shared ring in `rhi`, not five.
 
 ## 2. Commands
 
@@ -319,7 +111,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (224 cases, doctest)
+# Test  (249 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
@@ -350,6 +142,22 @@ convert /tmp/shot.ppm /tmp/shot.png     # ImageMagick is installed
 # Read the "camera flew" and "columns loaded / generating" lines before trusting the
 # frame times -- see the note in section 5 about this benchmark lying twice.
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
+
+# Compare frame times against a baseline commit. **This is the only sound way to do
+# it** -- the numbers are not reproducible across sessions, so a table row from last
+# week is not a baseline. Build the old commit in a throwaway worktree and interleave
+# the runs, A/B/A/B, on an idle machine.
+#
+# **Both sides must go through the preset.** The first attempt at this configured the
+# baseline with a plain -DCMAKE_BUILD_TYPE=Release, which skips the preset's LTO; the
+# baseline meshed 0.6 s slower and the new code looked like an improvement it had
+# nothing to do with. The tell was a number moving in a direction nobody had a
+# mechanism for.
+git worktree add /tmp/baseline <commit>
+cd /tmp/baseline && CPM_SOURCE_CACHE=$OLDPWD/.cache cmake --preset release \
+  && cmake --build --preset release
+# ...run both binaries alternately, then:
+git worktree remove --force /tmp/baseline
 
 # Re-run the mesher comparison (off by default; it meshes a few hundred times)
 ./build/release/src/app/minecraft --mesh-benchmark
@@ -486,7 +294,9 @@ src/world/              pure data; knows nothing about rendering
                  measured from the player's **body** -- see the note in section 5
   FallingBlocks— sand and gravel between two cells. Straight down, i32 x and z
   BlockUpdates — "this block changed, tell its neighbours": the tick queue, the
-                 dedupe set and the retry discipline. **Where water plugs in**
+                 dedupe set, the retry discipline, **and the fluid flow** -- levels,
+                 the five-block slope search, draining, and suspending at a column
+                 that is not Ready
   Inventory    — 36 storage slots, the 3x3 craft grid, the output, the cursor stack
   ItemTable    — **every item, and the id space that extends BlockId's**; tools,
                  mining speed, harvest tiers, and what a block drops
@@ -649,8 +459,11 @@ Learned the hard way; all of them cost real time.
   yet. `BlockUpdates::examine` is safe from it by a *narrow* argument -- the block it
   asks about is directly below, so it is in the same column, and if that column were
   not Ready the block being examined would have read as air too. **Flowing water
-  spreads sideways and the argument does not survive it.** Anything that reads a
-  horizontal neighbour to decide an edit needs a real "is this loaded" test.
+  spreads sideways and the argument does not survive it**, which is why
+  `World::isReadyAt` exists: it answers the question `blockAt` cannot, because that
+  collapses "air", "not loaded" and "still generating" into one value. Anything new
+  that reads a horizontal neighbour to decide an edit has to use it and re-queue
+  rather than decide without it.
 - **A block update that gives up leaves the world wrong for ever.** `setBlock` returns
   `Busy` while a meshing job holds the column, and unlike a player's click -- which the
   player will simply repeat -- nothing will ever ask about that block again. Both new
@@ -786,34 +599,60 @@ Learned the hard way; all of them cost real time.
   needed one so item icons could have a transparent background, and the hotbar draws
   every frame. It is the only mechanism anyone has for the ~0.3 ms of p99 that Phase 16
   added in all four A/B pairs, and it is unsettled -- see DESIGN.md 7.16.
+- **An edit dirties more than its own section, and the third reason is the subtle
+  one.** The section holding the block; every section the block *touches*, because AO
+  reads a 3x3x3 and a corner block reaches seven neighbours across column boundaries;
+  and wherever the sky light moved, which dirties the same section in the eight
+  surrounding columns too, because the mesher's padded light grid reaches into them.
+  That last one is why `computeSkyLight` returns a changed-sections mask -- without it
+  every click would remesh nine columns, and underground, where digging happens, the
+  honest answer is that no light moved at all.
+- **`World::setBlock` refusing with `Busy` is what makes editing safe without a lock,
+  and the pin is the whole argument.** Every reader of a column pins it, so one
+  `pinned()` test covers every reader there can be, and the caller retries next frame.
+  Take that test out and the failure is a use-after-free rather than a torn read,
+  because `Palette::set` can reallocate the index array. **Every writer must retry**:
+  a player will click again, but a block update or a fluid spread that gives up leaves
+  the world wrong for ever.
+- **The third-person camera's collision cast runs along the *whole* displacement, and
+  the crosshair is not at the centre of the screen.** The camera sits over the right
+  shoulder, so a lateral offset can push it through a wall exactly as a backward one
+  can; and the aim ray is cast from the eye while the frame is drawn from the shoulder,
+  so the two disagree by design. `Engine::aimNdc` reconciles them and returns the
+  centre in first person. Changing either without the other puts the crosshair on a
+  spot the player is not aiming at, which is a worse lie than the problem it fixes.
+- **Recomputing a cell's state from its neighbours and spreading into a new cell are
+  two different operations, and merging them does not converge.** The first flowing
+  water let an *air* block work out its own level from its neighbours, on the
+  reasonable-sounding grounds that a block just broken beside a lake is air and air is
+  where water goes. That path carries neither the down-first rule nor the slope search,
+  so water filled every reachable cell in every direction and the queue grew without
+  bound -- 176 pending and climbing, 74 edits a tick, no sign of stopping. Vanilla
+  splits the two and so does this now. **The symptom of getting it wrong is a
+  simulation that never settles, not one that settles wrong.**
+- **A test that builds terrain through `setBlock` pays a full column relight per
+  block.** 625 of them is six seconds in an optimised build and minutes at `-O0`; the
+  first flowing-water tests timed the whole file out and looked like an infinite loop.
+  Tests that want *terrain* rather than *edits* should write into sections directly,
+  which is what the generator does. The relight is deliberate and correct on a
+  per-click path -- it is the volume that is wrong, and **flowing water pays it too**,
+  which is the unmeasured cost in section 8.
+- **`timeout` plus a piped `printf` loses the diagnosis.** stdout to a pipe is
+  block-buffered, so a probe killed by a timeout prints nothing at all and looks like a
+  hang with no information. `setvbuf(stdout, nullptr, _IONBF, 0)` is the difference
+  between "it hangs" and "it hangs at tick 25 with 176 pending".
 - CMake needs `LANGUAGES C CXX`; GLFW and glad are C.
 - Ninja is not installed; presets use Unix Makefiles.
 
 ---
 
-## 6. Phase 4 — in progress
+## 6. Phase 4 — what is left of it
 
-**Goal:** FastNoise2 terrain generation.
-**Exit criterion:** infinite terrain traversal.
+**Goal:** FastNoise2 terrain generation. **Exit criterion:** infinite terrain traversal.
+**4a, 4b and 4c are done**; DESIGN.md 7.6 has what they cost and why. Only the three
+things below are still live.
 
-Sub-steps and measurements are in DESIGN.md 7.6. **4a, 4b and 4c are done.** Minecraft's own
-pipeline was researched first, and two findings shaped the plan: the interpolation grid
-(see the correction to DESIGN.md 4.1) and the fact that generation is an *ordered*
-pipeline — `biomes → noise → surface → carvers → features → light`.
-
-**Lighting is done, and it landed better than this section predicted.** The prediction
-was that AO and light would have to fold into one per-corner brightness, costing
-`setAoStrength()`. Moving `material` to the top of the word instead — seven bits, for a
-table of 26 layers — freed 41..56 for four 4-bit corners of light with AO untouched at
-33..40. Smooth lighting, quad still 64 bits, AO still separable, no bits wasted.
-
-Storage was the question that mattered and `LightArray` answers it the way `Palette`
-does: 87.5 % of sections are uniform and allocate nothing, so a channel that would cost
-over 400 MiB at distance 16 costs 26.
-
-**Sky only.** Block light is the same propagation over a second array, but nothing in
-the world emits light — no torches, and lava is not a block type — so it would be a
-uniformly zero array everywhere.
+### Sky light does not cross column borders
 
 **The seam is the thing to fix next.** Propagation is column-local, so a cave lit
 through an opening one column over stays dark, with a straight vertical boundary. The
@@ -824,24 +663,11 @@ neighbours are loaded, and then re-meshing what changed — which is a light-cha
 signal into the same dirty-mask and pin machinery meshing already uses. Getting that
 wrong corrupts meshes rather than merely dimming them, so it is a phase of its own.
 
-**What 4b actually cost**, now measured rather than predicted — every number here was a
-guess in the previous version of this section:
+### Before touching the ore and blob parameters
 
-- The fully-enclosed saving is **gone entirely**, not merely reduced: 0 sections produce
-  an empty mesh where 2,509 of 4,967 used to. A 6.8% underground air fraction is enough
-  to give almost every underground section some cave wall.
-- `meshArenaBytesFor` went from 48 KiB per column to **176 KiB**. The old budget predated
-  caves and distance 16 wedged against a permanently full arena, which also exposed
-  `drainStreaming` looping forever when `store()` kept failing.
-- Aquifers were **not** built. Flooded caves with a local water level independent of sea
-  level are still open, and need a water block type first.
-
-**4c is done.** Stone variants, gravel and seven ores, all on one `FeaturePlacer`,
-because a granite blob and an ore vein are the same operation. Parameters live in
-`worldgen/FeatureTable.hpp`, sourced from RESEARCH.md 3 and then calibrated — see the
-note in section 5, which is the part worth reading before touching those numbers.
-
-Two things about it are worth knowing before changing anything:
+Parameters live in `worldgen/FeatureTable.hpp`, sourced from RESEARCH.md 3 and then
+calibrated — see the note in section 5, which is the part worth reading first. Two
+invariants a change must not break:
 
 - **Blobs are seamless across columns with no ordering between them.** A vein near a
   border overlaps its neighbour, so generating a column replays the features of all nine
@@ -853,74 +679,19 @@ Two things about it are worth knowing before changing anything:
   ordering dependency between columns that the streaming design exists to avoid. The
   error is confined to blobs touching a border and errs toward placing ore.
 
-Emerald and the badlands gold batch are **deliberately absent**: both are biome-gated,
-and shipping them biome-blind would put emerald in every hillside. They are 4d work.
+### 4d — biomes, and the input it is still missing
 
-**4d — biomes** from the climate fields that `DensityGraph` already computes. Minecraft
-uses a 6-parameter space (temperature, humidity, continentalness, erosion, weirdness,
-depth); this engine has three of them today. Emerald and badlands gold land with it.
+Biomes come from the climate fields `DensityGraph` already computes. Minecraft uses a
+6-parameter space (temperature, humidity, continentalness, erosion, weirdness, depth);
+this engine has three of them today. Emerald and badlands gold land with it, both being
+biome-gated and deliberately absent until then — shipping them biome-blind would put
+emerald in every hillside.
 
-**4d has an unresolved input.** The wiki publishes only `temperature` and `downfall`
+**4d has an unresolved input, and that is why it is not next.** The wiki publishes only `temperature` and `downfall`
 per biome, not the 6-parameter intervals that actually place them, and not a
 systematic surface/filler block table. RESEARCH.md 6 records the search that failed;
 the game's own worldgen data is where those numbers will have to come from. Settle
 that before planning 4d, or the phase starts on a guess.
-
-### Phase 9 — block placement and breaking (done)
-
-Full write-up in DESIGN.md 7.8. The three things worth knowing before touching it:
-
-- **Editing is safe without a lock because of the pin, and only because of it.**
-  `World::setBlock` refuses with `Busy` when the column is pinned, and the caller
-  retries next frame. Every reader of a column pins it — a job meshing a *neighbouring*
-  section pins all nine of its columns — so one `pinned()` test covers every reader
-  there can be. Take that test out and the failure is a use-after-free, because
-  `Palette::set` can reallocate the index array.
-- **An edit dirties more than its own section, and the third reason is the subtle
-  one.** The section holding the block; every section the block *touches*, because AO
-  reads a 3x3x3 and a corner block reaches seven neighbours across column boundaries;
-  and wherever the sky light moved, which also dirties the same section in the eight
-  surrounding columns because the mesher's padded light grid reaches into them. That
-  last one is why `computeSkyLight` now returns a changed-sections mask — without it
-  every click would remesh nine columns, and underground, where digging happens, the
-  honest answer is that no light moved at all.
-- **Relight is a whole-column recompute, deliberately.** About 0.5 ms, on a per-click
-  path rather than a per-frame one. Incremental relighting is the optimisation to
-  reach for if it ever appears in a profile, and not before.
-
-### The character
-
-`render/CharacterRenderer` draws a blocky humanoid at the player position; `F5` toggles
-third person. It was outside the documented scope when it landed — DESIGN.md ended the
-project at terrain generation, and this was the first thing drawn that is not voxels.
-**The 2026-08-11 scope change brought it inside**, so that note is history rather than
-a caveat now.
-
-It reuses the engine's shape of answer rather than its data: no vertex buffer, quads in
-an SSBO, six corners from `gl_VertexID`, one draw call. A chunk `Quad` could not be
-reused — six-bit lattice integers cannot describe a 0.5-block-wide limb that swings — so
-character.vert carries explicit float edges instead. character.frag shares chunk.frag's
-face-brightness table exactly, which is what keeps the model in the same light as the
-ground rather than reading as a sticker on it.
-
-**The third-person camera used to clip through terrain**, and the note here said fixing
-it needed a voxel raycast the engine did not have. Phase 9 built one for aiming, and
-the fix was four lines in `updateRenderCamera`: cast from the eye along the
-displacement, stop a quarter block short of what it hits. That is the second caller of
-`world/Raycast`, and it is the concrete reason Phase 9 was ordered ahead of vegetation.
-
-**The camera goes over the right shoulder, not straight back**, and that came out of
-play too. Straight back put it on the view axis -- which is where the character is
-standing, so the model sat exactly on the crosshair and hid the block being aimed at.
-Two consequences to know before touching it: the collision cast runs along the *whole*
-displacement, because a lateral offset can push the camera through a wall just as a
-backward one can; and the crosshair no longer sits at the centre of the screen, because
-the ray is cast from the eye while the frame is drawn from the shoulder. `Engine::aimNdc`
-is where those two points are reconciled, and in first person it returns the centre.
-
-Phase 5 is indirect draw plus GPU culling. The shader side is already arranged for it:
-per-section data is an array indexed by `gl_DrawID`, which means the same thing under
-`glMultiDrawElementsIndirect`, so only the command buffer's producer changes.
 
 ---
 
@@ -984,13 +755,17 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   not. Only the *barrier* noise is still undocumented anywhere found. Until this is
   built, caves under the sea are dry and a cliff overhang has a dry pocket at its
   foot — both documented at the code in `Generator`.
-- **Flowing water.** The 20 Hz tick exists and `BlockUpdates::examine` is where it
-  goes, but the safe-read argument there does not survive a sideways spread.
-  **Vanilla's own answer is to refuse rather than to solve it**: flow spreads into the
-  first block of a non-ticking chunk and then suspends until that chunk's load level
-  rises. So this needs a real "is this column Ready" test plus a queued update that
-  survives deferral -- which is the retry discipline `BlockUpdates` already has for
-  `EditStatus::Busy`. RESEARCH.md 7.1 and 7.3.
+- ~~**Flowing water.**~~ **Built 2026-08-13** (DESIGN.md 7.17). What is left of it:
+  flowing water draws as a full cube where vanilla slopes the surface by level, which
+  needs Phase 10's non-cube geometry; there is no lava, though `fluidLevel` and
+  `fluidSource` are per block type and lava is the same algorithm with a step of 2;
+  and **the per-flow cost is unmeasured**, because a benchmark flight never edits the
+  world so it never notifies a fluid. A flow is many `setBlock` calls and each relights
+  a column, so a player digging into an ocean is how that will be found.
+- **Phase 5 inherits the shader layout unchanged.** Indirect draw plus GPU culling:
+  per-section data is already an array indexed by `gl_DrawID`, which means the same
+  thing under `glMultiDrawElementsIndirect`, so only the command buffer's producer
+  changes. The persistent-buffer hazard above has to be fixed *with* it.
 - **Water is not mass-conserving in vanilla, and building it as if it were is the
   trap.** A source block is never consumed by flowing out of it, so a hole dug in the
   sea bed floods forever and the sea does not drop. A conservative fluid needs global
@@ -1054,36 +829,3 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   commit, or drop them from the document.
 
 ---
-
-## 9. Engine, or game — **answered**
-
-Raised by the user on 2026-08-10 after playing the engine twice, and **settled on
-2026-08-11: the scope widens to include interaction.** DESIGN.md and README.md were
-rewritten to say so in one commit before any feature work started, so no game feature
-was ever added to a document that denied it was in scope. DESIGN.md section 1 carries
-the scope statement; this is the part worth remembering about how it got there.
-
-**How it came up.** The user asked for "all Minecraft objects" to be researched. That
-research was deliberately scoped to the block types the *terrain generator* places,
-because DESIGN.md ended the project at terrain generation, and it said so. Twenty-one
-block types later the user played and reported seeing nothing new -- and both things
-were true at once: the work was real, and **every one of those block types is
-underground**, unreachable by a player who cannot dig. Then came questions about
-building, crafting and hunting, none of which existed or was in scope.
-
-**The research was not wrong; the scope was narrower than the question.** That is the
-lesson, and it generalises past this project: a correct answer to the wrong question
-still leaves someone with a world they cannot do anything in.
-
-Two constraints the user attached to the decision, both still binding:
-
-- **Libraries stay minimal.** Everything is written here. This has not constrained
-  anything yet: `BlockTextures` generates every texture in code, `CharacterRenderer`
-  added a whole non-voxel render path, and the UI layer and its 5x7 font were built the
-  same way -- all with zero new dependencies. The one genuinely painful thing to
-  self-implement would be audio, which is not on the list.
-- **Time is accepted.** The user's framing was "it will take a long time, but" -- an
-  argument against doing it all at once, not against doing it.
-
-Everything that decision put on the roadmap is now built except vegetation beyond
-trees, persistence, and crafting. See section 1.
