@@ -5,6 +5,7 @@ add_library(mc_world STATIC
   Palette.cpp
   Raycast.cpp
   Inventory.cpp
+  Crafting.cpp
   ItemEntities.cpp
   FallingBlocks.cpp
   BlockUpdates.cpp

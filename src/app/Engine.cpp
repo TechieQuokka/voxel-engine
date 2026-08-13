@@ -87,7 +87,28 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
 
     if (m_options.openInventory) {
         m_inventoryOpen = true;
-        // Something to look at. A capture of an empty grid proves the panel draws
+
+        // **The crafting grid is seeded first, and the order is load-bearing.** Items
+        // reach the grid the way a player puts them there -- pick a stack up, right
+        // click into a cell -- which needs the storage slot they landed in, and the
+        // only slot whose index is predictable is the first one into an empty pack.
+        // Seeding this after the blocks below asked `usedSlots()` for an index, which
+        // is a count and not one, and quietly dragged the wrong items in.
+        const auto intoGrid = [this](ItemId item, u32 amount,
+                                     std::initializer_list<usize> cells) {
+            m_inventory.add(item, amount);
+            m_inventory.clickSlot(0);
+            for (const usize cell : cells) {
+                m_inventory.splitSlot(Inventory::kFirstCraftSlot + cell);
+            }
+        };
+        // A stone pickaxe, mid-recipe: cobblestone across the top, sticks down the
+        // middle. An empty grid proves the nine cells draw and nothing else, and the
+        // output preview is the part with a recipe match behind it.
+        intoGrid(itemIdOf("cobblestone"), 3, {0, 1, 2});
+        intoGrid(itemIdOf("stick"), 2, {4, 7});
+
+        // Something to look at. A capture of an empty pack proves the panel draws
         // and nothing else -- not the icons, not the counts, not the two-digit
         // layout, which are the parts with arithmetic in them.
         m_inventory.add(blockIdOf("stone"), 64);
@@ -97,6 +118,16 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
         m_inventory.add(blockIdOf("oak_log"), 128);
         m_inventory.add(blockIdOf("cobblestone"), 45);
         m_inventory.add(blockIdOf("gravel"), 1);
+
+        // Phase 16's half: items that are not blocks, and one tool of each kind, so a
+        // capture shows every icon recipe rather than only the cubes.
+        m_inventory.add(itemIdOf("coal"), 9);
+        m_inventory.add(itemIdOf("stick"), 6);
+        m_inventory.add(itemIdOf("wooden_pickaxe"), 1);
+        m_inventory.add(itemIdOf("stone_axe"), 1);
+        m_inventory.add(itemIdOf("stone_sword"), 1);
+        m_inventory.add(itemIdOf("wooden_shovel"), 1);
+
         m_health = 13.0f; // An odd number, so a half heart is in the frame too.
     }
     m_window = std::make_unique<Window>(Window::Config{
@@ -754,17 +785,23 @@ void Engine::breakTargetBlock() {
     }
 
     // Read what was there *before* the edit: after it the block is air, and air
-    // drops nothing.
+    // drops nothing. The held item is read here too, for the same reason -- the
+    // harvest test has to run against what was in the hand when the block broke.
     const BlockId broken = m_world->blockAt(m_target->block);
+    const ItemId tool = heldItem();
 
     if (!applyEdit(m_target->block, kAirBlock)) {
         return; // Not loaded, or outside the world. Nothing was removed, so nothing drops.
     }
     ++m_blocksBroken;
 
-    const BlockId drop = dropOf(broken);
-    if (drop == kAirBlock) {
-        return; // Leaves, and anything else that yields nothing.
+    // **The block breaks whether or not it can be harvested, and only the drop is
+    // withheld.** That is vanilla's rule and it is the one that teaches: a player who
+    // punches stone for seven seconds and watches it vanish leaving nothing has been
+    // told they need a pickaxe far more clearly than a refusal to break it would.
+    const ItemId drop = dropOf(broken, tool);
+    if (drop == kNoItem) {
+        return; // Leaves, and anything the held tool was not good enough to harvest.
     }
 
     // At the centre of the block that was removed, which is where the space now is.
@@ -828,7 +865,12 @@ void Engine::updateBreaking(f32 dt) {
         return;
     }
 
-    const f32 seconds = breakSeconds(block);
+    // **What is held changes how long this takes, since Phase 16.** A matching tool
+    // divides the time by its tier speed; a missing one multiplies it by 10/3,
+    // because vanilla's no-harvest branch divides by 100 rather than 30. Bare-handed
+    // stone is 7.5 seconds and yields nothing; a wooden pickaxe is 1.125 and yields
+    // cobblestone.
+    const f32 seconds = breakSeconds(block, heldItem());
     if (seconds <= 0.0f) {
         breakTargetBlock(); // Hardness zero: gone on contact.
         m_breakingBlock.reset();
@@ -848,6 +890,15 @@ void Engine::updateBreaking(f32 dt) {
 
 vec3 Engine::playerFeet() const {
     return m_camera.position() - Camera::up() * CharacterRenderer::kEyeHeight;
+}
+
+ItemId Engine::heldItem() const {
+    // A named accessor rather than `m_inventory.at(m_hotbarSlot).item` at each call
+    // site, for the reason `playerFeet` exists: three callers now ask what is in the
+    // hand -- break time, the drop test and placement -- and the fourth one to be
+    // written is where they would start to disagree.
+    const ItemStack& held = m_inventory.at(m_hotbarSlot);
+    return held.empty() ? kNoItem : held.item;
 }
 
 void Engine::placeTargetBlock() {
@@ -876,7 +927,15 @@ void Engine::placeTargetBlock() {
     if (held.empty()) {
         return;
     }
-    const BlockId block = held.block;
+
+    // **Not every item is a block, since Phase 16.** Right-clicking with a pickaxe
+    // does nothing rather than placing a mysterious cube, which is what would happen
+    // if the id were used as a `BlockId` unchecked -- and it would be silent, because
+    // the two share a type.
+    const BlockId block = blockOfItem(held.item);
+    if (block == kAirBlock) {
+        return;
+    }
 
     // Taken only once the edit is known to have landed, so a placement refused for
     // being outside the world does not silently cost a block.
@@ -912,7 +971,16 @@ void Engine::toggleInventory() {
     // than swallowing it.
     const ItemStack leftover = m_inventory.releaseCursor();
     if (!leftover.empty()) {
-        m_items.spawn(m_camera.position(), leftover.block, leftover.count);
+        m_items.spawn(m_camera.position(), leftover.item, leftover.count);
+    }
+
+    // **The crafting grid is emptied on the same rule**, and it is nine slots rather
+    // than one: a player who closes the window mid-recipe has not thrown their planks
+    // away. `releaseCraftGrid` returns one spilled stack at a time, so this loops
+    // until the grid is clear -- a full pack can refuse several cells.
+    for (ItemStack spilled = m_inventory.releaseCraftGrid(); !spilled.empty();
+         spilled = m_inventory.releaseCraftGrid()) {
+        m_items.spawn(m_camera.position(), spilled.item, spilled.count);
     }
 
     m_input->setCursorCaptured(true);
@@ -939,7 +1007,7 @@ void Engine::updateInventoryScreen() {
         if (left && !m_inventory.cursorEmpty()) {
             const ItemStack thrown = m_inventory.releaseCursor();
             if (!thrown.empty()) {
-                m_items.spawn(m_camera.position(), thrown.block, thrown.count);
+                m_items.spawn(m_camera.position(), thrown.item, thrown.count);
             }
         }
         return;
@@ -1001,8 +1069,8 @@ void Engine::updateInteraction(f32 dt) {
     m_items.collectInto(ItemEntities::PickupVolume{playerFeet(),
                                                   CharacterRenderer::kHeight,
                                                   ItemEntities::kPickupRadius},
-                        [this](BlockId block, u32 count) {
-                            const u32 leftover = m_inventory.add(block, count);
+                        [this](ItemId item, u32 count) {
+                            const u32 leftover = m_inventory.add(item, count);
                             m_itemsCollected += count - leftover;
                             return leftover;
                         });
@@ -1046,7 +1114,7 @@ void Engine::updateInteraction(f32 dt) {
             m_hotbarSlot = slot;
             const ItemStack& held = m_inventory.at(slot);
             logInfo("Holding: {}",
-                    held.empty() ? "nothing" : kBlocks[held.block].name);
+                    held.empty() ? "nothing" : itemName(held.item));
         }
     }
 
@@ -1077,7 +1145,7 @@ void Engine::updateTicks(f32 dt) {
     for (const FallingBlocks::Displaced& lost : landings.displaced) {
         // Landed where something else had appeared. Vanilla drops it rather than
         // deleting it, and the item system to do that with already exists.
-        m_items.spawn(lost.position, lost.block, 1);
+        m_items.spawn(lost.position, itemOfBlock(lost.block), 1);
     }
 
     // The scheduler itself is on the fixed clock, because "one block per tick" is

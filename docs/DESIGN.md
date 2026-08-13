@@ -247,14 +247,66 @@ programmatically from `gl_VertexID` (programmatic vertex pulling). No vertex
 buffer, no index buffer.
 
 ```
-One quad = 64 bits
-  pos.x(6) pos.y(6) pos.z(6)      // position within the 32^3 section
-  width(6) height(6)              // merged extent
-  normal(3) ao(8) texLayer(16)    // face direction, AO, texture layer
+One quad = 64 bits, and every bit is spoken for
+  bits  0..5   x           origin within the section, 0..32 inclusive -- six bits
+  bits  6..11  y           because a face can sit on the far plane at coordinate
+  bits 12..17  z           32, not just 0..31
+  bits 18..23  width - 1   merged extent along the face's first tangent
+  bits 24..29  height - 1  along the second
+  bits 30..32  face        the Face enum
+  bits 33..40  ao          2 bits per corner
+  bits 41..56  light       4 bits per corner
+  bits 57..63  material    index into kLayers, not a BlockId
 ```
 
 8 bytes per quad instead of four vertices. Lower bandwidth, and it composes
 cleanly with indirect drawing.
+
+**The sketch this section used to carry was 57 bits with no light in it at all**, and
+it is worth leaving that on the record rather than quietly correcting it: smooth
+lighting was not free, it was paid for by cutting the texture layer field from 16 bits
+to 7. `mesh/Quad.hpp` is the authority on the layout; this is the summary of it.
+
+#### The word is full, which is Phase 18's first problem
+
+Block light — a torch — is four more corners at four bits each. Sixteen bits, and
+there are none left. **The decision is to combine sky and block light into the single
+per-corner brightness the word already carries**, `max(sky, block)` taken at mesh
+time, rather than to widen the quad to 128 bits.
+
+Four things make that the cheap answer rather than the resigned one:
+
+- **The shader already collapses light to one scalar.** `chunk.vert` reads the
+  sixteen bits, indexes `kLightLinear` and hands the fragment stage a single
+  `v_light` float. A combined value changes nothing downstream at all.
+- **There is no day/night cycle**, so sky light is static. Outdoors it is 15 and a
+  torch cannot brighten it; in a cave it is near zero and the torch is the entire
+  light. `max` is exactly right in both regimes, and those two regimes are the whole
+  world.
+- **The merge key needs no new shape.** It already keys on these sixteen bits — see
+  the note in HANDOFF.md 5 about why light has to be in the key at all — and they
+  simply come to mean slightly more.
+- **128-bit quads would double the arena**, 112 MiB to 224 at render distance 16,
+  against a budget `meshArenaBytesFor` already describes as closer to full than a
+  fixed allocation should ever run.
+
+**What is given up is the tint, and only the tint.** Vanilla's torch light is warm and
+its daylight is neutral; combining them makes a torch-lit wall bright but not warm.
+Recovering that means `v_light` becomes a `vec3` or gains a second channel, and that
+is where the sixteen bits would have to come from after all.
+
+**The escape hatch is to widen it then, with a reason.** This project has re-cut this
+word once already — `material` went from 6 bits to 7 when smooth lighting needed the
+room, and that was a measurement rather than a guess. If playing it says the warm pool
+of light on the floor is what makes a torch feel like a torch, that is the
+measurement, and 128 bits is the answer to it. Not before it.
+
+One thing block light gives back for nothing: `kLightLinear`'s floor is 0.035 rather
+than 0, and the comment above it says why — "a pitch-black cave is correct and
+unreadable, and there is no block light yet to carry a torch into it". With torches
+there is, so the floor can go to zero and a cave can be genuinely dark. **That is not
+a side effect, it is most of the point.** A torch is worth exactly as much as the dark
+it gets carried into.
 
 ### 3.8 Draw submission — GPU-driven
 
@@ -726,6 +778,10 @@ and every phase built since the scope change has come from this one.
 | 13 **(done)** | Entities — the first thing in the world that is not a voxel | A broken block drops an item |
 | 14 **(done)** | Inventory and a HUD | That item can be picked up and placed again |
 | 15 **(done)** | Health — hearts and fall damage | A fall costs something |
+| 16 **(done)** | Items — the item/block split, 3x3 crafting, wood and stone tools | A crafted pickaxe mines stone faster than a hand, and a hand stops dropping cobblestone |
+| 17 | The crafting table — a second window, the full tool tiers, durability | A diamond pickaxe wears out and breaks |
+| 18 | Block light — torches | A cave is lit by something the player carried into it |
+| 19 | Mobs and combat — weapons, armour, and damage from something | Armour changes how long you survive |
 
 **14's exit criterion was claimed and was not met**, and it took four play sessions
 and a set of counters to find out. An item could be dropped and placed; it could not
@@ -764,8 +820,86 @@ pipeline at all. The raycast it produced for aiming turned out to be what fixed 
 third-person camera clipping through terrain, which had been an open limitation
 since the character landed. Results in 7.8.
 
-Anything past 11 — inventory, crafting, entities — is a destination, not a plan.
-Nothing here commits to it, and each would be larger than this repository is today.
+**This paragraph used to say that inventory, crafting and entities were "a
+destination, not a plan".** Two of the three are built. The third is Phase 16, and
+what follows is the plan the sentence denied would exist — kept rather than deleted
+because the reason it was written is still the right instinct, and the reason it
+stopped being true is that six play sessions kept saying the world needed more to do
+in it.
+
+### Phases 16 to 19 — the crafting track
+
+Added 2026-08-13. The request behind them is worth recording plainly, because it is
+the clearest statement of the gap anyone has made: house-building, torches, and
+crafting weapons, pickaxes and armour — *these basic features*. **Building already
+works.** The other three do not, and they are nothing like equally far away.
+
+**The item/block split is the keystone, and all four things wait on it.**
+`ItemStack::block` is a `BlockId`. A stick is not a block; neither is a coal lump, an
+iron ingot, a pickaxe or a chestplate. Section 8 has carried this as an open question
+since 7.10 and it is now the first thing on the path rather than a note beside it.
+
+Much of what the split needs is already standing, and deliberately so:
+
+- `breakSeconds` in `BlockTable.hpp` already documents the hole tools go in — "tools
+  arrive later as the `speed` multiplier this formula already has room for, and none
+  of the hardness numbers in the table change when they do."
+- `Inventory`'s stack-limit note already says 64 "is also what crafting will need when
+  a recipe has to ask whether the output fits."
+- `InventoryLayout` exists precisely so a renderer and a hit test cannot disagree
+  about where a slot is, which is what a crafting grid needs twice over.
+- The cursor stack lives in `Inventory` rather than in the screen that draws it, so a
+  window that closes mid-drag cannot eat what is in the hand.
+
+**16 is one phase and not three, for the same reason 13 and 14 were one commit.** A
+split with no crafting produces nothing new to hold; crafting with no tools produces a
+pickaxe that does nothing; tools with no split cannot exist at all. Each on its own is
+a third of a feature. Crafting fits inside the existing inventory window, so 16 needs
+no new UI machinery — which is most of why it comes first.
+
+**This paragraph said "2x2" until 16 was built, and building it is what corrected
+that.** A pickaxe is a 3x3 recipe, so a 2x2 grid could not make the one thing the
+phase exists for. The grid is 3x3 and in the player's own window; 7.16 has the
+decision and what it costs Phase 17.
+
+**16 also reverses a decision made on purpose, and that is the point of it.**
+`breakSeconds` takes vanilla's harvestable branch for every block, because "with no
+tools the other branch is not 'harder', it is a dead end: bare-handed stone in vanilla
+is 7.5 seconds for nothing at all." Tools end that condition. Bare-handed stone stops
+dropping cobblestone, and **that — not the speed multiplier — is the only thing that
+makes a pickaxe necessary rather than merely nice.** A tool that only saves time is an
+optimisation; a tool that unlocks a drop is a reason to go and make one.
+
+**17 is where the UI layer stops being enough**, which `HudRenderer`'s own header
+predicted: "there is one window ... a second window is what a chest or a crafting
+bench would be." A bench and a furnace are each a second window with their own state
+and their own hit region, so 17 pays for widget routing that 16 did not need.
+Durability lands here too, because it is a field on `ItemStack` that only means
+something once there are tiers worth wearing out — and **the iron and diamond tiers
+are gated behind smelting**, which is what makes the furnace the phase's real content
+rather than the bench.
+
+**18's first problem is the quad word and is settled in 3.7** — sky and block light
+combine into the brightness already carried, and the quad stays 64 bits. **Its second
+problem is that a torch is not a cube.** That is Phase 10's cross-quad geometry, and
+18 either waits for it or ships a small cube and a note admitting so. Propagation
+itself is the least of it: `LightArray` is already a general channel, `SkyLight` is
+already a flood fill, and section 6 has said since lighting landed that block light is
+"the same propagation over a second array".
+
+**19 is the largest, and it is last because armour currently has nothing to protect
+against.** Fall damage is the only thing in the world that hurts the player and there
+is nothing at all to fight, so armour would be a stat that never fires and a sword
+would be a stick with a better name. **The blocker is not crafting, it is that mobs do
+not exist** — pathfinding, spawning, aggro, and a damage system that takes a source.
+That is an entity track of its own, and pricing it as "one more recipe" is how it
+would get badly underestimated.
+
+Ordering across the four is the dependency chain and nothing else: 16 unlocks all of
+them, 17 and 18 are independent of each other, and 19 needs 16 and wants 17. **Which
+of 17, 18 and 19 comes second is a question for a play session rather than for this
+document**, which is how every ordering decision in this project has actually been
+made.
 
 Every phase ends with a Tracy capture. A phase is not complete until its
 performance characteristics are measured, not assumed.
@@ -2115,6 +2249,165 @@ within arm's reach is behind the character from *any* third-person camera positi
 The name label covers it, and fading the character when it occludes the aim point would
 cover it properly. Recorded in HANDOFF.md 8 rather than built.
 
+### 7.16 Phase 16 — items stop being blocks
+
+Built 2026-08-13, out of "house-building, torches, crafting weapons, pickaxes and
+armour — these basic features". Building already worked. This is the phase that
+unblocks the other three.
+
+#### The split, and why it was not a rewrite
+
+`ItemStack::block` was a `BlockId`. **Item ids extend the block id space rather than
+replacing it**: ids below `kBlocks.size()` *are* block ids and mean "one of that
+block", and ids above it index a short `kItems` table of things that are not blocks.
+
+The obvious alternative — a parallel item table with one entry per block — was
+rejected for a reason this codebase already has the scar tissue for. It would be
+thirty index correspondences maintained by hand, and `BlockTable`'s entire existence
+is the record of what that cost the first time. **Adding a block is still one line and
+gives it an item for free.** `kItems` holds twelve entries: a stick, four ore drops,
+and eight tools.
+
+The cost is real and worth naming: `ItemId` and `BlockId` are the same underlying
+type, so passing one where the other belongs converts silently. `itemIsBlock` and
+`blockOfItem` are the seam, and the place it would have bitten is placement — right
+clicking with a pickaxe would have placed whatever block sat at that id. `Engine`
+asks `blockOfItem` and refuses on air.
+
+**`dropOf` and `breakSeconds` moved out of `BlockTable.hpp` into `ItemTable.hpp`**,
+which is not tidying. Both changed shape in the same direction: what a block drops is
+an `ItemId` (coal ore drops coal, which is not a block), and how long it takes depends
+on what is held. Neither question can be answered by the block table alone any more.
+
+#### The grid is 3x3, in the player's own window, and that is not vanilla
+
+Vanilla gives the player 2x2 and puts 3x3 behind a crafting bench. **A pickaxe is a
+3x3 recipe**, so a 2x2 grid could not make the one thing this phase exists for, and a
+bench is a second window — which is Phase 17's cost and not this one's. The plan in
+section 7 said 2x2 until this was built; building it is what corrected it.
+
+Phase 17 moves 3x3 to the bench and cuts the player's grid to 2x2. That is a
+*reduction* in what the player can do without walking to a block, and presenting it as
+a feature is exactly what vanilla does.
+
+**The grid needed almost no UI work, and that is the payoff from `InventoryLayout`.**
+The crafting cells are slots 36-44 and the output is 45, in the same index space as
+storage — so `hitTest` already found them, `clickSlot` already handled them, and the
+draw loop already drew them. The output slot is the only one that behaves differently,
+and it has to: it is a *preview* of what the grid would make, never a stack that is
+stored. Storing the result instead would mean deciding what happens to it when the
+grid changes underneath, and the answer — it evaporates — is a rule nobody should have
+to learn.
+
+Ten recipes: planks from a log, sticks from planks, and four tools in two tiers.
+Shaped recipes match anywhere in the grid and match mirrored, both vanilla. The mirror
+exists for exactly one recipe — the axe is the only tool whose pattern is not
+symmetric, and demanding one handedness of it is a rule nobody could guess.
+
+#### What makes a pickaxe necessary is the drop, not the speed
+
+`breakSeconds` carried this note since trees landed: *"tools arrive later as the
+`speed` multiplier this formula already has room for, and none of the hardness numbers
+in the table change when they do."* **Both halves held.** The formula gained a divisor
+and a tool argument; every hardness in `kBlocks` is untouched.
+
+The part that matters in play is the other branch. The engine took vanilla's
+harvestable branch for **everything**, deliberately, because with no tools the
+alternative is a dead end rather than a difficulty. Tools end that condition:
+
+| | bare hand | wooden pickaxe | stone pickaxe |
+|---|---|---|---|
+| stone | 7.50 s, **drops nothing** | 1.125 s, cobblestone | 0.5625 s, cobblestone |
+| dirt | 0.75 s, dirt | 0.75 s (wrong tool) | 0.75 s (wrong tool) |
+
+**A tool that only saves time is an optimisation; a tool that unlocks a drop is a
+reason to go and make one.** The block still breaks bare-handed and yields nothing,
+which is vanilla's rule and is the one that teaches — a refusal to break it would say
+"you can't", where seven seconds of work vanishing says "you need a pickaxe".
+
+The tool must match the block's *kind*, not merely be a tool. A shovel on stone is
+exactly as good as a fist, which is what stops one good tool being the answer to
+everything.
+
+**Half the ore table is deliberately out of reach.** Vanilla's tiers: coal needs wood;
+iron, copper and lapis need stone; gold, redstone and diamond need iron. An iron
+pickaxe needs an ingot, an ingot needs smelting, and a furnace is a second window. So
+Phase 16 ends at stone tools and the wall it stops against is the thing Phase 17 opens
+— which is a better exit criterion than any that could have been written in advance.
+
+#### Icons, and the first textures with a transparent background
+
+Fourteen new layers in the block texture array — planks, four ore drops, eight tools,
+a stick. They live in the same array because the HUD already binds it, and a second
+array for fourteen 16x16 icons would be a second binding, a second upload and a second
+thing to keep in step. Nothing meshes them; no `Quad`'s material ever names one.
+
+Tool shapes are **hard-coded bit patterns, exactly as the HUD's font is** — already
+this repository's answer to "a small picture with no binary asset", and it makes an
+icon readable in the source: each row is sixteen characters that look like the row
+they draw. Bit 15 is column 0, so a literal reads left to right as the image does.
+
+These are the first layers whose alpha is not 255 outside the shape, so both
+`hud.frag` and `item.frag` gained an alpha discard. **Every block texture fills its
+tile opaquely, so that discard never fires on a block** — it exists entirely for
+icons, and without it a pickaxe would draw as a square of whatever the tile held.
+
+A dropped tool is still a *cube* with the icon on its faces, and that is knowingly a
+placeholder: vanilla draws dropped items as flat billboards, which needs the same
+non-cube geometry path Phase 10 builds for vegetation. The discard gets the silhouette
+right from four of six angles, which is enough to tell a dropped pickaxe from a
+dropped cobblestone.
+
+#### Measurements, and a method correction worth more than the numbers
+
+240 tests (up from 224), asan and tsan clean, tsan clean over the running pipeline.
+
+**The frame-time comparison was run properly for the first time**, which HANDOFF.md
+had listed as never having been done: the same benchmark, built from `cd80f8e` in a
+throwaway worktree, interleaved run-for-run with the new binary on an idle machine.
+
+| | baseline `cd80f8e` | Phase 16 |
+|---|---|---|
+| mean, four runs | 3.98 / 4.01 / 4.03 / 4.06 | 3.97 / 4.04 / 4.13 / 4.26 |
+| p99, four runs | 4.77 / 4.93 / 5.31 / 5.45 | 4.95 / 5.31 / 5.67 / 5.69 |
+
+Means overlap. **p99 is higher in all four pairs, by about 0.3 ms** — a consistent
+direction with a magnitude smaller than either series' own spread. The one plausible
+mechanism is the `hud.frag` discard, which the hotbar draws every frame and which
+disables early-Z for that draw; nothing else on the per-frame path changed, and the
+chunk shader, mesher, `Quad` and `ChunkRenderer` are untouched. Not settled, and
+recorded rather than explained away.
+
+**The first attempt at this comparison was invalid and the reason generalises.** The
+baseline was configured with a plain `-DCMAKE_BUILD_TYPE=Release` while the project's
+`release` preset also sets `CMAKE_INTERPROCEDURAL_OPTIMIZATION` — so the baseline had
+no LTO, meshed 0.6 s slower, and would have made Phase 16 look like a *warm-up
+improvement* it had nothing to do with. **An A/B where only one side went through the
+preset is not an A/B**, and the tell was a number moving in the direction nobody had a
+mechanism for.
+
+It also settled something about the older columns. The handoff records p99 4.88–5.18
+for water's commit; that same commit, rebuilt and run today, gives 4.77–5.45. **The
+numbers were never reproducible across sessions**, which is what section 1 of the
+handoff had suspected and could not demonstrate. Comparing rows of that table at
+one-millisecond resolution is unsound, and now there is evidence rather than a caveat.
+
+Arena is unchanged at 115 MiB, and warm-up is unchanged: `kBlocks` gained one entry
+and `BlockInfo` gained two bytes, neither of which the mesher's hot loop noticed.
+
+#### What is not built
+
+- **No durability.** A tool never wears out. The field belongs on `ItemStack` and
+  means nothing until there are tiers worth wearing out, which is Phase 17.
+- **No crafting bench and no furnace**, so iron and diamond tiers are unreachable.
+  See above; this is the phase boundary, not an omission.
+- **A sword is craftable and inert.** It multiplies nothing and harvests nothing,
+  because until Phase 19 there is nothing to swing it at. It exists so the recipe can,
+  and so the day mobs land they are already fought with something.
+- **No armour**, for the same reason one step further along: fall damage is the only
+  thing in the world that can hurt the player, so armour would be a stat that never
+  fires.
+
 ---
 
 ## 8. Open Questions
@@ -2135,6 +2428,19 @@ implementation makes contact with reality:
   the edits away on exit is a defect rather than a simplification. The disk format is
   still undecided; palette-compressed sections are already compact, so the open part
   is the container and whether it compresses at all.
+- ~~**Where block light's sixteen bits come from**~~ — **resolved in 3.7 as part of
+  planning Phase 18**: they do not. Sky and block light combine into the per-corner
+  brightness the 64-bit quad already carries, and the tint is what that costs. 3.7
+  also records what would justify widening to 128 bits later.
+- **How a torch is drawn**, which is Phase 18's other half and is *not* resolved. A
+  torch is not a cube, so it is either Phase 10's cross-quad geometry or a small cube
+  shipped with an admission. Everything else about block light is settled.
+- **What a mob is**, which is all of Phase 19 and is deliberately unplanned here.
+  `ItemEntities` is the only non-voxel thing in the world and it neither moves under
+  its own decisions nor collides with anything but the ground. Spawning, pathfinding
+  and a damage system that takes a *source* are each larger than that class, and
+  guessing at them in this document before Phase 16 exists would be the same mistake
+  as pricing them as one more recipe.
 
 ---
 

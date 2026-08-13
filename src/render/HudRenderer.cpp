@@ -280,7 +280,9 @@ void HudRenderer::pushSlot(const UiRect& rect, const ItemStack& stack, bool high
         return;
     }
 
-    push(slot, kWhite, Mode::Block, kBlocks[stack.block].top);
+    // `itemIcon` rather than `kBlocks[...].top`, since Phase 16: a slot can hold a
+    // stick, and a stick has no block to take a top face from.
+    push(slot, kWhite, Mode::Block, itemIcon(stack.item));
 
     // A single item shows no number, exactly as in vanilla: the icon already says
     // "one", and a 1 in every slot is noise.
@@ -347,10 +349,27 @@ void HudRenderer::draw(rhi::Device& device, const BlockTextures& textures,
         push(vec4{panel.x0, panel.y0, panel.x1, panel.y1},
              vec4{0.11f, 0.11f, 0.13f, 0.94f}, Mode::Solid);
 
-        for (usize i = 0; i < Inventory::kSlotCount; ++i) {
+        // Storage and the crafting grid, both drawn by the same loop -- the crafting
+        // grid is slots 36-44 and needed no drawing code of its own.
+        for (usize i = 0; i < Inventory::kOutputSlot; ++i) {
             const bool hovered = layout.slot(i).contains(state.cursorX, state.cursorY);
             pushSlot(layout.slot(i), inventory.at(i), hovered, aspect);
         }
+
+        // The arrow, then the output.
+        const UiRect arrow = layout.craftArrow();
+        push(vec4{arrow.x0, arrow.y0, arrow.x1, arrow.y1},
+             vec4{0.42f, 0.42f, 0.46f, 1.0f}, Mode::Solid);
+
+        // **The output slot draws a preview, not a stack.** Nothing is ever stored
+        // there: `Inventory::at(kOutputSlot)` is always empty, and what the player
+        // sees is what the grid *would* make. Storing the result instead would mean
+        // deciding what happens to it when the grid changes underneath, and the
+        // answer -- it evaporates -- is a rule nobody should have to learn.
+        const UiRect outputRect = layout.slot(Inventory::kOutputSlot);
+        const CraftResult result = inventory.craftResult();
+        const bool outputHovered = outputRect.contains(state.cursorX, state.cursorY);
+        pushSlot(outputRect, ItemStack{result.item, result.count}, outputHovered, aspect);
 
         // The dragged stack last, so it is over every slot it passes across --
         // otherwise it would disappear behind the one it is being dropped into,
@@ -363,7 +382,7 @@ void HudRenderer::draw(rhi::Device& device, const BlockTextures& textures,
                               state.cursorX + halfW, state.cursorY + halfH};
 
             const vec4 slot{held.x0, held.y0, held.x1, held.y1};
-            push(slot, kWhite, Mode::Block, kBlocks[inventory.cursor().block].top);
+            push(slot, kWhite, Mode::Block, itemIcon(inventory.cursor().item));
             if (inventory.cursor().count > 1) {
                 pushNumber(inventory.cursor().count, slot, aspect);
             }

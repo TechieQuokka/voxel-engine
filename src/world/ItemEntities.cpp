@@ -1,7 +1,7 @@
 #include "world/ItemEntities.hpp"
 
 #include "core/Profile.hpp"
-#include "world/BlockTable.hpp"
+#include "world/ItemTable.hpp"
 #include "world/World.hpp"
 
 #include <cmath>
@@ -42,8 +42,8 @@ f32 hashUnit(u32 value) {
 
 } // namespace
 
-void ItemEntities::spawn(const vec3& position, BlockId block, u32 count) {
-    if (block == kAirBlock || count == 0) {
+void ItemEntities::spawn(const vec3& position, ItemId what, u32 count) {
+    if (!itemExists(what) || count == 0) {
         return;
     }
 
@@ -51,7 +51,7 @@ void ItemEntities::spawn(const vec3& position, BlockId block, u32 count) {
 
     ItemEntity item;
     item.position = position;
-    item.block = block;
+    item.item = what;
     item.count = count;
     item.pickupDelay = kPickupDelay;
 
@@ -142,18 +142,23 @@ void ItemEntities::integrate(const World& world, f32 dt) {
 }
 
 void ItemEntities::merge() {
-    // Merge touching stacks of the same block. Quadratic, and deliberately so: the
+    // Merge touching stacks of the same item. Quadratic, and deliberately so: the
     // list is a few dozen entries, and a spatial index for that is more code than
     // the thing it accelerates.
     for (usize i = 0; i < m_items.size(); ++i) {
         if (m_items[i].count == 0) {
             continue;
         }
+        // **Per item, not a fixed 64.** Tools stack to one, so two dropped pickaxes
+        // lying together must stay two entities -- merging them would make a stack of
+        // two of something that cannot stack, and the second would be unreachable
+        // once Phase 17 gives each its own durability.
+        const u32 limit = maxStackOf(m_items[i].item);
         for (usize j = i + 1; j < m_items.size(); ++j) {
-            if (m_items[j].count == 0 || m_items[j].block != m_items[i].block) {
+            if (m_items[j].count == 0 || m_items[j].item != m_items[i].item) {
                 continue;
             }
-            if (m_items[i].count + m_items[j].count > kMaxStack) {
+            if (m_items[i].count + m_items[j].count > limit) {
                 continue;
             }
             const vec3 delta = m_items[i].position - m_items[j].position;
@@ -212,7 +217,7 @@ std::vector<ItemEntities::Pickup> ItemEntities::collect(const PickupVolume& volu
         if (distanceSquaredTo(volume, item.position) > radiusSquared) {
             continue;
         }
-        taken.push_back(Pickup{item.block, item.count});
+        taken.push_back(Pickup{item.item, item.count});
         item.count = 0;
     }
 

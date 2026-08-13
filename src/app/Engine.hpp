@@ -161,6 +161,14 @@ private:
     /// asking "where is the player standing" gets it right by construction now.
     vec3 playerFeet() const;
 
+    /// What is in the selected hotbar slot, or `kNoItem` when it is empty.
+    ///
+    /// Same argument as `playerFeet` above, one phase later: three separate rules now
+    /// depend on what is held -- how fast a block breaks, whether it drops anything,
+    /// and whether right-click places -- and they must all be asking about the same
+    /// slot.
+    ItemId heldItem() const;
+
     /// Breaks `m_target`, or places the selected block against it. Both go through
     /// `applyEdit`, so both get the same retry behaviour.
     void breakTargetBlock();

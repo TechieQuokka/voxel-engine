@@ -12,8 +12,8 @@ it removes a portability layer that would otherwise shape every decision below.
 
 Streaming terrain generated from a FastNoise2 density-function graph, meshed with
 binary greedy meshing, drawn with **one** `glMultiDrawArrays` call per frame — with
-caves, ores, sky light, trees, oceans, and a world you can mine, collect and build
-with.
+caves, ores, sky light, trees, oceans, and a world you can mine, collect, craft in and
+build with.
 
 | | |
 |---|---|
@@ -42,13 +42,22 @@ up — vanilla's 0.6-block step height.
 
 **Hold left click to break the highlighted block, right click to place one, `1`-`9` to
 pick a hotbar slot.** Reach is 5 blocks, cracks spread across the block while you
-mine it, and the time is vanilla's hardness — 0.75 s for dirt, 2.25 s for stone,
-6.75 s for an ore in deepslate. Bedrock is unbreakable.
+mine it, and the time is vanilla's hardness — 0.75 s for dirt, 1.125 s for stone with
+a wooden pickaxe. Bedrock is unbreakable.
+
+**Stone breaks bare-handed in 7.5 seconds and gives you nothing.** That is vanilla's
+rule, and it is the only thing that makes a pickaxe worth making — a tool that merely
+saved time would be an optimisation.
 
 Broken blocks drop as items, and walking over one collects it into the hotbar, which
 shows what you are carrying. **`E` opens the inventory** — 36 slots with
 vanilla's stack limit of 64, click to pick a stack up and put it down, right click to
 split it in half or place one at a time.
+
+**The same window crafts.** Right click items into the 3x3 grid on its top right and
+the slot past the arrow shows what they make. A log makes four planks, planks make
+sticks, and planks or cobblestone plus sticks make a pickaxe, axe, shovel or sword —
+in wood and stone. Iron needs smelting, which is not built.
 
 The block under the crosshair is **named on the HUD**, and the selection outline is
 thick enough to pick out of a textured world. Third person is over the shoulder, so
@@ -73,7 +82,7 @@ Dig down. The caves, ores and darkness are the point, and they are not visible f
 surface.
 
 ```bash
-ctest --preset debug                       # 224 test cases
+ctest --preset debug                       # 240 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
@@ -140,12 +149,26 @@ tracks remain, independent of each other:
 - **Interaction** — block placement and breaking, trees, item drops, a slot inventory
   with its window, a HUD, health, block updates and oceans are all **done**. Still
   open: aquifers and flowing water, the rest of vegetation, and persistence.
+- **Crafting** — Phases 16 to 19. **16 is built**: items stopped being block types,
+  there is a 3x3 grid in the inventory window, and ten vanilla recipes make planks,
+  sticks and four tools in two tiers. Still open: a crafting bench and furnace, torches
+  and block light, then mobs and combat.
 
 Entities, a slot inventory with a UI layer under it, a game tick and a translucent
-draw pass all exist now. Mobs and combat remain unplanned. Crafting is closer than it
-was — the window, cursor, hit testing and stack limits it needs are built — but it
-still forces items to stop being block types, which is a redesign rather than an
-addition.
+draw pass all exist now.
+
+**The redesign the crafting track waited on is done.** Items were `BlockId`s, and a
+stick is not a block; item ids now extend the block id space rather than replacing it,
+so adding a block is still one line and gives it an item for free. **A pickaxe is
+necessary rather than merely faster** — bare-handed stone takes 7.5 seconds and yields
+nothing, which is vanilla's rule and the only thing that makes a tool worth making.
+
+Iron and everything past it is deliberately out of reach: vanilla's tiers need a stone
+pickaxe for iron ore and an iron one for diamond, and an iron pickaxe needs smelting.
+Torches wait on somewhere to put block light — the 64-bit quad is exactly full, so sky
+and block light combine rather than the word widening (DESIGN.md 3.7). **Mobs and
+combat are last and are the largest**: armour would be a stat that never fires, because
+fall damage is currently the only thing in the world that can hurt the player.
 
 ## Dependencies
 

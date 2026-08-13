@@ -3,6 +3,7 @@
 #include "core/Math.hpp"
 #include "core/Types.hpp"
 #include "world/Coords.hpp"
+#include "world/ItemTable.hpp"
 
 #include <algorithm>
 #include <vector>
@@ -21,10 +22,11 @@ struct ItemEntity {
     vec3 position{};
     vec3 velocity{};
 
-    /// What it is. Items are block types here -- breaking oak_log gives an oak_log.
-    /// That will not survive crafting, which needs sticks and tools that are not
-    /// blocks, and the split is deliberately deferred until something needs it.
-    BlockId block = kAirBlock;
+    /// What it is. **An `ItemId`, since Phase 16** -- this field used to be a
+    /// `BlockId` with a note saying that would not survive crafting. It did not: a
+    /// coal ore now drops coal, which is not a block and could not be spelled here
+    /// before.
+    ItemId item = kNoItem;
     /// How many. Stacks merge on contact, which is what keeps the entity count
     /// bounded when a player tears through a hillside.
     u32 count = 1;
@@ -48,9 +50,9 @@ struct ItemEntity {
 /// holds thousands of entities is the day to move it.
 class ItemEntities {
 public:
-    /// Drops `count` of `block` at `position`, with a small random-ish scatter so a
+    /// Drops `count` of `what` at `position`, with a small random-ish scatter so a
     /// pile does not stack into one point.
-    void spawn(const vec3& position, BlockId block, u32 count);
+    void spawn(const vec3& position, ItemId what, u32 count);
 
     /// Advances physics, ages everything, merges touching stacks, and removes what
     /// despawned or fell out of the loaded world.
@@ -93,7 +95,7 @@ public:
     /// Removes and accumulates everything inside `volume` that is past its pickup
     /// delay. Returns the picked-up stacks, which the caller adds to an inventory.
     struct Pickup {
-        BlockId block = kAirBlock;
+        ItemId item = kNoItem;
         u32 count = 0;
     };
     std::vector<Pickup> collect(const PickupVolume& volume);
@@ -121,7 +123,7 @@ public:
             if (distanceSquaredTo(volume, item.position) > radiusSquared) {
                 continue;
             }
-            const u32 leftover = accept(item.block, item.count);
+            const u32 leftover = accept(item.item, item.count);
             // Clamped rather than trusted: an acceptor that returned more than it was
             // offered would otherwise create items out of nothing.
             item.count = std::min(leftover, item.count);
@@ -139,7 +141,7 @@ public:
     static constexpr f32 kDespawnSeconds = 300.0f;
     /// Half a second, matching vanilla's ten ticks.
     static constexpr f32 kPickupDelay = 0.5f;
-    /// How close two stacks of the same block have to be to become one.
+    /// How close two stacks of the same item have to be to become one.
     static constexpr f32 kMergeDistance = 0.6f;
     /// Reach for `PickupVolume::radius`. Vanilla inflates the player's bounding box
     /// by one block horizontally, which is a block from the item plus the player's
@@ -151,7 +153,8 @@ public:
     /// private constant in the caller.
     static constexpr f32 kPickupRadius = 1.4f;
     /// Beyond a full stack they stop merging, which is what stops one entity
-    /// silently accumulating an entire mining session.
+    /// silently accumulating an entire mining session. **The real limit is per item**
+    /// -- see `merge` -- and this is the value for everything that is not a tool.
     static constexpr u32 kMaxStack = 64;
 
     /// Longest physics step taken, and how many of them one `tick` may run.

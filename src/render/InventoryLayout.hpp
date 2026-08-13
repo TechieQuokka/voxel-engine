@@ -36,10 +36,21 @@ public:
     explicit InventoryLayout(f32 aspect);
 
     /// Slot rectangles, indexed exactly as `Inventory` indexes its slots: 0-8 the
-    /// hotbar, 9-35 the main grid. **The hotbar is drawn as the bottom row of the
-    /// window**, below the grid and separated by a gap, which is where vanilla puts
-    /// it and is why a player can drag between the two without thinking about it.
+    /// hotbar, 9-35 the main grid, 36-44 the 3x3 crafting grid, 45 the output.
+    /// **The hotbar is drawn as the bottom row of the window**, below the grid and
+    /// separated by a gap, which is where vanilla puts it and is why a player can
+    /// drag between the two without thinking about it.
+    ///
+    /// **One function for all forty-six, which is the point of this class.** The
+    /// crafting grid needed no new hit-testing code at all: it is slots 36-44, and
+    /// `hitTest` already walks every slot there is.
     UiRect slot(usize index) const;
+
+    /// The arrow between the crafting grid and its output. Decoration, and the only
+    /// rectangle here that is not a slot -- it is here rather than in the renderer
+    /// because it has to sit in the gap this class chose, and a renderer that
+    /// computed it separately would drift the moment a margin changed.
+    UiRect craftArrow() const noexcept { return m_craftArrow; }
 
     /// The panel behind everything, for the backing plate and for "did this click
     /// land inside the window or outside it".
@@ -55,6 +66,8 @@ public:
 
     static constexpr usize kColumns = 9;
     static constexpr usize kMainRows = Inventory::kMainSlots / kColumns;
+    /// The crafting grid is square, so one number covers rows and columns.
+    static constexpr usize kCraftColumns = 3;
 
 private:
     f32 m_aspect = 1.0f;
@@ -65,6 +78,12 @@ private:
     f32 m_gridLeft = 0.0f;
     f32 m_gridTop = 0.0f;
     f32 m_hotbarY = 0.0f;
+    /// Top-left of the crafting grid, which sits above the main grid and is
+    /// right-aligned with it -- vanilla's arrangement.
+    f32 m_craftLeft = 0.0f;
+    f32 m_craftTop = 0.0f;
+    UiRect m_output{};
+    UiRect m_craftArrow{};
     UiRect m_panel{};
 };
 

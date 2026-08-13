@@ -1,7 +1,7 @@
 # Handoff
 
-Snapshot for resuming work. Written 2026-08-09; last updated 2026-08-12, after
-block updates, a real inventory, water, and the item-pickup fix.
+Snapshot for resuming work. Written 2026-08-09; last updated 2026-08-13, when the
+crafting track was planned and **Phase 16 built** -- items stopped being blocks.
 
 Read `docs/DESIGN.md` for the full design and the reasoning behind every
 decision, and `docs/RESEARCH.md` for the vanilla Minecraft numbers the remaining
@@ -14,9 +14,9 @@ practical details needed to pick the work back up cold.
 
 **Phases 0-3 complete. Phase 4 in progress** -- 4a, 4b and 4c done; 4d (biomes) is the
 last step and is *not* next, because it still has the unresolved input in section 6.
-**The whole interaction track is done**: 9, 12, 13, 14 and 15, plus trees, water and
-two follow-up batches. The two tracks are independent, so 4d being open alongside a
-finished interaction track is not a contradiction.
+**The interaction track is done** (9, 12, 13, 14, 15, plus trees, water and two
+follow-up batches) and **the crafting track has started: Phase 16 is built.** The
+tracks are independent, so 4d being open alongside them is not a contradiction.
 
 DESIGN.md 7 has the phase plan; 7.5-7.15 have the results and the reasoning.
 RESEARCH.md has the vanilla numbers and records which of them could not be confirmed.
@@ -32,9 +32,11 @@ RESEARCH.md has the vanilla numbers and records which of them could not be confi
 | Water -- oceans and the translucent pass | 7.13 |
 | Item pickup, which had never worked | 7.14 |
 | The Alt-Tab stall fix, and seeing what you are mining | 7.15 |
+| **Items, crafting and tools (16)** | **7.16** |
 
 **Deliberately not built**, each for a recorded reason: aquifers (so no flooded
-caves), flowing water, and the item/block split that crafting forces. Section 8.
+caves) and flowing water. Section 8. The item/block split that used to head this
+list is built -- it was Phase 16.
 
 ### Playing it is what has driven this project
 
@@ -69,7 +71,7 @@ its delta. Clamping both would have printed a steady 60 FPS and left no evidence
 ### Where to resume
 
 **Nothing is half-finished.** The working tree is clean, everything is pushed, and
-224 tests, asan and tsan all pass. Pick any of these:
+240 tests, asan and tsan all pass. Pick any of these:
 
 1. **Play it, and knock a sand pillar over.** Phase 12 has *still* never been seen by
    a person: a benchmark flight never edits the world, so it cannot make a block fall.
@@ -87,12 +89,47 @@ its delta. Clamping both would have printed a steady 60 FPS and left no evidence
    threaded into the dirty-mask and pin machinery meshing already uses, so it is a
    phase rather than a patch. Section 6 has the shape of it.
 5. **The `ChunkRenderer` buffer hazard**, section 8, which Phase 5 will otherwise
-   inherit -- and which water has made two writes rather than one.
+   inherit -- and which is in **five** places rather than the one it was first
+   written up as. Fix it as one shared ring, not five.
+6. **Play Phase 16 and try to reach iron.** Punch a tree, craft planks, sticks and a
+   wooden pickaxe, mine stone, craft a stone pickaxe, find iron ore. That path has
+   240 tests behind it and **has never been walked by a person** -- which is the
+   condition that produced every bug in the table above.
 
-**Crafting is the next thing that forces a redesign rather than an addition.** Items
-are `BlockId`s; a stick is not a block. Everything *else* it needs already exists --
-a window, a cursor, a hit test, stack limits -- so a 2x2 grid is a layout change and a
-recipe table on top of the item/block split.
+**The crafting track is now planned rather than pending: Phases 16 to 19**, added
+2026-08-13 out of the plainest statement of the gap anyone has made -- house-building,
+torches, and crafting weapons, pickaxes and armour. DESIGN.md 7's phase table has
+them and the section after it has the reasoning. The short version:
+
+| | | Blocked on |
+|---|---|---|
+| **16 (done)** | The item/block split, 3x3 crafting, wood and stone tools | -- |
+| **17** | Crafting bench, **furnace and smelting**, iron/diamond tiers, durability | a **second UI window** |
+| **18** | Torches and block light | a torch is not a cube (Phase 10 geometry) |
+| **19** | Mobs, combat, weapons, armour | **mobs do not exist at all** |
+
+**16 was the keystone and the other three waited on it.** Items were `BlockId`s; a
+stick is not a block, and neither is an ingot or a pickaxe. Item ids now extend the
+block id space rather than replacing it, so adding a block is still one line and gives
+it an item for free. DESIGN.md 7.16 has the whole account.
+
+**The grid is 3x3 and in the player's own window, which is not vanilla** -- a pickaxe
+is a 3x3 recipe, so 2x2 could not make the one thing the phase existed for, and a
+bench is a second window. **Phase 17 moves 3x3 to the bench and cuts the player's to
+2x2**, which is a reduction presented as a feature, exactly as vanilla does.
+
+**17's real content is the furnace, not the bench.** Vanilla's harvest tiers are in
+the block table already: iron, copper and lapis need a stone pickaxe; gold, redstone
+and diamond need iron. An iron pickaxe needs an ingot and an ingot needs smelting, so
+**half the ore table is deliberately out of reach today** and the wall Phase 16 stops
+against is precisely what Phase 17 opens.
+
+**18's bit-budget problem is already settled** (DESIGN.md 3.7): the 64-bit quad is
+exactly full, so sky and block light combine into the brightness it already carries
+rather than the quad widening to 128 bits. The tint is what that costs. **19 is the
+largest and is last because armour has nothing to protect against** -- fall damage is
+the only thing that hurts the player and there is nothing to fight. A sword is
+craftable today and does nothing, which is honest rather than finished.
 
 | Commit | Contents |
 |---|---|
@@ -143,8 +180,9 @@ spaghetti and noodle tunnels carved per block, a surface pass that grasses the t
 the terrain (and only the terrain — not cave ceilings), a bedrock floor, a deepslate
 band that fades in from Y 8 to Y 0, blob features placing granite, diorite, andesite,
 tuff, gravel and seven ores, and **sky light**, so caves are actually dark.
-**30 block types**, up from five -- water is the newest and the only one that is
-neither solid nor opaque -- and there are now **trees** on the surface. It streams
+**31 block types**, up from five -- water is neither solid nor opaque, and oak planks
+are the newest and the only one nothing in the world generates -- and there are now
+**trees** on the surface. It streams
 infinitely and draws the whole visible set with **one** `glMultiDrawArrays`. Generation
 and meshing run on a 6-worker pool, uploads on their own thread, and the main thread
 only ever submits.
@@ -164,6 +202,21 @@ streaming pipeline.
 its first nine slots, so **an empty slot is empty** -- which is the fix for the nine
 grey blocks that used to sit along the bottom of an empty world. **Ten hearts**, and
 falling more than three blocks costs some; nothing else damages you yet.
+
+**And you can craft.** The inventory window carries a **3x3 grid and an output slot**,
+and ten vanilla recipes: a log makes four planks, planks make sticks, and planks or
+cobblestone plus sticks make a pickaxe, axe, shovel or sword. **Items are no longer
+block types** -- a stick and a lump of coal have no `BlockId` and could not be spelled
+before Phase 16 -- so coal ore drops coal, tools stack to one, and right-clicking with
+a pickaxe places nothing instead of placing a mysterious cube.
+
+**A pickaxe is necessary rather than merely faster.** Bare-handed stone takes 7.5
+seconds and yields *nothing*; a wooden pickaxe takes 1.125 and yields cobblestone.
+That is vanilla's no-harvest branch, which this engine deliberately never took until
+tools existed to make it mean something. The tool has to match the block's kind -- a
+shovel on stone is exactly as good as a fist. **Iron and everything past it is out of
+reach on purpose**: vanilla's tiers say iron ore needs a stone pickaxe and diamond
+needs an iron one, and an iron pickaxe needs smelting, which is Phase 17.
 
 **Sand and gravel fall.** Dig the support out from under a sand pillar and it comes
 down one block per tick, as a real falling entity rather than a block stepping down a
@@ -333,17 +386,23 @@ meaningless.
 | `F` | switch to flying | switch to walking |
 | `F5` | first person / third person | same |
 | `F11` | **fullscreen at the monitor's native resolution** | same |
+| `Escape` | release cursor, then quit | same |
+| **Left mouse** | **hold to break the highlighted block** | same |
+| **Right mouse** | **place the held block against it** | same |
+| **`1`-`9`** | **pick which hotbar slot to place from** | same |
+| **`E`** | **open and close the inventory, and craft** | same |
+| walk over an item | **pick it up** | same |
 
 Third person is **over the right shoulder**, and the crosshair follows the aim ray
 rather than sitting at the screen centre -- in third person those are not the same
 point. The block under the crosshair is **named on the HUD**, which is the only thing
 that works when the character is standing in front of what is being mined.
-| `Escape` | release cursor, then quit | same |
-| **Left mouse** | **hold to break the highlighted block** | same |
-| **Right mouse** | **place the held block against it** | same |
-| **`1`-`9`** | **pick which hotbar slot to place from** | same |
-| **`E`** | **open and close the inventory** | same |
-| walk over an item | **pick it up** | same |
+
+**Crafting is the `E` window.** Right click drags one item at a time into the 3x3
+grid on its top right; the slot past the arrow shows what the grid would make, and
+clicking it takes one and consumes one from every filled cell. Closing the window puts
+the grid back in the pack rather than eating it. **A log in any cell makes planks**,
+which is where every game of this starts.
 
 Reach is 5 blocks. **Breaking is held, not clicked** -- cracks spread across the block
 while the button is down, and the time is vanilla's hardness: 0.75 s for dirt, 2.25 s
@@ -356,6 +415,11 @@ A left click with the cursor released re-captures it instead of breaking anythin
 
 **Bedrock cannot be broken** — it is the world's floor, and vanilla refuses for the
 same reason.
+
+**Stone breaks bare-handed and gives you nothing.** That is not a bug and it is
+vanilla's rule: 7.5 seconds for an empty hand against 1.125 with a wooden pickaxe, and
+no cobblestone at the end of the first one. It is the only thing that makes a pickaxe
+worth the trip to a tree.
 
 **Sand and gravel fall when you dig under them**, one block per 20 Hz tick, which is
 the fastest way to see Phase 12 without going looking for a desert: place a few sand
@@ -421,7 +485,12 @@ src/world/              pure data; knows nothing about rendering
   FallingBlocks— sand and gravel between two cells. Straight down, i32 x and z
   BlockUpdates — "this block changed, tell its neighbours": the tick queue, the
                  dedupe set and the retry discipline. **Where water plugs in**
-  Inventory    — 36 slots, stack limits, and the cursor stack the window drags
+  Inventory    — 36 storage slots, the 3x3 craft grid, the output, the cursor stack
+  ItemTable    — **every item, and the id space that extends BlockId's**; tools,
+                 mining speed, harvest tiers, and what a block drops
+  Crafting     — the recipe table and the 3x3 match (shaped, mirrored, shapeless)
+  Tools        — ToolKind and ToolTier, in their own header because BlockTable and
+                 ItemTable both need them and neither may include the other
   BlockTable also carries **fluid**; `isSolidBlock` is the test physics wants
   BlockTable also carries **hardness**, **drops** and **falls**
 src/worldgen/           knows world, nothing above it; FastNoise2 is PRIVATE
@@ -440,8 +509,9 @@ src/render/
   CharacterRenderer (the second render path; not voxels),
   SelectionRenderer (the block outline and the breaking cracks; no buffer at all),
   ItemRenderer (every dropped item *and every falling block* in one draw call),
-  InventoryLayout (every slot rectangle; the renderer AND the hit test use it,
-                   which is the whole reason it exists),
+  InventoryLayout (every slot rectangle -- storage, craft grid and output alike; the
+                   renderer AND the hit test use it, which is the whole reason it
+                   exists, and why the craft grid needed no new hit-testing code),
   HudRenderer (crosshair, hotbar, hearts, the inventory window — a small UI layer)
 src/app/
   main, Engine (streaming pipeline: submit-only frame loop, upload thread)
@@ -686,6 +756,34 @@ Learned the hard way; all of them cost real time.
   top of a loop while updating `previous` at the bottom measures the gap *between*
   iterations, not the frame. The first attempt at fixing the above did exactly that and
   moved the camera 11 blocks in 20 seconds.
+- **`ItemId` and `BlockId` are the same underlying type, so the compiler cannot tell
+  them apart.** That is the deliberate price of item ids extending block ids rather
+  than replacing them -- adding a block stays one line and gives it an item for free --
+  but it means passing one where the other belongs converts silently. The place it
+  bites is placement: right-clicking with a pickaxe would place whatever block sits at
+  that id. `itemIsBlock` and `blockOfItem` are the seam, and every conversion has to
+  go through them.
+- **An A/B benchmark where only one side went through the preset is not an A/B.** The
+  first baseline for Phase 16 was configured with a plain `-DCMAKE_BUILD_TYPE=Release`
+  while the `release` preset also sets `CMAKE_INTERPROCEDURAL_OPTIMIZATION`. Without
+  LTO the baseline meshed 0.6 s slower, which would have been read as Phase 16
+  *improving* warm-up. **The tell was a number moving in a direction nobody had a
+  mechanism for**, and that is the check worth keeping: an unexplained improvement is
+  as suspicious as an unexplained regression.
+- **The frame-time table in section 1 is not comparable across sessions, and there is
+  now evidence rather than a suspicion.** Rebuilding `cd80f8e` and running it today
+  gives p99 4.77-5.45 where that same commit is recorded at 4.88-5.18. Comparing rows
+  of that table at one-millisecond resolution is unsound. Compare against a baseline
+  you built and ran in the same sitting, interleaved run-for-run.
+- **`usedSlots()` is a count and not an index.** The Phase 16 inventory demo seeded the
+  craft grid with `clickSlot(usedSlots() - 1)` meaning "the stack I just added" and
+  picked up an unrelated slot, which produced a capture of a grid full of the wrong
+  items and no output. Seeding order is now load-bearing: the grid is filled first,
+  into an empty pack, where slot 0 is the only predictable index.
+- **A `discard` in a fragment shader disables early-Z for that draw.** `hud.frag`
+  needed one so item icons could have a transparent background, and the hotbar draws
+  every frame. It is the only mechanism anyone has for the ~0.3 ms of p99 that Phase 16
+  added in all four A/B pairs, and it is unsettled -- see DESIGN.md 7.16.
 - CMake needs `LANGUAGES C CXX`; GLFW and glad are C.
 - Ninja is not installed; presets use Unix Makefiles.
 
@@ -852,10 +950,26 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   no ring, no fence and no delay. `barrierAfterClientWrites()` orders writes; it does not
   wait for last frame's draw. Vsync at 60 FPS with a 6 ms frame leaves enough slack that
   it has not been observed, which is not the same as it being correct. Phase 5's indirect
-  command buffer has the identical problem, so fix both together. **Water added a second
-  write to the same buffer** (the translucent pass's origins, at
-  `m_origins.size() * sizeof(vec4)`), so there are two instances of the hazard now
-  rather than one; a ring has to cover both.
+  command buffer has the identical problem, so fix them together.
+
+  **This entry undercounted the hazard badly, and the count is the useful part.** It
+  said "two instances" -- `ChunkRenderer`'s opaque origins and the translucent pass's,
+  which water added. Checked against every `createPersistent` call on 2026-08-13, it is
+  **five writes across four renderers**, every one of them offset 0, every frame, with
+  a barrier and nothing else:
+
+  | | |
+  |---|---|
+  | `ChunkRenderer.cpp:104, 110` | opaque origins, then water origins |
+  | `ItemRenderer.cpp:91` | dropped items and falling blocks |
+  | `HudRenderer.cpp:423` | crosshair, hotbar, hearts, the inventory window |
+  | `CharacterRenderer.cpp:202, 257` | the character, and the first-person view model |
+
+  `SectionMeshStore` is the *only* holder of a persistent buffer that honours the
+  contract `rhi/Buffer.hpp` states. So the fix is a frame ring in `rhi` that all five
+  use -- which needs `Buffer::bindRange` (`glBindBufferRange`), since `bindBase` is all
+  there is today. Five separate rings would be four more chances to get it wrong, and
+  Phase 5 makes it six.
 - **Occlusion culling method** — HZB, visibility graph, or both. Decided by
   profiling in Phase 8.
 - **World persistence** — **now in scope** (DESIGN.md Phase 11), so the open part is
@@ -881,13 +995,24 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   Since walking has no collision volume either, the two are at least consistent — but
   a real capsule would refuse cases this lets through, and building a proper collider
   should fix both together rather than one of them.
-- **Items are `BlockId`s, and crafting will break that.** A stick is not a block. The
-  split is deferred on purpose -- see DESIGN.md 7.10. It is a smaller job than it was:
-  it now means changing what `ItemStack::block` is, rather than that plus building the
-  container around it.
+- ~~**Items are `BlockId`s, and crafting will break that.**~~ **Resolved in Phase 16.**
+  Item ids extend the block id space rather than replacing it, so a stick exists and
+  coal ore drops coal. What is left of it is the type-safety note in section 5.
 - **The UI layer handles exactly one window.** No widget tree, no event routing --
-  `HudRenderer` plus `InventoryLayout` and nothing else. A chest or a crafting bench is
-  a second window and is the point at which that stops being enough; its header says so.
+  `HudRenderer` plus `InventoryLayout` and nothing else. A chest, a crafting bench or a
+  furnace is a second window and is the point at which that stops being enough; its
+  header says so. **This is what Phase 17 pays for and Phase 16 avoided** by putting
+  the 3x3 grid inside the window that already exists.
+- **No durability, so a tool never wears out.** The field belongs on `ItemStack` and
+  means nothing until there are tiers worth wearing out. Phase 17.
+- **A dropped tool is a cube with a tool painted on it.** Vanilla draws dropped items
+  as flat billboards, which needs the same non-cube geometry path Phase 10 builds for
+  vegetation. The alpha discard in `item.frag` gets the silhouette right from four of
+  six angles, which is enough to tell a dropped pickaxe from a dropped cobblestone and
+  is knowingly not enough to be finished.
+- **A sword is craftable and completely inert.** It multiplies no mining speed and
+  harvests nothing, because until Phase 19 there is nothing to swing it at. It exists
+  so the recipe can.
 - **Death drops nothing and shows nothing.** Respawn is full health where you stand.
   A death screen needs the second window above; dropping the inventory needs somewhere
   the player can get it back from.

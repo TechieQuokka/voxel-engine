@@ -10,7 +10,7 @@ TEST_CASE("adding fills partial stacks before empty slots") {
     Inventory inventory;
 
     CHECK(inventory.add(kStoneBlock, 10) == 0);
-    CHECK(inventory.at(0).block == kStoneBlock);
+    CHECK(inventory.at(0).item == kStoneBlock);
     CHECK(inventory.at(0).count == 10);
     CHECK(inventory.usedSlots() == 1);
 
@@ -37,7 +37,7 @@ TEST_CASE("the hotbar fills before the main grid") {
                           kOakLeavesBlock, kDeepslateBlock, kBedrockBlock};
     for (usize i = 0; i < 9; ++i) {
         CHECK(inventory.add(types[i], 1) == 0);
-        CHECK(inventory.at(i).block == types[i]);
+        CHECK(inventory.at(i).item == types[i]);
     }
     CHECK(inventory.usedSlots() == Inventory::kHotbarSlots);
 }
@@ -45,13 +45,19 @@ TEST_CASE("the hotbar fills before the main grid") {
 TEST_CASE("an inventory can fill up, and says so") {
     Inventory inventory;
 
-    // Every slot to the brim with one type. `add` returns what did not fit rather
-    // than pretending it did -- which is what lets a picked-up stack stay on the
-    // ground instead of being deleted.
-    const u32 capacity = Inventory::kSlotCount * Inventory::kMaxStack;
+    // Every *storage* slot to the brim with one type. `add` returns what did not fit
+    // rather than pretending it did -- which is what lets a picked-up stack stay on
+    // the ground instead of being deleted.
+    //
+    // **`kStorageSlots`, not `kSlotCount`.** Since the crafting grid landed the slot
+    // index space runs past storage into the grid and the output, and a full pack is
+    // 36 slots rather than 46. `add` must never reach the grid: a picked-up stack
+    // landing in a crafting cell would silently change what the grid produces.
+    const u32 capacity = Inventory::kStorageSlots * Inventory::kMaxStack;
     CHECK(inventory.add(kStoneBlock, capacity) == 0);
     CHECK(inventory.count(kStoneBlock) == capacity);
-    CHECK(inventory.usedSlots() == Inventory::kSlotCount);
+    CHECK(inventory.usedSlots() == Inventory::kStorageSlots);
+    CHECK(inventory.at(Inventory::kFirstCraftSlot).empty());
 
     CHECK(inventory.add(kStoneBlock, 5) == 5);
     CHECK(inventory.add(kDirtBlock, 3) == 3);
@@ -75,7 +81,7 @@ TEST_CASE("taking one empties the slot at zero") {
     CHECK(inventory.at(0).empty());
     // An emptied slot must clear its block too, or the hotbar would keep drawing an
     // icon for something that is gone.
-    CHECK(inventory.at(0).block == kAirBlock);
+    CHECK(inventory.at(0).item == kAirBlock);
 
     CHECK_FALSE(inventory.takeOne(0));
     CHECK_FALSE(inventory.takeOne(Inventory::kSlotCount)); // Out of range.
@@ -87,7 +93,7 @@ TEST_CASE("clicking picks a stack up and puts it down") {
 
     inventory.clickSlot(0);
     CHECK(inventory.at(0).empty());
-    CHECK(inventory.cursor().block == kStoneBlock);
+    CHECK(inventory.cursor().item == kStoneBlock);
     CHECK(inventory.cursor().count == 10);
 
     inventory.clickSlot(20);
@@ -125,12 +131,12 @@ TEST_CASE("clicking a different type swaps the two") {
     inventory.add(kDirtBlock, 4);
 
     inventory.clickSlot(0);
-    REQUIRE(inventory.cursor().block == kStoneBlock);
+    REQUIRE(inventory.cursor().item == kStoneBlock);
 
     inventory.clickSlot(1);
-    CHECK(inventory.at(1).block == kStoneBlock);
+    CHECK(inventory.at(1).item == kStoneBlock);
     CHECK(inventory.at(1).count == 10);
-    CHECK(inventory.cursor().block == kDirtBlock);
+    CHECK(inventory.cursor().item == kDirtBlock);
     CHECK(inventory.cursor().count == 4);
 }
 
@@ -169,7 +175,7 @@ TEST_CASE("right click splits a stack and places one at a time") {
     // A slot holding something else takes nothing.
     inventory.add(kDirtBlock, 1); // slot 1
     inventory.splitSlot(1);
-    CHECK(inventory.at(1).block == kDirtBlock);
+    CHECK(inventory.at(1).item == kDirtBlock);
     CHECK(inventory.at(1).count == 1);
     CHECK(inventory.cursor().count == 3);
 }
@@ -200,7 +206,7 @@ TEST_CASE("closing with a full inventory hands the remainder back to be dropped"
     // There is now nowhere for the held stack to go, and it must come back to the
     // caller rather than evaporating because a window closed.
     const ItemStack leftover = inventory.releaseCursor();
-    CHECK(leftover.block == kStoneBlock);
+    CHECK(leftover.item == kStoneBlock);
     CHECK(leftover.count == Inventory::kMaxStack);
     CHECK(inventory.cursorEmpty());
 }

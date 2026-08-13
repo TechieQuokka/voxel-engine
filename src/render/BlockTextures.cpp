@@ -3,6 +3,7 @@
 #include "core/Log.hpp"
 #include "world/BlockTable.hpp"
 
+#include <array>
 #include <cmath>
 #include <vector>
 
@@ -176,6 +177,168 @@ void generateBark(std::vector<u8>& out, u32 layer, u32 barkArgb, u32 grooveArgb,
     }
 }
 
+/// Sawn boards: horizontal bands with a dark seam between them, and a vertical seam
+/// inside each band at a different column.
+///
+/// The seams are the whole texture. Grain in a plank colour reads as pale dirt; what
+/// says "board" is a straight line every few rows and the fact that the short joints
+/// do not line up between them.
+void generatePlanks(std::vector<u8>& out, u32 layer, u32 plankArgb, u32 seamArgb,
+                    f32 roughness, u32 seed) {
+    const Rgba plank = fromArgb(plankArgb);
+    const Rgba seam = fromArgb(seamArgb);
+
+    constexpr u32 kBoardHeight = 4;
+
+    for (u32 y = 0; y < kSize; ++y) {
+        const u32 board = y / kBoardHeight;
+        const bool horizontalSeam = (y % kBoardHeight) == 0;
+        // One short joint per board, at a column that varies between them. Lining
+        // them up would read as a grid rather than as staggered planks.
+        const u32 joint = 3u + (hash2D(board, 0u, seed) % 10u);
+
+        for (u32 x = 0; x < kSize; ++x) {
+            const bool verticalSeam = x == joint;
+            const Rgba base = horizontalSeam || verticalSeam ? seam : plank;
+            // Grain runs along the board, so x varies faster than y -- the opposite
+            // of bark, and for the same reason: the direction is the information.
+            const f32 n = noise(x, y / 2u, seed + board) * roughness;
+            writePixel(out, layer, x, y, shade(base, n));
+        }
+    }
+}
+
+// -- item icons ------------------------------------------------------------------
+//
+// **Shapes are hard-coded bit patterns, exactly as the HUD's font is.** That is
+// already the established answer in this repository for "a small picture with no
+// binary asset", and reusing it means an icon is readable in the source: each row
+// below is sixteen characters that look like the row they draw.
+//
+// Bit 15 is column 0, so a binary literal reads left to right as the image does.
+// Getting that backwards mirrors every tool and looks like a UV bug.
+
+using IconMask = std::array<u16, kSize>;
+
+bool maskBit(u16 row, u32 x) {
+    // All-unsigned on purpose. `row >> n & 1u` on a u16 promotes to int and converts
+    // back, which is a -Wsign-conversion error under this project's warning set --
+    // and is the exact bug HANDOFF.md 5 records the HUD's digit blitter shipping.
+    return ((static_cast<u32>(row) >> (15u - x)) & 1u) != 0u;
+}
+
+/// Draws every set bit of `mask` in `color`, leaving the rest of the tile untouched.
+/// Untouched means transparent: the pixel buffer starts zeroed, and alpha 0 is what
+/// makes an icon a shape rather than a square.
+void drawMask(std::vector<u8>& out, u32 layer, const IconMask& mask, u32 argb,
+              f32 roughness, u32 seed) {
+    const Rgba base = fromArgb(argb);
+    for (u32 y = 0; y < kSize; ++y) {
+        for (u32 x = 0; x < kSize; ++x) {
+            if (!maskBit(mask[y], x)) {
+                continue;
+            }
+            writePixel(out, layer, x, y, shade(base, noise(x, y, seed) * roughness));
+        }
+    }
+}
+
+/// The shaft every tool shares, running from under the head down to the lower left.
+constexpr IconMask kHandleArt{
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0000000000000000, 0b0000000011000000, 0b0000000110000000, 0b0000001100000000,
+    0b0000011000000000, 0b0000110000000000, 0b0001100000000000, 0b0011000000000000,
+    0b0110000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+};
+
+constexpr IconMask kPickaxeHeadArt{
+    0b0000000000000000, 0b0000000000000000, 0b0000111111111000, 0b0001111111111100,
+    0b0001100000011000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+};
+
+constexpr IconMask kAxeHeadArt{
+    0b0000000000000000, 0b0000000000000000, 0b0000000111110000, 0b0000001111111000,
+    0b0000001111111000, 0b0000001111110000, 0b0000000111100000, 0b0000000111000000,
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+};
+
+constexpr IconMask kShovelHeadArt{
+    0b0000000000000000, 0b0000000000000000, 0b0000001111000000, 0b0000001111000000,
+    0b0000001111000000, 0b0000001110000000, 0b0000000000000000, 0b0000000000000000,
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+};
+
+/// A sword is a blade rather than a head on a stick, so it does not use the shared
+/// handle: the grip runs on past the guard where a tool's shaft simply stops.
+constexpr IconMask kSwordBladeArt{
+    0b0000000000000000, 0b0000000000111000, 0b0000000001110000, 0b0000000011100000,
+    0b0000000111000000, 0b0000001110000000, 0b0000011100000000, 0b0000111000000000,
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+};
+
+constexpr IconMask kSwordGripArt{
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0001111110000000, 0b0001100000000000, 0b0011000000000000, 0b0110000000000000,
+    0b1110000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+};
+
+constexpr IconMask kStickArt{
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000110000,
+    0b0000000001100000, 0b0000000011000000, 0b0000000110000000, 0b0000001100000000,
+    0b0000011000000000, 0b0000110000000000, 0b0001100000000000, 0b0011000000000000,
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+};
+
+/// A tool: the shared shaft in the handle colour, then the head over it in the tier
+/// colour. Head second so an overlapping pixel belongs to the head, which is what
+/// makes the joint read as the head being mounted rather than the shaft passing
+/// through it.
+void generateTool(std::vector<u8>& out, u32 layer, const IconMask& head, u32 headArgb,
+                  u32 handleArgb, f32 roughness, u32 seed) {
+    drawMask(out, layer, kHandleArt, handleArgb, roughness * 0.6f, seed + 1u);
+    drawMask(out, layer, head, headArgb, roughness, seed);
+}
+
+void generateSword(std::vector<u8>& out, u32 layer, u32 bladeArgb, u32 gripArgb,
+                   f32 roughness, u32 seed) {
+    drawMask(out, layer, kSwordGripArt, gripArgb, roughness * 0.6f, seed + 1u);
+    drawMask(out, layer, kSwordBladeArt, bladeArgb, roughness, seed);
+}
+
+/// A rounded lump in the middle of the tile, rim-shaded so it reads as solid.
+///
+/// Generated rather than masked, because the four things that use it differ only in
+/// colour and a circle is shorter written than drawn. The wobble on the radius is
+/// what stops four identical discs.
+void generateNugget(std::vector<u8>& out, u32 layer, u32 bodyArgb, u32 rimArgb,
+                    f32 roughness, u32 seed) {
+    const Rgba body = fromArgb(bodyArgb);
+    const Rgba rim = fromArgb(rimArgb);
+
+    constexpr f32 kCenter = 7.5f;
+    constexpr f32 kRadius = 4.6f;
+
+    for (u32 y = 0; y < kSize; ++y) {
+        for (u32 x = 0; x < kSize; ++x) {
+            const f32 dx = static_cast<f32>(x) - kCenter;
+            const f32 dy = static_cast<f32>(y) - kCenter;
+            const f32 distance =
+                std::sqrt(dx * dx + dy * dy) + noise(x, y, seed) * 0.75f;
+            if (distance > kRadius) {
+                continue; // Outside the lump: left transparent.
+            }
+            const Rgba base = distance > kRadius - 1.2f ? rim : body;
+            writePixel(out, layer, x, y, shade(base, noise(x, y, seed + 4u) * roughness));
+        }
+    }
+}
+
 } // namespace
 
 BlockTextures::BlockTextures() {
@@ -210,6 +373,33 @@ BlockTextures::BlockTextures() {
         case TextureRecipe::Bark:
             generateBark(pixels, index, layer.argb, layer.argbSecondary,
                          layer.roughness, layer.seed);
+            break;
+        case TextureRecipe::Planks:
+            generatePlanks(pixels, index, layer.argb, layer.argbSecondary,
+                           layer.roughness, layer.seed);
+            break;
+        case TextureRecipe::Nugget:
+            generateNugget(pixels, index, layer.argb, layer.argbSecondary,
+                           layer.roughness, layer.seed);
+            break;
+        case TextureRecipe::Stick:
+            drawMask(pixels, index, kStickArt, layer.argb, layer.roughness, layer.seed);
+            break;
+        case TextureRecipe::ToolPickaxe:
+            generateTool(pixels, index, kPickaxeHeadArt, layer.argb,
+                         layer.argbSecondary, layer.roughness, layer.seed);
+            break;
+        case TextureRecipe::ToolAxe:
+            generateTool(pixels, index, kAxeHeadArt, layer.argb, layer.argbSecondary,
+                         layer.roughness, layer.seed);
+            break;
+        case TextureRecipe::ToolShovel:
+            generateTool(pixels, index, kShovelHeadArt, layer.argb,
+                         layer.argbSecondary, layer.roughness, layer.seed);
+            break;
+        case TextureRecipe::ToolSword:
+            generateSword(pixels, index, layer.argb, layer.argbSecondary,
+                          layer.roughness, layer.seed);
             break;
         }
     }

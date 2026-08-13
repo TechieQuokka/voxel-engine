@@ -90,9 +90,9 @@ TEST_CASE("stacks of the same block merge, different blocks do not") {
     u32 stoneTotal = 0;
     u32 dirtEntities = 0;
     for (const ItemEntity& item : items.items()) {
-        if (item.block == kStoneBlock) {
+        if (item.item == kStoneBlock) {
             stoneTotal += item.count;
-        } else if (item.block == kDirtBlock) {
+        } else if (item.item == kDirtBlock) {
             ++dirtEntities;
         }
     }
@@ -116,7 +116,7 @@ TEST_CASE("an item cannot be picked up before its delay expires") {
 
     const auto picked = items.collect(standingAt(vec3{8.5f, kFloorTop, 8.5f}));
     REQUIRE(picked.size() == 1);
-    CHECK(picked[0].block == kStoneBlock);
+    CHECK(picked[0].item == kStoneBlock);
     CHECK(picked[0].count == 1);
     CHECK(items.size() == 0);
 }
@@ -131,7 +131,7 @@ TEST_CASE("collect only takes what is in range") {
 
     const auto picked = items.collect(standingAt(vec3{8.5f, kFloorTop, 8.5f}));
     REQUIRE(picked.size() == 1);
-    CHECK(picked[0].block == kStoneBlock);
+    CHECK(picked[0].item == kStoneBlock);
     CHECK(items.size() == 1); // The far one is untouched.
 }
 
@@ -153,7 +153,7 @@ TEST_CASE("an item lying on the ground the player stands on is picked up") {
 
     const auto picked = items.collect(standingAt(vec3{8.5f, kFloorTop, 8.5f}));
     REQUIRE(picked.size() == 1);
-    CHECK(picked[0].block == kStoneBlock);
+    CHECK(picked[0].item == kStoneBlock);
     CHECK(items.size() == 0);
 }
 
@@ -283,16 +283,26 @@ TEST_CASE("a full inventory leaves the item on the ground") {
 }
 
 TEST_CASE("blocks drop what vanilla says they drop") {
-    CHECK(dropOf(blockIdOf("stone")) == blockIdOf("cobblestone"));
-    CHECK(dropOf(blockIdOf("grass")) == blockIdOf("dirt"));
-    CHECK(dropOf(blockIdOf("oak_leaves")) == kAirBlock);
+    // **Rock needs a tool in hand to drop anything, since Phase 16.** These three
+    // used to be asked bare-handed and passed; the pickaxe is the change, and
+    // test_block_table.cpp has the cases for what happens without one.
+    const ItemId pick = itemIdOf("wooden_pickaxe");
+
+    CHECK(dropOf(blockIdOf("stone"), pick) == itemIdOf("cobblestone"));
+    CHECK(dropOf(blockIdOf("cobblestone"), pick) == itemIdOf("cobblestone"));
+
+    // Soft blocks need nothing at all, and that is most of the world.
+    CHECK(dropOf(blockIdOf("grass")) == itemIdOf("dirt"));
+    CHECK(dropOf(blockIdOf("oak_leaves")) == kNoItem);
 
     // Everything else yields itself, which is the default and must stay so -- a
     // block added to the table without thinking about drops should still be
     // collectable rather than silently vanishing.
-    CHECK(dropOf(blockIdOf("dirt")) == blockIdOf("dirt"));
-    CHECK(dropOf(blockIdOf("sand")) == blockIdOf("sand"));
-    CHECK(dropOf(blockIdOf("oak_log")) == blockIdOf("oak_log"));
-    CHECK(dropOf(blockIdOf("cobblestone")) == blockIdOf("cobblestone"));
-    CHECK(dropOf(blockIdOf("diamond_ore")) == blockIdOf("diamond_ore"));
+    CHECK(dropOf(blockIdOf("dirt")) == itemIdOf("dirt"));
+    CHECK(dropOf(blockIdOf("sand")) == itemIdOf("sand"));
+    CHECK(dropOf(blockIdOf("oak_log")) == itemIdOf("oak_log"));
+
+    // Diamond ore is the one that needs a tier nothing in Phase 16 can craft, so
+    // even a stone pickaxe leaves it empty-handed.
+    CHECK(dropOf(blockIdOf("diamond_ore"), itemIdOf("stone_pickaxe")) == kNoItem);
 }

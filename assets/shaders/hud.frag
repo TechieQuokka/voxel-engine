@@ -24,8 +24,17 @@ void main() {
     if (v_mode == kBlock) {
         // The block array is sRGB, so this is already linear -- which is what the
         // tint multiply below wants. See DESIGN.md 6.9.
-        vec3 albedo = texture(u_blockTextures, vec3(v_uv, float(v_layer))).rgb;
-        fragColor = vec4(albedo * v_tint.rgb, v_tint.a);
+        vec4 albedo = texture(u_blockTextures, vec3(v_uv, float(v_layer)));
+
+        // **Item icons are shapes on nothing, and this is what makes them so.** Every
+        // block texture fills its tile opaquely, so this discard never fired before
+        // Phase 16 and every block icon is unaffected by it. A pickaxe is mostly
+        // empty tile, and without this it would draw as a square of whatever the
+        // cleared buffer held.
+        if (albedo.a < 0.5) {
+            discard;
+        }
+        fragColor = vec4(albedo.rgb * v_tint.rgb, v_tint.a);
         return;
     }
 

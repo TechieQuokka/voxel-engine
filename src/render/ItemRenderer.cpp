@@ -43,7 +43,7 @@ void ItemRenderer::draw(rhi::Device& device, const Camera& camera,
     const f32 yaw = spinSeconds * kSpinRate;
 
     for (const ItemEntity& item : items.items()) {
-        if (item.block == kAirBlock || item.block >= kBlocks.size()) {
+        if (!itemExists(item.item)) {
             continue;
         }
 
@@ -56,9 +56,10 @@ void ItemRenderer::draw(rhi::Device& device, const Camera& camera,
         m_gpuItems.push_back(GpuItem{
             vec4{item.position.x, item.position.y + kHalfExtent + bob, item.position.z,
                  kHalfExtent},
-            // The top layer, because that is the face of a block people recognise --
-            // grass reads as grass rather than as a dirt cube with a green lid.
-            vec4{yaw, static_cast<f32>(kBlocks[item.block].top), 0.0f, 0.0f},
+            // A block item draws its top layer, because that is the face people
+            // recognise -- grass reads as grass rather than as a dirt cube with a
+            // green lid. A loose item draws its icon, and `itemIcon` answers both.
+            vec4{yaw, static_cast<f32>(itemIcon(item.item)), 0.0f, 0.0f},
         });
     }
 

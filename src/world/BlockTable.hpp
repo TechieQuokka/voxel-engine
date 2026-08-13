@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Types.hpp"
+#include "world/Tools.hpp"
 
 #include <array>
 #include <string_view>
@@ -44,6 +45,35 @@ enum class TextureRecipe : u8 {
     /// log the same texture as dirt, and the grain direction is most of what says
     /// which way the trunk runs.
     Bark,
+
+    /// Horizontal boards with seams between them, for planks. Bark rotated would be
+    /// the cheap version and would read as a log lying down; a plank face is defined
+    /// by the *seams*, which are darker lines at fixed intervals rather than noise.
+    Planks,
+
+    // -- item icons ------------------------------------------------------------
+    //
+    // **These layers are never meshed.** They live in the same texture array only
+    // because the HUD already binds it to draw slot contents, and a second array for
+    // fourteen 16x16 icons would be a second binding, a second upload and a second
+    // thing to keep in step. Nothing sets a Quad's `material` to one of them.
+    //
+    // They are the first layers with a **transparent background**: an icon is a shape
+    // on nothing, where every block texture fills its tile. `hud.frag` and `item.frag`
+    // both discard on alpha for this, which they did not need to before.
+
+    /// A rounded lump in the middle of the tile. Coal, diamond, redstone, lapis --
+    /// everything that comes out of rock as a thing rather than as a block.
+    Nugget,
+    /// A short diagonal shaft. The one item that is not made of anything else.
+    Stick,
+    /// The four tools. Separate recipes rather than one with a shape parameter,
+    /// because the switch in BlockTextures.cpp is deliberately unguarded by a
+    /// default -- a fifth tool then fails to compile rather than drawing a blank.
+    ToolPickaxe,
+    ToolAxe,
+    ToolShovel,
+    ToolSword,
 };
 
 struct LayerInfo {
@@ -121,6 +151,31 @@ inline constexpr std::array kLayers{
     // reaches the shader unchanged. Very low roughness: water that looks like
     // gravel is worse than water that looks flat.
     LayerInfo{"water",        TextureRecipe::Grain, 0xBF3F76E4u, 0u,           4.0f, 50u},
+
+    // Planks. Lighter than the bark they come from, because a sawn face is the inside
+    // of the trunk; the secondary colour is the seam between boards.
+    LayerInfo{"oak_planks",   TextureRecipe::Planks, 0xFFB08A55u, 0xFF8A6A3Eu, 9.0f, 60u},
+
+    // -- item icons, transparent outside the shape ------------------------------
+    // `argb` is the body and `argbSecondary` the shading or the handle. Roughness is
+    // reused as the amount of per-pixel variation, which keeps an icon from reading
+    // as flat vector art beside sixteen noisy block textures.
+    LayerInfo{"stick",           TextureRecipe::Stick,  0xFF9C7A4Bu, 0xFF6B5230u, 8.0f, 70u},
+    LayerInfo{"coal",            TextureRecipe::Nugget, 0xFF262626u, 0xFF0D0D0Du, 14.0f, 71u},
+    LayerInfo{"diamond",         TextureRecipe::Nugget, 0xFF5DECF5u, 0xFF2FA8B4u, 12.0f, 72u},
+    LayerInfo{"redstone",        TextureRecipe::Nugget, 0xFFAA0F01u, 0xFF6E0A00u, 12.0f, 73u},
+    LayerInfo{"lapis_lazuli",    TextureRecipe::Nugget, 0xFF1B57B5u, 0xFF103675u, 12.0f, 74u},
+
+    // Tools. The head colour is the tier and the handle is always oak, which is what
+    // makes a row of them read as the same tool in four materials at a glance.
+    LayerInfo{"wooden_pickaxe",  TextureRecipe::ToolPickaxe, 0xFFB08A55u, 0xFF9C7A4Bu, 8.0f, 80u},
+    LayerInfo{"wooden_axe",      TextureRecipe::ToolAxe,     0xFFB08A55u, 0xFF9C7A4Bu, 8.0f, 81u},
+    LayerInfo{"wooden_shovel",   TextureRecipe::ToolShovel,  0xFFB08A55u, 0xFF9C7A4Bu, 8.0f, 82u},
+    LayerInfo{"wooden_sword",    TextureRecipe::ToolSword,   0xFFB08A55u, 0xFF9C7A4Bu, 8.0f, 83u},
+    LayerInfo{"stone_pickaxe",   TextureRecipe::ToolPickaxe, 0xFF8C8C8Cu, 0xFF9C7A4Bu, 14.0f, 84u},
+    LayerInfo{"stone_axe",       TextureRecipe::ToolAxe,     0xFF8C8C8Cu, 0xFF9C7A4Bu, 14.0f, 85u},
+    LayerInfo{"stone_shovel",    TextureRecipe::ToolShovel,  0xFF8C8C8Cu, 0xFF9C7A4Bu, 14.0f, 86u},
+    LayerInfo{"stone_sword",     TextureRecipe::ToolSword,   0xFF8C8C8Cu, 0xFF9C7A4Bu, 14.0f, 87u},
 };
 
 inline constexpr u16 kTextureLayerCount = static_cast<u16>(kLayers.size());
@@ -219,15 +274,51 @@ struct BlockInfo {
     /// question. This answers "is this stuff", which is a physics one. Glass will
     /// want the first and not the second.
     bool fluid = false;
+
+    /// Which tool mines this faster. `None` means no tool helps, which is true of
+    /// leaves and of anything a hand is already as good on.
+    ///
+    /// **Speed and harvest are two different questions and this only answers the
+    /// first.** An axe makes a log quicker; a log drops itself either way.
+    ToolKind tool = ToolKind::None;
+
+    /// The tool tier required to get a **drop** at all. `None` means bare hands are
+    /// enough, which is most blocks.
+    ///
+    /// Vanilla's rule, and it is the whole reason a pickaxe is worth making: mining
+    /// stone with a fist takes five times hardness instead of one and a half, and
+    /// yields nothing when it finally breaks. Speed alone would make a tool an
+    /// optimisation; this makes it a prerequisite.
+    ///
+    /// A non-None value here requires `tool` to be set too -- a tier with no kind
+    /// would be unsatisfiable, since nothing can match a `ToolKind::None` requirement.
+    /// The static_assert at the bottom of the file enforces it.
+    ToolTier minTier = ToolTier::None;
 };
 
 /// A block that draws the same layer on all six faces, which is most of them.
 consteval BlockInfo uniformBlock(std::string_view name, std::string_view layer,
                                  char glyph, f32 hardness, bool stoneLike = false,
-                                 std::string_view drops = {}, bool falls = false) {
+                                 std::string_view drops = {}, bool falls = false,
+                                 ToolKind tool = ToolKind::None,
+                                 ToolTier minTier = ToolTier::None) {
     const u16 index = layerOf(layer);
     return BlockInfo{name, true, index, index, index, glyph, stoneLike, hardness,
-                     drops, falls};
+                     drops, falls, false, tool, minTier};
+}
+
+/// A block mined with a pickaxe, which is every kind of rock.
+///
+/// Two of these three arguments are the same for all twenty of them, and writing
+/// `false, {}, false, ToolKind::Pickaxe` twenty times would bury the one that varies
+/// -- the tier, which is the difference between an ore you can reach and one you
+/// cannot. `stoneLike` is true for every caller but the ores, which is the one
+/// exception this spells out.
+consteval BlockInfo rockBlock(std::string_view name, std::string_view layer, char glyph,
+                              f32 hardness, ToolTier minTier, bool stoneLike = false,
+                              std::string_view drops = {}) {
+    return uniformBlock(name, layer, glyph, hardness, stoneLike, drops, false,
+                        ToolKind::Pickaxe, minTier);
 }
 
 /// Block types, in BlockId order. The index of an entry *is* its BlockId.
@@ -242,26 +333,33 @@ inline constexpr std::array kBlocks{
 
     // Stone drops cobblestone, and grass drops dirt. Both are vanilla, and both are
     // the reason `drops` exists rather than every block simply yielding itself.
-    uniformBlock("stone", "stone", '#', 1.5f, true, "cobblestone"),
-    uniformBlock("dirt", "dirt", 'd', 0.5f),
+    //
+    // **Stone is the block that makes a pickaxe worth making.** A fist takes 7.5
+    // seconds on it and yields nothing at the end, because `minTier` is Wood and a
+    // fist is None; a wooden pickaxe takes 1.1 seconds and yields cobblestone.
+    rockBlock("stone", "stone", '#', 1.5f, ToolTier::Wood, true, "cobblestone"),
+    uniformBlock("dirt", "dirt", 'd', 0.5f, false, {}, false, ToolKind::Shovel),
     // Grass is the reason a face carries a layer rather than a block id: one block
     // type, three different textures.
     BlockInfo{"grass", true, layerOf("grass_top"), layerOf("grass_side"),
-                             layerOf("dirt"), 'g', false, 0.6f, "dirt"},
-    // Sand and gravel fall. The trailing `true` is `BlockInfo::falls`, and it is the
-    // whole of what makes a sand ceiling collapse when it is dug out from under.
-    uniformBlock("sand", "sand", 's', 0.5f, false, {}, true),
-    uniformBlock("cobblestone", "cobblestone", 'c', 2.0f, true),
+                             layerOf("dirt"), 'g', false, 0.6f, "dirt", false, false,
+                             ToolKind::Shovel},
+    // Sand and gravel fall. The `true` after the empty drops is `BlockInfo::falls`,
+    // and it is the whole of what makes a sand ceiling collapse when dug out from
+    // under.
+    uniformBlock("sand", "sand", 's', 0.5f, false, {}, true, ToolKind::Shovel),
+    rockBlock("cobblestone", "cobblestone", 'c', 2.0f, ToolTier::Wood, true),
 
-    // -1 is vanilla's spelling of "never". See BlockInfo::hardness.
+    // -1 is vanilla's spelling of "never". See BlockInfo::hardness. No tier, because
+    // no tier would ever be enough -- unbreakable is checked before harvest is.
     uniformBlock("bedrock", "bedrock", 'B', -1.0f),
-    uniformBlock("deepslate", "deepslate", 'D', 3.0f, true),
+    rockBlock("deepslate", "deepslate", 'D', 3.0f, ToolTier::Wood, true),
 
-    uniformBlock("granite", "granite", 'r', 1.5f, true),
-    uniformBlock("diorite", "diorite", 'o', 1.5f, true),
-    uniformBlock("andesite", "andesite", 'a', 1.5f, true),
-    uniformBlock("tuff", "tuff", 't', 1.5f, true),
-    uniformBlock("gravel", "gravel", 'v', 0.6f, false, {}, true),
+    rockBlock("granite", "granite", 'r', 1.5f, ToolTier::Wood, true),
+    rockBlock("diorite", "diorite", 'o', 1.5f, ToolTier::Wood, true),
+    rockBlock("andesite", "andesite", 'a', 1.5f, ToolTier::Wood, true),
+    rockBlock("tuff", "tuff", 't', 1.5f, ToolTier::Wood, true),
+    uniformBlock("gravel", "gravel", 'v', 0.6f, false, {}, true, ToolKind::Shovel),
 
     // Ores. Each is two block types, because replacing deepslate has to yield the
     // deepslate variant -- the ore keeps its speckle colour and takes the host
@@ -270,20 +368,30 @@ inline constexpr std::array kBlocks{
     // which rock it sits in is already obvious from the depth.
     // Every overworld ore is hardness 3, and every deepslate variant is 4.5 -- the
     // deep rock is what is hard, not the metal in it.
-    uniformBlock("coal_ore", "coal_ore", 'C', 3.0f),
-    uniformBlock("deepslate_coal_ore", "deepslate_coal_ore", 'C', 4.5f),
-    uniformBlock("iron_ore", "iron_ore", 'I', 3.0f),
-    uniformBlock("deepslate_iron_ore", "deepslate_iron_ore", 'I', 4.5f),
-    uniformBlock("copper_ore", "copper_ore", 'U', 3.0f),
-    uniformBlock("deepslate_copper_ore", "deepslate_copper_ore", 'U', 4.5f),
-    uniformBlock("gold_ore", "gold_ore", 'G', 3.0f),
-    uniformBlock("deepslate_gold_ore", "deepslate_gold_ore", 'G', 4.5f),
-    uniformBlock("redstone_ore", "redstone_ore", 'R', 3.0f),
-    uniformBlock("deepslate_redstone_ore", "deepslate_redstone_ore", 'R', 4.5f),
-    uniformBlock("lapis_ore", "lapis_ore", 'L', 3.0f),
-    uniformBlock("deepslate_lapis_ore", "deepslate_lapis_ore", 'L', 4.5f),
-    uniformBlock("diamond_ore", "diamond_ore", 'X', 3.0f),
-    uniformBlock("deepslate_diamond_ore", "deepslate_diamond_ore", 'X', 4.5f),
+    // **The tier column is vanilla's, and it is why half of these are out of reach in
+    // Phase 16.** Coal needs wood; iron, copper and lapis need stone; gold, redstone
+    // and diamond need iron -- and an iron pickaxe needs an ingot, an ingot needs
+    // smelting, and a furnace is Phase 17. Mining a diamond with a stone pickaxe
+    // breaks the block and yields nothing, which is exactly what vanilla does and is
+    // the engine saying "not yet" in the only way a player will believe.
+    //
+    // **The ores that drop an item rather than themselves are the split working.**
+    // `dropOf` resolves these names across blocks *and* items, so "coal" here is an
+    // ItemId that no `BlockId` can express -- which is the entire point of Phase 16.
+    rockBlock("coal_ore", "coal_ore", 'C', 3.0f, ToolTier::Wood, false, "coal"),
+    rockBlock("deepslate_coal_ore", "deepslate_coal_ore", 'C', 4.5f, ToolTier::Wood, false, "coal"),
+    rockBlock("iron_ore", "iron_ore", 'I', 3.0f, ToolTier::Stone),
+    rockBlock("deepslate_iron_ore", "deepslate_iron_ore", 'I', 4.5f, ToolTier::Stone),
+    rockBlock("copper_ore", "copper_ore", 'U', 3.0f, ToolTier::Stone),
+    rockBlock("deepslate_copper_ore", "deepslate_copper_ore", 'U', 4.5f, ToolTier::Stone),
+    rockBlock("gold_ore", "gold_ore", 'G', 3.0f, ToolTier::Iron),
+    rockBlock("deepslate_gold_ore", "deepslate_gold_ore", 'G', 4.5f, ToolTier::Iron),
+    rockBlock("redstone_ore", "redstone_ore", 'R', 3.0f, ToolTier::Iron, false, "redstone"),
+    rockBlock("deepslate_redstone_ore", "deepslate_redstone_ore", 'R', 4.5f, ToolTier::Iron, false, "redstone"),
+    rockBlock("lapis_ore", "lapis_ore", 'L', 3.0f, ToolTier::Stone, false, "lapis_lazuli"),
+    rockBlock("deepslate_lapis_ore", "deepslate_lapis_ore", 'L', 4.5f, ToolTier::Stone, false, "lapis_lazuli"),
+    rockBlock("diamond_ore", "diamond_ore", 'X', 3.0f, ToolTier::Iron, false, "diamond"),
+    rockBlock("deepslate_diamond_ore", "deepslate_diamond_ore", 'X', 4.5f, ToolTier::Iron, false, "diamond"),
 
     // -- trees ----------------------------------------------------------------
     // Leaves are an opaque cube here, which is what makes trees cost nothing to
@@ -291,10 +399,17 @@ inline constexpr std::array kBlocks{
     // "fast graphics" draws them exactly like this. Cross-quad geometry is what
     // grass and flowers need, and that is Phase 10 -- see RESEARCH.md 5.4.
     BlockInfo{"oak_log", true, layerOf("oak_log_top"), layerOf("oak_log_side"),
-                               layerOf("oak_log_top"), 'T', false, 2.0f},
+                               layerOf("oak_log_top"), 'T', false, 2.0f, {}, false,
+                               false, ToolKind::Axe},
     // Leaves drop nothing. Vanilla drops the occasional sapling or apple, and
     // neither exists here -- a sapling is a plant, which is Phase 10's geometry.
     uniformBlock("oak_leaves", "oak_leaves", 'l', 0.2f, false, "air"),
+
+    // **Planks are the first block that is only ever crafted.** Nothing in the
+    // generator places one and no ore drops one, so the only path to it is a log in
+    // the grid -- which makes it the shortest proof that crafting is wired all the
+    // way from a recipe to a placed block.
+    uniformBlock("oak_planks", "oak_planks", 'p', 2.0f, false, {}, false, ToolKind::Axe),
 
     // -- water ----------------------------------------------------------------
     // Not opaque, so it hides nothing behind it; a fluid, so it holds nothing up.
@@ -326,6 +441,7 @@ inline constexpr BlockId kBedrockBlock   = blockIdOf("bedrock");
 inline constexpr BlockId kDeepslateBlock = blockIdOf("deepslate");
 inline constexpr BlockId kOakLogBlock    = blockIdOf("oak_log");
 inline constexpr BlockId kOakLeavesBlock = blockIdOf("oak_leaves");
+inline constexpr BlockId kOakPlanksBlock = blockIdOf("oak_planks");
 inline constexpr BlockId kWaterBlock     = blockIdOf("water");
 
 /// Sea level. Vanilla's 63 is the first block *above* the water surface, so the
@@ -358,81 +474,53 @@ constexpr bool isSolidBlock(BlockId id) {
     return id != kAirBlock && !isFluid(id);
 }
 
-/// What breaking `id` yields. `kAirBlock` means nothing drops.
-///
-/// A linear search over the table, and that is fine: this runs once per block
-/// broken, which is once per click, against 29 entries.
-constexpr BlockId dropOf(BlockId id) {
-    if (id >= kBlocks.size()) {
-        return kAirBlock;
-    }
-    const std::string_view name = kBlocks[id].drops;
-    if (name.empty()) {
-        return id; // Drops itself, which is almost everything.
-    }
-    for (usize i = 0; i < kBlocks.size(); ++i) {
-        if (kBlocks[i].name == name) {
-            return static_cast<BlockId>(i);
-        }
-    }
-    return kAirBlock;
-}
-
 /// Bedrock, and anything else ever given a negative hardness.
 constexpr bool isUnbreakable(BlockId id) {
     return id < kBlocks.size() && kBlocks[id].hardness < 0.0f;
 }
 
-/// How long `id` takes to break bare-handed, in seconds. Zero for air, and for
-/// anything unbreakable -- callers are expected to ask `isUnbreakable` first.
-///
-/// Vanilla computes damage per tick as `speed / hardness / (canHarvest ? 30 : 100)`
-/// and breaks the block when that reaches 1. At bare-hand speed 1.0 that is
-/// `hardness * 1.5` seconds when the block can be harvested and `hardness * 5` when
-/// it cannot -- the second branch being the game's way of saying "you need a
-/// pickaxe", since it also drops nothing.
-///
-/// **This engine takes the harvestable branch for everything, deliberately.** With
-/// no tools the other branch is not "harder", it is a dead end: bare-handed stone in
-/// vanilla is 7.5 seconds for nothing at all. Tools arrive later as the `speed`
-/// multiplier this formula already has room for, and none of the hardness numbers in
-/// the table change when they do.
-constexpr f32 breakSeconds(BlockId id) {
-    if (id >= kBlocks.size() || isUnbreakable(id)) {
-        return 0.0f;
-    }
-    return kBlocks[id].hardness * 1.5f;
+/// Which tool speeds this block up. See BlockInfo::tool.
+constexpr ToolKind toolFor(BlockId id) {
+    return id < kBlocks.size() ? kBlocks[id].tool : ToolKind::None;
 }
 
-/// Proves every `drops` name in the table matches a real block.
-///
-/// `dropOf` has to be a runtime-callable `constexpr` and so cannot reject a bad name
-/// the way `blockIdOf` does -- it returns air instead, which would silently mean "no
-/// drop". This puts the compile error back.
-consteval bool everyDropResolves() {
-    for (usize i = 0; i < kBlocks.size(); ++i) {
-        const std::string_view name = kBlocks[i].drops;
-        if (name.empty()) {
-            continue;
-        }
-        bool found = false;
-        for (const BlockInfo& candidate : kBlocks) {
-            found = found || candidate.name == name;
-        }
-        if (!found) {
-            return false;
-        }
-    }
-    return true;
+/// The tool tier needed to get a drop. See BlockInfo::minTier.
+constexpr ToolTier minTierOf(BlockId id) {
+    return id < kBlocks.size() ? kBlocks[id].minTier : ToolTier::None;
 }
 
-static_assert(everyDropResolves(),
-              "a block's drops name does not match any block in kBlocks");
+/// **`dropOf` and `breakSeconds` used to live here and now live in `ItemTable.hpp`**,
+/// which is not a tidying move. Both changed shape in Phase 16 and both changed in
+/// the same direction: what a block drops is an `ItemId` rather than a `BlockId`
+/// (coal ore drops coal, which is not a block), and how long it takes to break
+/// depends on what is being held. Neither question can be answered by this table
+/// alone any more, and a header that cannot see `kItems` cannot answer them at all.
+/// The `drops` field stays here because it is a property of the block; resolving the
+/// name is an item question.
 
 static_assert(blockIdOf("air") == kAirBlock,
               "air must be the first entry in kBlocks; core/Types.hpp fixes it at 0");
 static_assert(kBlocks.size() <= 256,
               "past 256 block types the palette's 8-bit index width no longer covers "
               "a section that holds one of everything");
+
+/// A harvest tier with no tool kind can never be satisfied.
+///
+/// `canHarvest` asks whether the held tool's kind matches the block's *and* its tier
+/// is high enough. A block demanding `ToolTier::Stone` while naming
+/// `ToolKind::None` matches nothing, so it would be unbreakable-for-drops in a way
+/// that looks like a mining bug rather than like a table typo. Two fields that only
+/// mean something together, which is exactly the shape a static_assert is for.
+consteval bool everyTierHasAKind() {
+    for (const BlockInfo& block : kBlocks) {
+        if (block.minTier != ToolTier::None && block.tool == ToolKind::None) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static_assert(everyTierHasAKind(),
+              "a block sets minTier without setting tool, so nothing can ever harvest it");
 
 } // namespace mc

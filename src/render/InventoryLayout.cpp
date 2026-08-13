@@ -13,6 +13,14 @@ constexpr f32 kGap = 0.014f;
 /// Space between the main grid and the hotbar row, which is what makes the hotbar
 /// read as a separate thing rather than as a fourth row.
 constexpr f32 kHotbarSeparation = 0.045f;
+/// Space between the crafting area and the main grid. Wider than the hotbar's gap,
+/// because these two are doing genuinely different jobs -- one is storage and one is
+/// a machine -- and the eye should not read the craft grid as three more rows.
+constexpr f32 kCraftSeparation = 0.055f;
+/// Width of the arrow between the crafting grid and its output, as a fraction of a
+/// slot. The gap it sits in is what says the output is produced by the grid rather
+/// than being a tenth cell of it.
+constexpr f32 kArrowWidth = 0.9f;
 /// Border between the outermost slots and the panel edge.
 constexpr f32 kPanelPadding = 0.028f;
 
@@ -35,17 +43,44 @@ InventoryLayout::InventoryLayout(f32 aspect)
     const f32 gridHeight = static_cast<f32>(kMainRows) * m_slotSize
                          + static_cast<f32>(kMainRows - 1) * m_gap;
 
-    const f32 totalHeight = gridHeight + kHotbarSeparation + m_slotSize;
+    const f32 craftHeight = static_cast<f32>(kCraftColumns) * m_slotSize
+                          + static_cast<f32>(kCraftColumns - 1) * m_gap;
+
+    const f32 totalHeight = craftHeight + kCraftSeparation + gridHeight
+                          + kHotbarSeparation + m_slotSize;
 
     // Centred on the screen. The window is the only thing on screen while it is
     // open, so there is nothing to sit beside.
     m_gridLeft = -gridWidth * 0.5f;
-    m_gridTop = totalHeight * 0.5f;
+    const f32 top = totalHeight * 0.5f;
+
+    m_craftTop = top;
+    m_gridTop = top - craftHeight - kCraftSeparation;
     m_hotbarY = m_gridTop - gridHeight - kHotbarSeparation - m_slotSize;
+
+    // The craft cluster is right-aligned with the main grid, so the output slot sits
+    // under the grid's right edge and the 3x3 backs away from it. Vanilla's
+    // arrangement, and it leaves the wide empty area on the left where vanilla draws
+    // the player model -- which this engine has and does not draw here.
+    const f32 arrowX = kArrowWidth * m_slotSize / m_aspect;
+    const f32 outputRight = m_gridLeft + gridWidth;
+    const f32 craftRight = outputRight - slotX - arrowX;
+    m_craftLeft = craftRight - (static_cast<f32>(kCraftColumns) * slotX
+                                + static_cast<f32>(kCraftColumns - 1) * gapX);
+
+    const f32 craftMiddle = m_craftTop - craftHeight * 0.5f;
+    m_output = UiRect{outputRight - slotX, craftMiddle - m_slotSize * 0.5f,
+                      outputRight, craftMiddle + m_slotSize * 0.5f};
+
+    // Thinner than the slots it sits between, and vertically centred on them.
+    const f32 arrowHeight = m_slotSize * 0.22f;
+    m_craftArrow = UiRect{craftRight + arrowX * 0.15f, craftMiddle - arrowHeight * 0.5f,
+                          outputRight - slotX - arrowX * 0.15f,
+                          craftMiddle + arrowHeight * 0.5f};
 
     const f32 padX = kPanelPadding / m_aspect;
     m_panel = UiRect{m_gridLeft - padX, m_hotbarY - kPanelPadding,
-                     m_gridLeft + gridWidth + padX, m_gridTop + kPanelPadding};
+                     m_gridLeft + gridWidth + padX, top + kPanelPadding};
 }
 
 UiRect InventoryLayout::slot(usize index) const {
@@ -57,7 +92,25 @@ UiRect InventoryLayout::slot(usize index) const {
         return UiRect{x, m_hotbarY, x + slotX, m_hotbarY + m_slotSize};
     }
 
-    if (index >= Inventory::kSlotCount) {
+    if (index == Inventory::kOutputSlot) {
+        return m_output;
+    }
+
+    if (index >= Inventory::kFirstCraftSlot) {
+        if (index >= Inventory::kSlotCount) {
+            return UiRect{};
+        }
+        const usize craft = index - Inventory::kFirstCraftSlot;
+        const usize craftRow = craft / kCraftColumns;
+        const usize craftColumn = craft % kCraftColumns;
+
+        const f32 cx = m_craftLeft + static_cast<f32>(craftColumn) * (slotX + gapX);
+        const f32 cy = m_craftTop - static_cast<f32>(craftRow + 1) * m_slotSize
+                     - static_cast<f32>(craftRow) * m_gap;
+        return UiRect{cx, cy, cx + slotX, cy + m_slotSize};
+    }
+
+    if (index >= Inventory::kStorageSlots) {
         return UiRect{};
     }
 
