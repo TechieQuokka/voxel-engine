@@ -250,11 +250,15 @@ Recorded so that nobody re-derives these from a bad source later.
   64–128). The Java values are not on that page and were not found elsewhere.
   Gravel *was* confirmed for Java: 14 tries per chunk, blobs of 0–160, all heights,
   all biomes.
-- **Aquifer internals.** The 16x40x16 cell size and the lava band came from the
-  world-generation page; the wiki's own Aquifer article does not document the
-  barrier noise, the fluid-level selection, or how aquifers and carvers interact.
-  Implementing 4b's missing aquifers will need a source beyond the wiki — the
-  decompiled `NoiseChunk`/`Aquifer` code is the realistic option.
+- ~~**Aquifer internals.**~~ **Resolved on 2026-08-13 — see section 7.2.** The wiki's
+  own Aquifer article still does not document the fluid-level selection, and this
+  entry was right that a source beyond it was needed. The source turned out not to be
+  a decompilation job: the floodedness thresholds, the cell sizes and the fluid-level
+  formula are written up against the `Aquifer` class in a public gist, and the
+  `fluid_level_floodedness` / `fluid_level_spread` density functions are documented on
+  the noise-settings page because they are data-pack configurable. **The barrier noise
+  is still not documented anywhere found**, including in that gist, which marks it
+  TODO. So the entry shrinks rather than closing: everything but the barriers.
 - ~~**Per-biome surface and filler blocks as a systematic table.**~~ The wiki's Biome
   article is qualitative ("deserts have sand dunes with sandstone underneath") and
   publishes only `temperature` and `downfall`. It does **not** publish the six-
@@ -262,6 +266,138 @@ Recorded so that nobody re-derives these from a bad source later.
   weirdness, depth) that actually places biomes. **Resolved on 2026-08-11 — see
   section 8.2.** The answer was the one guessed here, the game's own data, and it
   turns out to be a supported tool rather than a decompilation job.
+
+---
+
+## 7. Fluid mechanics — how water actually moves
+
+Researched 2026-08-13, prompted by the observation that this engine's water is a
+static fill and vanilla's is not: *water is not fixed at a coordinate, it runs
+downhill, and a lake is a body with a level rather than a decoration.* All of that is
+correct, and the single most important finding is the one that makes it affordable.
+
+### 7.1 Flowing water, and the rule that makes it tractable
+
+**Water is not mass-conserving, and this is the whole design.** A source block is
+never consumed by flowing out of it. Water spreading across a floor does not drain
+the sea it came from; a hole dug in an ocean bed fills forever and the ocean does not
+drop by one block. Vanilla makes no attempt at a conservative fluid, and the reason
+matters for this engine: a conservative one needs global state — how much water is in
+this body, where its surface is now — which is exactly what a chunk-streaming world
+cannot cheaply keep. **Every naive intuition about water draining away is right about
+physics and wrong about Minecraft.**
+
+The state a fluid block carries is a single **level**:
+
+| Level | Meaning |
+|---|---|
+| 0 | source block, full |
+| 1–7 | flowing, one higher per block travelled |
+| 8–15 | *falling* — water with water above it |
+
+Water increases by 1 per block, so it reaches **7 blocks horizontally** from a source
+on a flat floor before stopping. Lava increases by 2 in the Overworld, which is why it
+only reaches 3. **Falling is unlimited**: water spreads downward with no level cost at
+all, and when it lands the count restarts from 0 at the new elevation. That is the
+direct expression of the user's point — down is free, sideways is metered.
+
+The spread algorithm, per fluid tick:
+
+1. Look at the block **below**. If it can be flowed into, spread down and stop —
+   downward wins outright, there is no horizontal spreading from a block that can fall.
+2. Otherwise spread to every open horizontal side at level + 1.
+3. Level 7 does not spread further.
+
+**Horizontal spread is not uniform: it looks ahead for a hole.** The fluid searches up
+to **5 blocks** away (water; 3 for Overworld lava) for a position where it could fall,
+and prefers directions whose shortest path reaches one. The wiki is explicit that this
+exists "for aesthetic purposes" — it is what makes water find the edge of a cliff and
+form a fall instead of creeping outward as a disc.
+
+**Speed is 1 block per 5 game ticks** — 4 blocks per second at 20 Hz. This engine
+already has the 20 Hz tick that number is expressed in, built for falling sand
+(DESIGN.md 7.11).
+
+**Two adjacent sources make a third.** A flowable block with at least two horizontally
+adjacent source blocks becomes a source itself, which is the infinite-water-bucket
+rule. It is a game rule (`waterSourceConversion`, default on) rather than physics, and
+it is off for lava by default.
+
+**When a source is removed the flowing blocks do not vanish on their own** — they stop
+receiving updates and persist until something replaces them. Draining is driven by the
+neighbour-notification pass, not by the fluid re-evaluating itself.
+
+### 7.2 Aquifers — why a cave is dry and a lake is not
+
+This is the part section 6 recorded as unfindable, and most of it is now findable.
+
+**Without aquifers, every open space between sea level and Y −54 would be full of
+water.** That is the default fluid picker: air above sea level, water from sea level
+down to −54, lava below that. Aquifers exist to overrule it per position, and are what
+stop the entire cave system being flooded.
+
+An aquifer is **a local water level, independent of sea level** — which is the user's
+"water has its own region", and it is the concept this engine is missing rather than
+any particular piece of code.
+
+The decision procedure, per position:
+
+- **Disabled** — use the global picker unchanged — when the picker says lava, or the
+  position is more than 12 blocks above the surface, or it is within 12 blocks of a
+  surface that lies below sea level. This last clause is what keeps oceans behaving
+  like oceans.
+- **Empty** where `erosion < −0.225` and `depth > 0.9`, hardcoded for the Deep Dark.
+- Otherwise by the `fluid_level_floodedness` noise: **> 0.8 flooded**, **≤ 0.4 empty**,
+  and in between a **randomized local level**.
+
+The randomized level splits the world into **16×40×16 cells**, each with one uniform
+fluid level:
+
+```
+fluid_level = floor((center_height + fluid_level_spread * 10) / 3) * 3
+```
+
+where `center_height` is 20 blocks above the cell floor and `fluid_level_spread` is
+sampled at 1/16, 1/40, 1/16 scale. The quantisation to multiples of 3 is why
+underground lakes sit at discrete heights rather than at arbitrary ones.
+
+Water or lava is chosen in **64×40×64 cells** below Y −10 (always water above it):
+water when `|lava noise| ≤ 0.3`, lava otherwise. Aquifers from Y −55 to −63 are always
+lava.
+
+**Barriers are still undocumented.** They are what separates two aquifers at different
+levels, and what puts a wall between a liquid and an open cave — the wiki names a
+`barrier` density function and says larger values mean a higher chance of separating,
+and the gist that documents everything else marks the barrier logic TODO. This is the
+one piece that would still need decompiled source.
+
+### 7.3 What this means for this engine
+
+This engine fills every column from sea level 62 down to the terrain surface with
+water source blocks. **That is not wrong — an ocean in vanilla is a stack of source
+blocks too.** What is missing is two separable things, and they were being treated as
+one:
+
+- **Flowing water**, which is the level 0–7 state machine above. `BlockUpdates` is
+  where it goes and the 20 Hz tick it needs already exists. Water becomes a block with
+  state, which the palette can carry as extra block ids.
+- **Aquifers**, which is 7.2 and is a *generation* problem, not a simulation one. It
+  is what would put water in caves and give a cave lake its own level.
+
+The blocker HANDOFF.md records is real and vanilla answers it directly. `BlockUpdates`
+is safe today by a narrow argument: it only reads the block *below*, which is in the
+same column, so an unloaded neighbour cannot be misread as air. **Sideways spread
+breaks that argument**, and vanilla's own answer is not to solve it but to refuse:
+flowing fluid may spread into the first block of a non-ticking chunk and **the flow
+suspends there until that chunk reaches a higher load level**. So the engine needs a
+real "is this column Ready" test and a queued update that survives being deferred —
+which is the retry discipline `BlockUpdates` already has for `EditStatus::Busy`.
+
+**One consequence worth stating before anyone builds it.** Because water is not
+conservative, digging into the sea floor floods the cave and the sea stays where it
+is. Underground will not "lose all its water" — it will gain the sea's, forever, until
+something blocks the hole. That is the behaviour to expect, and it is a feature rather
+than a leak.
 
 ---
 
@@ -363,3 +499,20 @@ Added 2026-08-11 for section 8, and for the walking fix:
   when water is built
 - <https://github.com/fogleman/Craft> and <https://github.com/luanti-org/luanti> —
   the two existing implementations worth reading; see HANDOFF.md 10
+
+Added 2026-08-13 for section 7, fluid mechanics:
+
+- <https://minecraft.wiki/w/Fluid> — levels, the 5-block slope lookahead, the
+  1-block-per-5-ticks rate, source conversion, and what happens when a source is
+  removed. Read properly this time; section 8's entry above had only skimmed it.
+- <https://gist.github.com/jacobsjo/0ce1f9d02e5c3e490e228ac5ad810482> — **the aquifer
+  algorithm**, written against the `Aquifer` class: floodedness thresholds, the
+  16x40x16 and 64x40x64 cells, and the fluid-level formula. This is the source
+  section 6 said would have to be a decompilation and is not. It marks the barrier
+  logic TODO, which is why that one piece is still open.
+- <https://minecraft.wiki/w/Custom_world_generation/noise_settings> —
+  `fluid_level_floodedness` and `fluid_level_spread`, documented because they are
+  data-pack configurable, which is why they were findable at all.
+- <https://minecraft.wiki/w/Chunk> — fluid flow suspends at the edge of a
+  block-ticking chunk and resumes when the neighbour's load level rises. This is
+  vanilla's answer to the chunk-border problem HANDOFF.md 5 records.

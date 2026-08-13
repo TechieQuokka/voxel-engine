@@ -978,13 +978,24 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   the disk format rather than the question. Sections are palette-compressed already,
   so what is undecided is the container and whether it compresses at all.
 - **Aquifers, and with them flooded caves and lava lakes.** RESEARCH.md 5.3's third
-  problem, and the only one water did not solve. Its internals are unpublished
-  (RESEARCH.md 6), so this needs a source beyond the wiki. Until then caves under the
-  sea are dry and a cliff overhang has a dry pocket at its foot — both documented at
-  the code in `Generator`.
+  problem, and the only one water did not solve. **The algorithm is now written down**
+  -- RESEARCH.md 7.2 has the floodedness thresholds, the 16x40x16 cells and the
+  fluid-level formula, which section 6 had recorded as needing a decompilation and did
+  not. Only the *barrier* noise is still undocumented anywhere found. Until this is
+  built, caves under the sea are dry and a cliff overhang has a dry pocket at its
+  foot — both documented at the code in `Generator`.
 - **Flowing water.** The 20 Hz tick exists and `BlockUpdates::examine` is where it
-  goes, but the safe-read argument there does not survive a sideways spread. See the
-  note at that read.
+  goes, but the safe-read argument there does not survive a sideways spread.
+  **Vanilla's own answer is to refuse rather than to solve it**: flow spreads into the
+  first block of a non-ticking chunk and then suspends until that chunk's load level
+  rises. So this needs a real "is this column Ready" test plus a queued update that
+  survives deferral -- which is the retry discipline `BlockUpdates` already has for
+  `EditStatus::Busy`. RESEARCH.md 7.1 and 7.3.
+- **Water is not mass-conserving in vanilla, and building it as if it were is the
+  trap.** A source block is never consumed by flowing out of it, so a hole dug in the
+  sea bed floods forever and the sea does not drop. A conservative fluid needs global
+  per-body state -- how much water, where the surface is now -- which is exactly what
+  a chunk-streaming world cannot cheaply keep. RESEARCH.md 7.1.
 - **The translucent pass does not sort back to front.** Correct blending of
   overlapping translucent surfaces needs it. Water gets away without it by being the
   only translucent thing and very nearly flat; a second translucent block type is
