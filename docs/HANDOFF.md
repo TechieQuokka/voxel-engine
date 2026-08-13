@@ -170,6 +170,8 @@ craftable today and does nothing, which is honest rather than finished.
 | `bd87899` | Alt-Tab no longer drops the player through the floor |
 | `510f290` | Shoulder camera, thick outline, and the block name under the crosshair |
 | `85275bd` | Record the last two commits in the handoff |
+| `cd80f8e` | The sixth session; the handoff cut back to what it is for |
+| `9a422e7` | Phase 16 — items stop being blocks, and a pickaxe becomes necessary |
 
 Working tree is clean. **Published publicly** at the `origin` remote as of
 2026-08-10; the earlier local-only rule was lifted by the user at that point.
