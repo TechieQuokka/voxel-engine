@@ -73,6 +73,11 @@ ground. That chain is vanilla's and every step of it is here.
 
 Sneak while right clicking to build on top of the table rather than opening it.
 
+**What you are holding is in your hand, not just on the HUD.** A tool is its icon
+extruded a pixel thick -- vanilla's own trick -- held in the fist and swinging with
+the arm; a block is held as a block. Both show in third person and as a view model in
+first.
+
 The block under the crosshair is **named on the HUD**, and the selection outline is
 thick enough to pick out of a textured world. Third person is over the shoulder, so
 the character is not standing on what you are aiming at.
@@ -97,11 +102,12 @@ Dig down. The caves, ores and darkness are the point, and they are not visible f
 surface.
 
 ```bash
-ctest --preset debug                       # 277 test cases
+ctest --preset debug                       # 314 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
 ./build/release/src/app/minecraft --furnace --capture /tmp/shot.ppm
+./build/release/src/app/minecraft --hold wooden_pickaxe --first-person --capture /tmp/shot.ppm
 ```
 
 ## How it is built
@@ -113,6 +119,7 @@ cmake --preset asan && ctest --preset asan  # address + undefined
 | Meshing | binary greedy — bitwise face culling over 32-bit occupancy columns |
 | Geometry | **no vertex buffers**; 64-bit quads in an SSBO, expanded from `gl_VertexID` |
 | Per-draw data | none — sections find their origin via `gl_DrawID` |
+| Per-frame data | one shared ring, three frames deep; no renderer owns a buffer |
 | Depth | reversed-Z with an infinite far plane, so the frustum has five planes |
 | Terrain | density functions on a 4×8×4 interpolation grid, then surface rules, then carvers |
 | Errors | exceptions only at init and load boundaries; `Result<T, E>` everywhere else |

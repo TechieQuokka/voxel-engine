@@ -53,6 +53,25 @@ thing in the world that can hurt the player and there is nothing to fight.
 > mostly descriptions of work that was already finished, which is exactly the content
 > a handoff does not need.
 
+### The eighth session, and what it found
+
+**2026-08-18, the held item.** The first thing anyone had ever seen of a tool in a
+hand, and it took three rounds to get right. What play found, in order:
+
+1. **The icons were placeholders and nobody had noticed**, because a slot is a
+   forgiving place for a 16x16 sprite and a hand is not. Redrawn to fill the tile the
+   way vanilla's do.
+2. **The back face of the extruded sprite was drawing a reflection of its own rim**,
+   which read as two objects crossing in an X. Found by drawing the faces and the rim
+   in two separate captures.
+3. **The character was gripping the pickaxe by its head.** Vanilla's third-person tilt,
+   used as published, brings the top of the sprite to the fist -- and the top of the
+   sprite is the metal. Half a turn in the sprite's plane fixed it.
+
+Only the third of those was a wrong number. The other two were things that no test
+could have failed on and no reasoning had reached, which is this project's oldest
+lesson and the reason `--hold` now exists.
+
 ### Playing it is what has driven this project
 
 **Every change of direction came out of a play session rather than out of reasoning
@@ -71,18 +90,21 @@ carrying as method rather than as history:
 
 ### Where to resume
 
-**Nothing is half-finished.** Working tree clean, 277 tests, asan passes. **tsan has not
-been re-run since the container layer landed** -- it touches no threading, but the rule
-in section 2 is to run it rather than to reason about it.
+**Nothing is half-finished.** Working tree clean, 314 tests, asan passes. **tsan is
+clean** over both the test binary and twelve seconds of the running app, re-run on
+2026-08-18 after the frame ring landed -- which also closes the run this section had
+been asking for since the container layer.
 
 Four of these need a person, and they are first on purpose — the list of things this
 project found by playing is longer than the list it found by reasoning.
 
 1. **Walk the whole chain to a diamond.** Tree, planks, table, sticks, wooden pickaxe,
-   stone, stone pickaxe, iron ore, furnace, coal, ingot, iron pickaxe, diamond. Every
-   step has tests behind it and **the chain has never been walked end to end by a
-   person**. The last two times a crafting path was in that state, the findings were
-   that nobody could find the grid and that the fuel was off by one smelt.
+   stone, stone pickaxe, iron ore, furnace, coal, ingot, iron pickaxe, diamond.
+   **`tests/test_progression.cpp` now walks it end to end in the tables** -- recipes,
+   tiers, drops and the smelt, through the real containers and the real click path --
+   so what is left is the half a test cannot reach: aiming, mining, and finding the
+   windows. That half is where both previous findings came from (nobody could find the
+   grid; the fuel was off by one smelt), so this stays at the top of the list.
 2. **Play the water.** Dig into the side of a lake and watch it pour in; wall it off
    and break the wall. **Flowing water has never been seen by anyone either** — a
    benchmark flight never edits the world, so it never notifies a fluid. The stats
@@ -100,9 +122,10 @@ project found by playing is longer than the list it found by reasoning.
    over stays dark, with a straight vertical boundary. Needs a light-changed signal
    threaded into the dirty-mask and pin machinery meshing already uses, so it is a
    phase rather than a patch. Section 6 has the shape of it.
-6. **The persistent-buffer hazard**, section 8, which Phase 5 will otherwise inherit —
-   and which is in **five** places rather than the one it was first written up as. Fix
-   it as one shared ring in `rhi`, not five.
+6. ~~**The persistent-buffer hazard**~~ — **done 2026-08-18** (DESIGN.md 7.21). One
+   `rhi::FrameRing`, owned by `Engine` and advanced once per frame; all five writes go
+   through it and `SectionMeshStore` keeps its own discipline. Phase 5's command buffer
+   is the sixth caller and needs no new machinery.
 
 ## 2. Commands
 
@@ -115,7 +138,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (249 cases, doctest)
+# Test  (314 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
@@ -169,6 +192,13 @@ git worktree remove --force /tmp/baseline
 # What the terrain is actually made of. No GL, no window -- it generates columns and
 # counts them. This is the only honest check on anything underground; see section 5.
 ./build/release/src/app/minecraft --probe --probe-columns 24
+
+# Hold something, so a capture can show it. The held item is a model in the fist now
+# -- an extruded sprite for a tool, the block itself for a block -- and crafting one
+# by hand is the only other way to see it. Works in both views; `--first-person` is
+# the one that shows the view model.
+./build/release/src/app/minecraft --hold wooden_pickaxe --capture /tmp/shot.ppm
+./build/release/src/app/minecraft --hold cobblestone --first-person --capture /tmp/shot.ppm
 
 # Start flying rather than walking. No longer the only way underground -- digging
 # works now -- but still the fastest way to go and look at something specific.
@@ -374,6 +404,41 @@ Learned the hard way; all of them cost real time.
 
 - **`packed` is a reserved keyword in GLSL.** The error points at the assignment
   operator, not at the name.
+- **A back face samples its texture mirrored unless you say otherwise.** The texture
+  coordinate comes from the quad's corner, so a face wound to point the other way puts
+  column 0 at the far end -- the image is then a reflection of any geometry built from
+  the same pixels. On an extruded sprite that means the drawn tool and its own rim
+  cross in an X as soon as the back is visible. `ItemQuad::mirrorU` and one line in
+  `character.vert` are the fix; the way to see it is to draw the faces and the rim in
+  two separate captures.
+- **An icon that reads in a slot can fail completely in a hand.** The tool sprites
+  were placeholders -- a shaft eight pixels long in a sixteen-pixel tile -- which is
+  fine at icon size and reads as a wooden cross once it is a model held near the
+  camera. **And their per-pixel noise becomes a barcode on the rim**, because rim faces
+  take the colour of the pixel they came from. Tool layers are drawn corner to corner
+  and at a third of the roughness now. DESIGN.md 7.22.
+- **Minecraft's model space is Y-down and Z-back; this engine's is Y-up and
+  Z-forward.** Vanilla's published display transforms -- the numbers that place a held
+  item -- are expressed in the first and land wrong in the second: the third-person
+  tool goes *up* four sixteenths into the character's chest. Convert with a half turn
+  about X applied to the transform (`C R C^-1`, `C T`) and **not** to the model, and
+  never with a mirror: negating one axis reverses every winding and back-face culling
+  then keeps exactly the wrong half. RESEARCH.md 9.3.
+- **`CharQuad`'s `origin.w` is a texture layer, and 0 is a valid one.** Anything
+  pushing a character quad has to write `ItemQuad::kFlatColour` there, or it draws
+  textured with layer zero -- stone -- and says nothing about it.
+- **Anything written every frame goes through `rhi::FrameRing`, never into a buffer of
+  its own.** A persistently mapped buffer written at offset 0 each frame is data the GPU
+  may still be reading from the frame before; coherence orders writes, it does not wait
+  for a draw. Five renderers had this and none of them showed it, because vsync leaves
+  enough slack to hide it. `Buffer::createPersistent` outside the ring is now for arenas
+  whose ranges outlive their frame -- there is exactly one, and it defers reuse by three
+  frames instead.
+- **`glBindBufferRange` has an alignment the driver chooses**, and it is 16 bytes on
+  this machine and 256 on plenty of others. `Buffer::storageOffsetAlignment()` queries
+  it; nothing may assume a value, because getting it wrong is a hard GL error rather
+  than a slow path. It is also why a ring slot's tail can be unusable: the next aligned
+  offset can land exactly on the end of the slot.
 - **Building a bitmask is not the optimization — never touching the empty cells
   is.** The first greedy mesher was *slower* than the naive one because its
   merge step still walked all 196,608 plane cells to find ~4,800 faces.
@@ -757,33 +822,19 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
 
 ## 8. Still open
 
-- **`ChunkRenderer`'s section-origin buffer is overwritten while the GPU may be reading
-  it.** `rhi/Buffer.hpp` states the contract — the caller must not overwrite a range the
-  GPU may still be reading — and `SectionMeshStore` honours it with `kReuseDelayFrames`.
-  `ChunkRenderer::draw` writes offset 0 of a persistently mapped buffer every frame with
-  no ring, no fence and no delay. `barrierAfterClientWrites()` orders writes; it does not
-  wait for last frame's draw. Vsync at 60 FPS with a 6 ms frame leaves enough slack that
-  it has not been observed, which is not the same as it being correct. Phase 5's indirect
-  command buffer has the identical problem, so fix them together.
+- ~~**`ChunkRenderer`'s section-origin buffer is overwritten while the GPU may be
+  reading it.**~~ **Fixed 2026-08-18** (DESIGN.md 7.21). It was five writes across four
+  renderers, every one at offset 0, every frame, with a barrier and nothing else -- and
+  the barrier orders writes, it does not wait for last frame's draw. They all go through
+  one `rhi::FrameRing` now: three frames' worth of room, one slot per frame, bump
+  allocated within the slot. `SectionMeshStore` keeps its own deferred-reuse discipline,
+  because its ranges outlive the frame that wrote them.
 
-  **This entry undercounted the hazard badly, and the count is the useful part.** It
-  said "two instances" -- `ChunkRenderer`'s opaque origins and the translucent pass's,
-  which water added. Checked against every `createPersistent` call on 2026-08-13, it is
-  **five writes across four renderers**, every one of them offset 0, every frame, with
-  a barrier and nothing else:
+  **What to know before touching it**: the ring is advanced once, at the top of
+  `Engine::renderFrame`, and nothing may write into it before that call or between a
+  write and the draw that reads it. Phase 5's indirect command buffer is the sixth
+  caller and needs no new machinery -- reserve a slice, fill it, `bind` it.
 
-  | | |
-  |---|---|
-  | `ChunkRenderer.cpp:104, 110` | opaque origins, then water origins |
-  | `ItemRenderer.cpp:91` | dropped items and falling blocks |
-  | `HudRenderer.cpp:423` | crosshair, hotbar, hearts, the inventory window |
-  | `CharacterRenderer.cpp:202, 257` | the character, and the first-person view model |
-
-  `SectionMeshStore` is the *only* holder of a persistent buffer that honours the
-  contract `rhi/Buffer.hpp` states. So the fix is a frame ring in `rhi` that all five
-  use -- which needs `Buffer::bindRange` (`glBindBufferRange`), since `bindBase` is all
-  there is today. Five separate rings would be four more chances to get it wrong, and
-  Phase 5 makes it six.
 - **Occlusion culling method** — HZB, visibility graph, or both. Decided by
   profiling in Phase 8.
 - **World persistence** — **now in scope** (DESIGN.md Phase 11), so the open part is
@@ -837,11 +888,12 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   one that is not -- a death screen with a button on it.
 - **No durability, so a tool never wears out.** The field belongs on `ItemStack` and
   means nothing until there are tiers worth wearing out. Phase 17.
-- **A dropped tool is a cube with a tool painted on it.** Vanilla draws dropped items
-  as flat billboards, which needs the same non-cube geometry path Phase 10 builds for
-  vegetation. The alpha discard in `item.frag` gets the silhouette right from four of
-  six angles, which is enough to tell a dropped pickaxe from a dropped cobblestone and
-  is knowingly not enough to be finished.
+- **A dropped tool is still a cube with a tool painted on it -- and it no longer has
+  to be.** `render/ItemModel.cpp` builds the extruded sprite a *held* tool is drawn
+  from (DESIGN.md 7.22), which is exactly the model a dropped one wants; what is
+  missing is only that `ItemRenderer` has not been moved onto it. It draws one cube
+  per entity from `gl_VertexID` with no per-entity geometry, so this is a real change
+  of shape for that renderer rather than a call swap -- but the model is written.
 - **A sword is craftable and completely inert.** It multiplies no mining speed and
   harvests nothing, because until Phase 19 there is nothing to swing it at. It exists
   so the recipe can.

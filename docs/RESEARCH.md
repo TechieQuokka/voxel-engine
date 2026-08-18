@@ -474,7 +474,64 @@ be data nothing reads. They land with the phase that can use them.
 
 ---
 
-## 9. Sources
+## 9. How a held item is drawn
+
+Researched 2026-08-18, for the pickaxe in the hand.
+
+### 9.1 An item in the hand is a 3D model, not a billboard
+
+**Minecraft extrudes an item's 16x16 sprite into a solid one pixel thick** (1/16 of a
+block) and renders that. The silhouette's outline becomes side faces, so the tool has a
+visible edge and does not vanish as it turns through the view during a swing. It is the
+same model in the hand, on the ground and in a frame; only the display transform below
+changes.
+
+A **block** item is not extruded — it is drawn as the block, at about a third size.
+That split matters: a cobblestone held as a flat picture of its top face reads as a
+tile, and a pickaxe held as a cube reads as a crate.
+
+### 9.2 The display transforms
+
+Every model carries a `display` block with a transform per context. Tools inherit
+`item/handheld`; ordinary items inherit `item/generated`; blocks inherit `block/block`.
+The two that matter here, verbatim from `item/handheld.json`:
+
+| | rotation (deg) | translation (1/16 block) | scale |
+|---|---|---|---|
+| `thirdperson_righthand` | `[0, -90, 55]` | `[0, 4, 0.5]` | 0.85 |
+| `firstperson_righthand` | `[0, -90, 25]` | `[1.13, 3.2, 1.13]` | 0.68 |
+| `block/block` third person | `[0, 45, 0]` | `[0, 2.5, 0]` | 0.375 |
+| `block/block` first person | `[0, 45, 0]` | `[0, 0, 0]` | 0.4 |
+
+The left-hand variants are the right-hand ones with the Y and Z rotations negated,
+which is the mirror.
+
+**Two conventions come with those numbers and neither is optional:**
+
+- **Rotation is applied X, then Y, then Z**, and the model is scaled first, rotated
+  second and translated last. The `-90` about Y is what turns a tool's flat face to
+  the side; the `55` about Z is what tilts it up out of the fist. Swapping the order
+  turns the tilt into a lean.
+- **The transform is applied about the model's centre**, not its corner: the item
+  renderer offsets by `-0.5` on every axis after applying the display transform.
+
+### 9.3 The trap this engine walked into
+
+**Minecraft's model space is Y-down and Z-back; this engine's is Y-up and Z-forward.**
+The numbers above are therefore expressed in a frame turned 180 degrees about X from
+this one, and using them as they stand puts a third-person tool four sixteenths *up*
+into the character's chest instead of down past the fist.
+
+The conversion has to be that half turn rather than a mirror. A mirror (negating one
+axis) reverses every winding, and this engine culls back faces, so the model would
+render inside out. And the conversion belongs to the *transform* only -- turning the
+sprite as well leaves the tool hanging head-down, which is what the first attempt drew.
+
+DESIGN.md 7.22 records both wrong turns at the code.
+
+---
+
+## 10. Sources
 
 Minecraft Wiki, retrieved 2026-08-10:
 
@@ -516,3 +573,10 @@ Added 2026-08-13 for section 7, fluid mechanics:
 - <https://minecraft.wiki/w/Chunk> — fluid flow suspends at the edge of a
   block-ticking chunk and resumes when the neighbour's load level rises. This is
   vanilla's answer to the chunk-border problem HANDOFF.md 5 records.
+
+Added 2026-08-18 for section 9, the held item:
+
+- <https://minecraft.wiki/w/Model> — the `display` block, its contexts, and the order
+  rotation and translation are applied in
+- <https://mcasset.cloud/21w07a/assets/minecraft/models/item/handheld.json> — the
+  transforms every tool inherits, quoted in 10.2

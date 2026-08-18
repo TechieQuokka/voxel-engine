@@ -314,7 +314,11 @@ All visible chunks are drawn with a **single `glMultiDrawElementsIndirect`
 call.** The indirect command buffer is filled by a compute shader that performs
 frustum culling on the GPU. The CPU issues one or two draw calls per frame.
 
-Buffers are persistent mapped and triple-buffered to avoid stalls.
+Buffers are persistent mapped and triple-buffered to avoid stalls. **The triple
+buffering is `rhi::FrameRing`** (7.21), which every per-frame write goes through --
+the section origins today and Phase 5's indirect command buffer when it lands. The
+mesh arena is the one exception and has its own discipline, because its ranges outlive
+the frame that wrote them.
 
 ### 3.9 Culling — three tiers
 
@@ -520,7 +524,9 @@ minecraft/
 │   │
 │   ├── rhi/
 │   │   ├── Device.hpp/.cpp      # GL loading, debug callback, reversed-Z setup
-│   │   ├── Buffer.hpp/.cpp      # immutable storage now, persistent mapped in Phase 3
+│   │   ├── Buffer.hpp/.cpp      # immutable storage, persistent mapping, bindRange
+│   │   ├── FrameRing.hpp/.cpp   # the one buffer every per-frame write goes through
+│   │   ├── RingLayout.hpp/.cpp  # its offsets, with no GL in them, so they can be tested
 │   │   ├── Shader.hpp/.cpp      # graphics + compute
 │   │   ├── Texture.hpp/.cpp     # 2D_ARRAY, 3D
 │   │   ├── VertexArray.hpp/.cpp # empty VAO required by core profile
@@ -533,6 +539,8 @@ minecraft/
 │   │   ├── Section.hpp        # 32^3, uniform optimization
 │   │   ├── Chunk.hpp/.cpp     # column of 12 sections
 │   │   ├── Neighbourhood.hpp  # the 3x3x3 sections a mesher may read
+│   │   ├── PlayerBox.hpp      # where the player stands, how tall and how wide
+│   │   ├── WalkMove.hpp       # sliding, and stepping up, extracted from Engine
 │   │   └── World.hpp/.cpp     # chunk map, streaming
 │   │
 │   ├── worldgen/
@@ -549,6 +557,7 @@ minecraft/
 │   │   └── Downsample.hpp/.cpp     # LOD mode filter
 │   │
 │   ├── render/
+│   │   ├── ItemModel.hpp/.cpp      # a sprite extruded into the thing a hand holds
 │   │   ├── Camera.hpp/.cpp
 │   │   ├── Frustum.hpp
 │   │   ├── BlockTextures.hpp/.cpp
@@ -2712,6 +2721,278 @@ caught something no test could.
   a general rule rather than a furnace's quirk.
 - **Nothing smelts food, because there is no food**, and nothing smelts sand, because
   glass is not a block yet.
+
+### 7.21 The frame ring, and two pieces of logic that could not be tested
+
+No new feature. This is the entry the previous eleven earned: a hazard the design
+document had written down twice and undercounted both times, and the first test to walk
+a chain rather than a unit.
+
+#### Five buffers, one discipline, and the count was the useful part
+
+`rhi/Buffer.hpp` has always stated the contract -- the caller must not overwrite a range
+the GPU may still be reading -- and `SectionMeshStore` was the only holder of a
+persistent buffer that honoured it. Every renderer wrote **offset 0 of its own mapped
+buffer, every frame, with a barrier and nothing else**. `barrierAfterClientWrites`
+orders writes against the draws that follow; it does not wait for last frame's draw.
+Vsync at 60 FPS with a 6 ms frame left enough slack that it was never observed, which is
+not the same as it being correct.
+
+Section 8 first recorded this as two instances. Checked against every `createPersistent`
+call it was five, across four renderers. **The count is the useful part**: two is a pair
+of bugs to fix, five is a missing abstraction, and Phase 5's indirect command buffer
+would have made it six.
+
+So it is one `rhi::FrameRing`, owned by `Engine` and advanced once per frame, holding
+three frames' worth of room and bump-allocating within the current slot. Three for
+`SectionMeshStore::kReuseDelayFrames`' reason: the GPU is at most two frames behind with
+a triple-buffered swapchain, and the third is slack for a driver that queues one more.
+`Buffer::bindRange` is what makes it possible at all -- without it there is no way to
+point a binding at anything but offset 0, which is why every per-frame buffer was
+written there in the first place.
+
+Two things fell out of it that were not the point:
+
+- **The character and its first-person arm were sharing one buffer at offset 0 within a
+  single frame.** They are never both drawn today, so this was latent rather than live,
+  but it is the same bug at a shorter time scale and the bump allocator removes it
+  without anyone having to notice.
+- **The budget is now one number that can be reported.** `frameRingBytesFor` derives it
+  from the render distance the way `meshArenaBytesFor` does, and the stats line prints
+  the high-water mark against it. At render distance 8 a frame uses 11 KiB of 1,024.
+  A budget nobody can see is a budget nobody notices overflowing.
+
+A frame that cannot fit loses a draw and says so, rather than asserting. A missing HUD
+for one frame is a worse outcome than a correct one and a far better outcome than either
+a corrupted draw or an abort.
+
+#### The arithmetic is tested; the memcpy is not
+
+`RingLayout` holds every offset decision and knows nothing about GL, so
+`tests/test_ring_layout.cpp` checks the properties that matter -- alignment, slots that
+do not overlap, a slot reused only after every other has had a turn, two reservations in
+one frame staying disjoint, a refusal that wraps into the neighbouring slot being
+impossible -- **with no context and no device**. `FrameRing` is then the memcpy and the
+bind, which no test could reach anyway. The split is the same one `PlayerBox` made for
+the same reason.
+
+One test was wrong on its first run and the code was right: after a 1,000-byte
+reservation in a 1,024-byte slot, nothing fits, because the next aligned offset lands
+exactly on the end. The tail of a slot is unusable whenever the previous reservation
+ended inside the last aligned block. That is the cost of an aligned bump allocator and
+the budget is sized with room for it, rather than the allocator being made cleverer.
+
+#### `Engine::updateWalk` was the largest untested thing in the engine
+
+`Engine.cpp` is the only file with no test coverage at all, and the horizontal move was
+its densest set of rules -- axis separation so a player slides along a wall instead of
+stopping dead, the wedge escape so terrain arriving around someone does not trap them,
+step-up refused in mid-air because that is climbing. **Every one of those rules was
+found by playing**, and not one of them could be called from a test while it lived
+inside a method that needs a window, a device and a streaming world.
+
+It is `slideWithStepUp` in `world/WalkMove.hpp` now, a template over the blocking test,
+with `kStepHeight` and `kStepProbe` beside it. The rule this project already wrote down
+applies exactly: a constant only the caller can see cannot be tested, so geometry goes
+next to what it describes. Eleven cases cover it, including the one a lattice of full
+cubes cannot express -- a rise of 0.4 blocks, which is what the step height is *for* and
+what no world made of unit cubes can present.
+
+The jump is checked against the step height by a `static_assert` now rather than by a
+comment claiming it clears.
+
+#### The chain had never been walked end to end
+
+Every step from a log to a diamond has tests. **The chain does not**, and the difference
+is exactly the shape of defect this project has already shipped once: item pickup passed
+six unit cases for four play sessions while being broken, because the bug was in the
+relationship between two constants that no single unit owned.
+
+`tests/test_progression.cpp` walks it in one case, in order, through the real containers
+and the real click-and-split path: log to planks in the 2x2, the pickaxe that provably
+does *not* fit there, the table, a wooden pickaxe, stone that gives nothing bare-handed
+and cobblestone with a pickaxe, a stone pickaxe, iron ore that wood cannot take, eight
+cobblestone in a ring, 200 ticks of smelting with the boundary asserted one tick either
+side, an iron pickaxe, and a diamond that a stone pickaxe cannot get out of the ground.
+It passed first time, which is the good outcome and not the interesting one -- what it
+buys is that the next change to a recipe, a tier or a drop cannot quietly break the
+chain while every unit test still passes.
+
+**It is the logic half only.** It cannot press a mouse button, aim at a block, or open a
+window, so a person walking the chain in the running game is still the outstanding item
+it was before. What it removes is the possibility that the chain is broken in the tables.
+
+#### Measured
+
+Frame times are unchanged: p99 6.10 ms at render distance 16 with caves over a 20-second
+flight with the world fully streamed in, against the 6.0 ms in the README from before
+the change -- which is inside the run-to-run spread rather than a result. `bindRange` in place of `bindBase` is one
+GL call either way. tsan is clean over both the test binary and twelve seconds of the
+running app, which is also the run section 2 of the handoff had been asking for since
+the container layer landed.
+
+### 7.22 The pickaxe in the hand
+
+Three places can show a tool, and until now only one of them did. The icon in a slot
+was finished in Phase 16. A dropped tool has been a cube with a picture on it since
+then, knowingly. **And a held tool was not drawn at all** -- craft a pickaxe, select
+it, and the character's fist stayed empty in both views. Nothing in either document
+said so, which is the part worth recording: `Engine::heldItem()` had exactly two
+callers, break time and the drop table, and neither of them is a renderer.
+
+That is precisely the failure mode this project keeps writing down. Mining speed
+changed and nothing on screen did.
+
+#### An item in the hand is a model, not a picture
+
+Vanilla extrudes the 16x16 sprite one pixel thick and renders the result. The
+silhouette becomes rim faces, so a tool has an edge and does not disappear as it turns
+through the swing. `render/ItemModel.cpp` does the same: two textured faces carrying
+the whole sprite, and a rim face wherever an opaque pixel meets a transparent one.
+
+Three things fell out of doing it that way rather than as a billboard:
+
+- **The alpha discard already existed** and does the silhouette for free, so the flat
+  faces are one quad each rather than one per pixel. Phase 16 added that discard for
+  icons and it turns out to have been half of this feature.
+- **The rim is the only part that costs geometry**, and it costs the perimeter rather
+  than the area: a solid 16x16 sprite is 64 rim faces, not 1,024. The test that pins
+  that is the one worth keeping.
+- **Rim faces carry a colour, not a texture.** A texel seen edge-on has no sensible
+  texture coordinate. It takes the colour of the pixel it belongs to -- which meant
+  `BlockTextures` had to keep its pixels on the CPU, 60 KiB it was throwing away.
+
+A held **block** is not extruded. It is the block, at vanilla's 0.375, which is why a
+held cobblestone reads as a cube and not as a tile of its own top face.
+
+#### The quad had room for this and nobody had noticed
+
+`CharQuad` is four `vec4`s and used three components of each. The texture layer went
+into `origin.w`, and the character shader grew one branch: a layer of zero or more
+samples the array, a negative one keeps the flat colour the player model is made of.
+No wider quad, no second shader, no second draw -- the tool goes into the same buffer
+as the arm holding it, which is also what makes it swing with the arm for free.
+
+**The one hazard in that was the default.** Every existing quad wrote `0.0f` into
+`origin.w` as padding, and zero is a perfectly good layer -- stone. Left alone, the
+player would have been made of rock, silently.
+
+#### Minecraft's model space is upside down relative to this one
+
+Vanilla's display transforms are published numbers (RESEARCH.md 9.2) and using them as
+they stand does not work: **Minecraft's model space is Y-down and Z-back**, so the
+third-person translation of four sixteenths moved the tool *up* into the character's
+chest. The frames differ by a half turn about X.
+
+Two wrong turns, both caught by a capture:
+
+1. **Turning the frame and the model.** Applying the half turn by negating the frame's
+   axes turns the sprite too, and the tool hangs head-down. The conversion belongs to
+   the transform -- `C R C^-1` and `C T` -- and not to the sprite, whose own +Y is up
+   in both worlds.
+2. **A mirror instead of a rotation.** Negating a single axis is the obvious way to
+   flip a handedness and it reverses every winding, which with back-face culling on
+   renders the model inside out.
+
+#### Vanilla's numbers describe a hand this engine does not have
+
+Both views ended up deviating, and the second one is the more interesting.
+
+**Third person kept vanilla's translation and scale and had to turn its tilt half way
+round.** Used as published, `[0, -90, 55]` hangs the tool by its *head*: the icon has
+the head at the top of the tile and the handle running to the bottom-left, so a tilt
+that brings the top of the sprite to the fist puts the metal in the hand and lets the
+handle swing underneath. Two play sessions called it out, the second one in as many
+words -- *"it should be gripping the stick"*. `125` instead of `55` is the same tilt
+turned half round in the sprite's own plane, which swaps the ends and changes nothing
+else. The Y rotation also wanted vanilla's other sign, which is the left-hand form.
+
+That vanilla's own numbers need this is a symptom rather than a fix: it says the hand
+frame here differs from Minecraft's by more than the half turn about X that
+RESEARCH.md 9.3 accounts for. The likely reason is that vanilla's arm is rigged and
+already rotated where this one hangs straight down from the shoulder, so "down the
+arm" and "the fist's axis" are the same direction here and are not there.
+
+**First person does not use vanilla's rotation at all, and cannot.** Vanilla's `[0, -90, 25]` is expressed in the
+frame of a rigged arm with a wrist; this engine's view model is one tilted box. Those
+numbers land somewhere arbitrary in it -- three captures' worth of somewhere arbitrary
+-- so what is copied is the *look* they produce, stated directly in the camera basis:
+the face turned towards the eye and tipped enough that the extrusion's edge shows, the
+head up and towards the crosshair, the handle running down into the fist. Vanilla's
+scale is kept, because a scale needs no frame to mean anything.
+
+Written down here rather than left in the code as numbers nobody can account for. When
+the view model becomes a rigged arm, this is the note that says the transform can go
+back to being vanilla's.
+
+#### The icons were the actual problem, and only holding one showed it
+
+The first version of this drew correctly and looked wrong, and the reason was not the
+transform: **the tool sprites themselves were placeholders that had never been looked
+at closely.** The shaft was eight pixels long in the middle of a sixteen-pixel tile
+and the pickaxe's head was a flat three-row bar. At icon size in a slot that reads as
+a tool. Extruded into an object held half a metre from the camera it reads as a
+wooden cross.
+
+Vanilla's tools fill the tile corner to corner: the shaft runs from the bottom-left
+pixel to under the head, and the head is a crescent with two horns curling down. They
+are redrawn to that shape now -- still hard-coded bit patterns, still readable in the
+source as the rows they draw.
+
+**The same change fixed the slot icons**, which nobody had complained about. That is
+the useful part of the finding: a 16x16 sprite has two jobs now, and the second one is
+a much harsher critic than the first.
+
+Their noise came down with them, from 8 and 14 to 3 and 4. **Per-pixel noise becomes a
+barcode along a rim**: the rim faces take the colour of the pixel they came from, so
+what is texture on a flat icon is stripes on an edge you can see. Vanilla's tool
+sprites are two or three flat shades, and now so are these.
+
+#### The back face was drawing a reflection of its own edges
+
+The sharpest bug in the phase, and it looked like two objects.
+
+A quad's texture coordinate comes from its corner. The back face is wound the other
+way round so that it points outwards -- which means its corner 0 sits at the *+X* end
+of the model, so it samples column 0 there. The image on that face is therefore
+mirrored **in the model's own space**, while the rim, built from the sprite's real
+pixel positions, is not. Face-on this is invisible. The moment the back of the tool is
+what the camera can see, the drawn shape and the shape of its edges cross in an X.
+
+Two captures pinned it: one with only the flat faces, which was a clean tool, and one
+with only the rim, which was a clean tool running the other way. `ItemQuad::mirrorU`
+is the fix -- one free component of `uAxis`, one line in the vertex shader -- and a
+test asserts that exactly one face sets it.
+
+**The debugging is the part worth keeping.** Both wrong-looking things -- the model and
+the icon -- were invisible in the tests, which all passed throughout, and both were
+found by drawing one frame and looking at it.
+
+#### `--hold`, because a capture cannot craft
+
+The held item is geometry now, and reaching it in a still frame otherwise means
+walking the whole chain to a pickaxe by hand. `--hold <item>` puts one in the first
+hotbar slot, for the same reason `--fly`, `--first-person`, `--inventory` and
+`--furnace` exist: **a state a capture cannot otherwise reach is a state that ships
+broken.** Every orientation bug above was found by looking at one of these frames.
+
+#### Measured
+
+314 tests, up from 303: eleven of them are the extrusion, which is pure geometry over
+a pixel buffer and needs no context. asan clean.
+
+**An empty-handed frame is pixel-identical to the same frame before the change** --
+`compare -metric AE` reports 0 against the capture taken before any of this, which is
+a stronger statement than a frame time and the one worth keeping: the textured branch
+in the character shader and the texture bind that comes with it cost nothing when
+nothing is held. Frame times sit where they did (p99 6.0-6.7 ms at render distance 16
+across runs, against 6.0-6.1 before), and the benchmark flies with an empty hand so it
+does not exercise the item path at all. The tool is at most about a hundred quads in a
+frame ring sized for thousands.
+
+**What is still a cube is the dropped item**, and it no longer has to be: the
+extrusion that draws a held pickaxe is exactly the model a dropped one wants, and
+`ItemRenderer` is the caller that has not been moved over yet.
 
 ---
 
