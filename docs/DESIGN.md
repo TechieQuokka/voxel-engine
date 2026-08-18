@@ -2629,8 +2629,7 @@ and it is worth naming as a pattern rather than as three bugs.
 
 #### What is not built
 
-- **No furnace**, so iron and everything past it is still out of reach. That is Phase
-  17's other half and the larger one.
+- **No furnace yet.** That is 7.20, below.
 - **No durability.** The field belongs on `ItemStack` and means nothing until there are
   tiers worth wearing out.
 - **The table has no inventory of its own**, so it is a machine rather than a container.
@@ -2638,6 +2637,81 @@ and it is worth naming as a pattern rather than as three bugs.
 - **Right click opens or places, and nothing else uses a block.** `useTargetBlock` is
   one comparison against one block id today. A door or a lever makes that a table
   column, which is where `BlockTable` would take it.
+
+### 7.20 Phase 17b — the furnace
+
+Half of `kBlocks` had been out of reach since 7.6. Vanilla's harvest tiers went into the
+block table with the ores and were honest immediately: iron, copper and lapis need a
+stone pickaxe, gold, redstone and diamond need an iron one, and an iron pickaxe needs an
+ingot that nothing could produce. **Mining iron ore gave you an ore block worth nothing**,
+which is the correct behaviour and an unsatisfying place to leave a game.
+
+#### A container with a life of its own
+
+Every container before this one was a fiction that existed while a window was open. A
+furnace is not: it burns with the window shut, so it lives in a `unordered_map<BlockPos,
+Furnace>` on the engine and is ticked by the simulation on the same 20 Hz clock as block
+updates and falling sand.
+
+**That is what `Container::releaseOne` being virtual bought.** A crafting grid hands
+everything back when its window closes, because closing it is the player putting things
+down; a furnace hands back nothing, because closing it is the player walking away.
+Applying one rule to both would empty a furnace every time somebody glanced inside.
+Breaking the block is what returns the contents, and `breakTargetBlock` does it.
+
+Entries are created on first open and dropped again when the furnace turns out to be
+`idle()`, so right-clicking a wall of furnaces costs nothing permanent.
+
+**This is the first thing that genuinely needs Phase 11.** A furnace forgets what it was
+smelting when its column unloads. That is a defect a player will notice, it is recorded
+rather than hidden, and it is the strongest argument yet for persistence.
+
+#### It cost no new interaction and no new layout code
+
+`SlotKind::Output` was already the take-only-and-consume slot a smelted item needs — it
+was written for a crafting result and describes a furnace's output exactly. And
+generalising the crafting grid's *edge* to rows and columns made a furnace one entry in
+`cellsOf`: one column of two, ingredient over fuel, output past the arrow.
+
+The one behavioural difference is that taking a furnace's output takes the **whole
+stack**, where a crafting result comes one at a time. A crafted result is produced by the
+click; a smelted one was produced by the fire and is already sitting there.
+
+#### The tests caught the order of the tick
+
+Vanilla's numbers went in directly: 200 ticks a smelt, coal worth eight and a plank worth
+one and a half, fuel consumed to *light* the fire rather than per item.
+
+**Decrementing the fuel before cooking meant the tick that took it from one to zero
+cooked nothing**, so 1600 ticks of coal smelted seven items instead of eight. That is an
+off-by-one which reads as a balance decision rather than a mistake — nobody looking at a
+furnace would think "this should have been one more" — and the only reason it was caught
+is that the test asserts vanilla's eight rather than whatever the code produced. **A test
+written from the implementation would have pinned the bug.**
+
+#### The gauges, and why the capture found their placement
+
+Ten seconds is a long time to watch a window with no evidence anything is happening. The
+arrow fills with cook progress and a flame burns down with the fuel, for the reason 7.14
+established: a feature nobody can observe in the log or on screen is a feature that ships
+broken.
+
+The flame's first placement was the gap between the two slots, which is one `kGap` tall
+against a gauge a third of a slot high — it drew underneath the ingredient and was
+invisible. `--furnace` is what showed that, and it is the third time `--capture` has
+caught something no test could.
+
+#### What is not built
+
+- **No durability**, so a tool never wears out. The field belongs on `ItemStack` and is
+  what is left of Phase 17.
+- **One furnace block, not vanilla's lit/unlit pair.** The mesher has no per-face
+  orientation, so a furnace already faces every direction at once and a lit variant
+  would be a lie in four of them. Phase 10's geometry is where that changes.
+- **No chest**, which is the container that would prove `releaseOne` returning nothing is
+  a general rule rather than a furnace's quirk.
+- **Nothing smelts food, because there is no food**, and nothing smelts sand, because
+  glass is not a block yet.
 
 ---
 

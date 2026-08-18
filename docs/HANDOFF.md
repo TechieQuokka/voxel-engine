@@ -23,7 +23,7 @@ no use for.
 |---|---|
 | **Performance** — phases 0-8 | 0-3 done. **4 in progress**: 4a-4c built, **4d (biomes) is the last step and is *not* next** — it still has the unresolved input in section 6. 5-8 untouched. |
 | **Interaction** — 9-15 | **Done**, plus trees, oceans, flowing water, held placement and a real player box. |
-| **Crafting** — 16-19 | **16 done. 17 half done** -- the window layer and the table are built; the furnace is not. 18-19 open, below. |
+| **Crafting** — 16-19 | **16 and 17 done** -- the window layer, the crafting table, and the furnace. 18-19 open, below. |
 
 The two tracks are independent, so 4d being open alongside finished interaction work
 is not a contradiction.
@@ -71,19 +71,18 @@ carrying as method rather than as history:
 
 ### Where to resume
 
-**Nothing is half-finished.** Working tree clean, 261 tests, asan passes. **tsan has not
+**Nothing is half-finished.** Working tree clean, 277 tests, asan passes. **tsan has not
 been re-run since the container layer landed** -- it touches no threading, but the rule
 in section 2 is to run it rather than to reason about it.
 
 Four of these need a person, and they are first on purpose — the list of things this
 project found by playing is longer than the list it found by reasoning.
 
-1. **Play the crafting table.** Punch a tree, make planks, make a table *in the 2x2*,
-   place it, right click it, make sticks and a wooden pickaxe, mine stone, make a stone
-   pickaxe. That whole path has tests behind it and **has never been walked by a
-   person** -- and the last time that was true of a crafting path, the finding was that
-   nobody could find the grid at all. Iron is still out of reach on purpose: it needs
-   the furnace.
+1. **Walk the whole chain to a diamond.** Tree, planks, table, sticks, wooden pickaxe,
+   stone, stone pickaxe, iron ore, furnace, coal, ingot, iron pickaxe, diamond. Every
+   step has tests behind it and **the chain has never been walked end to end by a
+   person**. The last two times a crafting path was in that state, the findings were
+   that nobody could find the grid and that the fuel was off by one smelt.
 2. **Play the water.** Dig into the side of a lake and watch it pour in; wall it off
    and break the wall. **Flowing water has never been seen by anyone either** — a
    benchmark flight never edits the world, so it never notifies a fluid. The stats
@@ -181,6 +180,11 @@ git worktree remove --force /tmp/baseline
 # Start fullscreen. `F11` toggles it at runtime; this is for starting there, and it
 # is also how a capture at the monitor's native resolution is taken.
 ./build/release/src/app/minecraft --fullscreen --capture /tmp/shot.ppm
+
+# Open a **furnace's** window, part-way through a smelt, and capture. The gauges are
+# the part most likely to be drawn wrong -- the flame's first placement was in the
+# one-pixel gap between two slots and drew underneath them.
+./build/release/src/app/minecraft --furnace --capture /tmp/shot.ppm
 
 # Open a **crafting table's** window and seed it, then capture. A window is the only
 # thing in the engine that needs a pointer to exist, so --capture cannot otherwise

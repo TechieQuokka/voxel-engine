@@ -63,8 +63,13 @@ crafting table**.
 
 **Place the table and right click it.** That is the 3x3, and it is the only way to a
 pickaxe: three planks across the top and two sticks down the middle does not fit in four
-cells. Planks or cobblestone plus sticks make a pickaxe, axe, shovel or sword, in wood
-and stone. Iron needs smelting, which is not built.
+cells. Planks or cobblestone plus sticks make a pickaxe, axe, shovel or sword.
+
+**Eight cobblestone in a ring makes a furnace.** Place it, right click it, ore on top
+and coal underneath. Ten seconds a smelt, eight smelts to a coal, and the arrow fills
+and the flame burns down while you watch. Iron ore becomes an ingot, an ingot makes an
+iron pickaxe, and an iron pickaxe is the only thing that will get a diamond out of the
+ground. That chain is vanilla's and every step of it is here.
 
 Sneak while right clicking to build on top of the table rather than opening it.
 
@@ -92,10 +97,11 @@ Dig down. The caves, ores and darkness are the point, and they are not visible f
 surface.
 
 ```bash
-ctest --preset debug                       # 261 test cases
+ctest --preset debug                       # 277 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
+./build/release/src/app/minecraft --furnace --capture /tmp/shot.ppm
 ```
 
 ## How it is built
@@ -159,10 +165,10 @@ tracks remain, independent of each other:
 - **Interaction** — block placement and breaking, trees, item drops, a slot inventory
   with its window, a HUD, health, block updates, oceans and flowing water are all
   **done**. Still open: aquifers, the rest of vegetation, and persistence.
-- **Crafting** — Phases 16 to 19. **16 and half of 17 are built**: items stopped being
-  block types, there is a container-window layer, and a crafting table gates the 3x3
-  recipes exactly as vanilla does. Still open: the furnace and smelting (and with them
-  iron and diamond), durability, torches and block light, then mobs and combat.
+- **Crafting** — Phases 16 to 19. **16 and 17 are built**: items stopped being block
+  types, there is a container-window layer, a crafting table gates the 3x3 recipes, and
+  a furnace smelts — so iron and diamond are reachable and the whole ore table means
+  something. Still open: durability, torches and block light, then mobs and combat.
 
 Entities, a slot inventory with a UI layer under it, a game tick and a translucent
 draw pass all exist now.
