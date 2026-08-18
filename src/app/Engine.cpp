@@ -901,31 +901,27 @@ ItemId Engine::heldItem() const {
     return held.empty() ? kNoItem : held.item;
 }
 
-void Engine::placeTargetBlock() {
+bool Engine::placeTargetBlock() {
     if (!m_target.has_value()) {
-        return;
+        return false;
     }
 
     const BlockPos target = m_target->adjacent;
 
-    // Do not place a block inside the player. The collision here is deliberately the
-    // same shape as the one walking uses -- a column of two blocks at the feet, no
-    // width -- so that placing and standing agree about where the player is. A
-    // narrower test would let you seal yourself into a block you are standing in.
-    const vec3 feet = playerFeet();
-    const auto feetX = static_cast<i32>(std::floor(feet.x));
-    const auto feetZ = static_cast<i32>(std::floor(feet.z));
-    const auto feetY = static_cast<i32>(std::floor(feet.y + 0.01f));
-
-    if (target.x == feetX && target.z == feetZ && (target.y == feetY || target.y == feetY + 1)) {
-        return;
+    // Do not place a block inside the player. **This used to be a two-block column at
+    // the feet with no width**, copied from the shape walking uses, and the missing
+    // width is what let a player seal a block into their own shoulder while building
+    // a wall beside themselves. `PlayerBox` is the real 0.6-wide box, and it lives in
+    // `world` so a test can reach it -- see the header for why that mattered twice.
+    if (PlayerBox{playerFeet()}.intersects(target)) {
+        return false;
     }
 
     // Whatever is in the selected slot, which is now a real slot rather than a fixed
     // block type. An empty slot places nothing, and the hotbar already shows it empty.
     const ItemStack& held = m_inventory.at(m_hotbarSlot);
     if (held.empty()) {
-        return;
+        return false;
     }
 
     // **Not every item is a block, since Phase 16.** Right-clicking with a pickaxe
@@ -934,14 +930,50 @@ void Engine::placeTargetBlock() {
     // the two share a type.
     const BlockId block = blockOfItem(held.item);
     if (block == kAirBlock) {
-        return;
+        return false;
     }
 
     // Taken only once the edit is known to have landed, so a placement refused for
     // being outside the world does not silently cost a block.
-    if (applyEdit(target, block)) {
-        m_inventory.takeOne(m_hotbarSlot);
-        ++m_blocksPlaced;
+    if (!applyEdit(target, block)) {
+        return false;
+    }
+
+    m_inventory.takeOne(m_hotbarSlot);
+    ++m_blocksPlaced;
+    return true;
+}
+
+void Engine::updatePlacing(f32 dt) {
+    // **Held, not clicked, and this reverses a decision that was right when it was
+    // made.** `Input::wasPressed` used to carry the argument: repeating a place at
+    // 60 Hz lays sixty blocks a second along the view ray, which is not building. The
+    // conclusion that followed -- that no timer was worth having -- is the part that
+    // did not survive contact with someone trying to build a house, because one click
+    // per block means a wall costs a hundred distinct clicks. Vanilla repeats on a
+    // 4-tick timer, and a timer is what makes holding the button *be* building.
+    if (m_placeCooldown > 0.0f) {
+        m_placeCooldown -= dt;
+    }
+
+    if (!m_input->isDown(MouseButton::Right)) {
+        // Releasing arms the next press. Without this a deliberate single click made
+        // within 0.2 s of the last one is silently dropped, which reads as the game
+        // ignoring the mouse rather than as a repeat rate.
+        m_placeCooldown = 0.0f;
+        return;
+    }
+
+    if (m_placeCooldown > 0.0f) {
+        return;
+    }
+
+    // The cooldown is spent only on a placement that actually happened. A player
+    // sweeping the crosshair across the sky while holding the button is not using
+    // anything up, so the first block they reach goes down immediately rather than
+    // up to a fifth of a second later.
+    if (placeTargetBlock()) {
+        m_placeCooldown = kPlaceIntervalSeconds;
     }
 }
 
@@ -1118,14 +1150,10 @@ void Engine::updateInteraction(f32 dt) {
         }
     }
 
-    // Breaking is held, not clicked. Placing stays edge-triggered: vanilla repeats
-    // breaking on a timer and does not repeat placing at all, and a place-repeat at
-    // 60 Hz would lay sixty blocks a second along the view ray.
+    // Both are held rather than clicked, on their own timers: breaking runs on the
+    // block's hardness, placing on vanilla's fixed 4 ticks.
     updateBreaking(dt);
-
-    if (m_input->wasPressed(MouseButton::Right)) {
-        placeTargetBlock();
-    }
+    updatePlacing(dt);
 }
 
 void Engine::updateTicks(f32 dt) {

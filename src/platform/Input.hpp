@@ -55,11 +55,14 @@ public:
     bool isDown(MouseButton button) const;
     /// True only on the frame the button transitioned from up to down.
     ///
-    /// Breaking and placing are both edge-triggered on purpose. Holding a button
-    /// down at 60 FPS would place sixty blocks a second along the view ray, which is
-    /// not "building" -- Minecraft repeats on a timer for breaking and not at all
-    /// for placing, and a timer is not worth having before there is a block that
-    /// takes more than one hit.
+    /// **Neither breaking nor placing uses this any more, and the reason it once said
+    /// they both should is worth keeping.** Holding a button at 60 FPS does lay sixty
+    /// blocks a second along the view ray, which is not building -- but the conclusion
+    /// drawn from it, that no timer was worth having, made a wall cost one deliberate
+    /// click per block. Both are held now, each on its own timer: breaking on the
+    /// block's hardness, placing on Minecraft's fixed four ticks. What is left for
+    /// this is the genuinely edge-triggered: re-capturing a released cursor, and every
+    /// click inside the inventory window.
     bool wasPressed(MouseButton button) const;
 
     f64 mouseDeltaX() const noexcept { return m_mouseDeltaX; }

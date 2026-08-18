@@ -7,6 +7,7 @@
 #include "rhi/Device.hpp"
 #include "rhi/Shader.hpp"
 #include "rhi/VertexArray.hpp"
+#include "world/PlayerBox.hpp"
 
 #include <array>
 #include <optional>
@@ -62,11 +63,16 @@ public:
     void drawHand(rhi::Device& device, const Camera& camera, f32 swingPhase,
                   f32 swingAmount);
 
-    /// Height of the model in blocks, from feet to the top of the head. The camera
-    /// uses it to put the eye in the head rather than at the feet.
-    static constexpr f32 kHeight = 2.0f;
-    /// Eye height, matching Minecraft's 1.62.
-    static constexpr f32 kEyeHeight = 1.62f;
+    /// Height of the model in blocks, from feet to the top of the head, and the eye
+    /// height the camera uses to sit in the head rather than at the feet.
+    ///
+    /// **Both come from `PlayerBox` rather than being declared here.** They used to be
+    /// declared here, which put the player's dimensions in the renderer and left
+    /// physics reading them out of it -- and the collision box that grew from that had
+    /// a height and no width. The model is drawn to match what collides, not the other
+    /// way round, so these are aliases and cannot drift from the box.
+    static constexpr f32 kHeight = PlayerBox::kHeight;
+    static constexpr f32 kEyeHeight = PlayerBox::kEyeHeight;
 
 private:
     /// One quad, laid out exactly as character.vert reads it.

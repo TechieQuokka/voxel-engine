@@ -19,6 +19,7 @@
 #include "world/FallingBlocks.hpp"
 #include "world/Inventory.hpp"
 #include "world/ItemEntities.hpp"
+#include "world/PlayerBox.hpp"
 #include "world/Raycast.hpp"
 #include "world/World.hpp"
 #include "worldgen/Generator.hpp"
@@ -171,8 +172,16 @@ private:
 
     /// Breaks `m_target`, or places the selected block against it. Both go through
     /// `applyEdit`, so both get the same retry behaviour.
+    ///
+    /// Placing returns whether a block actually went down, which is what lets the
+    /// repeat timer charge for a placement rather than for a click: the button is
+    /// held across sky, out-of-reach air and the player's own box, and none of those
+    /// should cost the next block its promptness.
     void breakTargetBlock();
-    void placeTargetBlock();
+    bool placeTargetBlock();
+
+    /// Places while the right button is held, on vanilla's 4-tick repeat.
+    void updatePlacing(f32 dt);
 
     /// Edits the world, queueing the edit for the next frame if a job owns the
     /// column. Returns false only when the edit is impossible rather than merely
@@ -418,6 +427,10 @@ private:
     /// the motion read as chopping rather than waving.
     static constexpr f32 kSwingPeriod = 0.3f;
 
+    /// Time owed before the held right button places again. Zero means the next
+    /// press or the next held frame places immediately.
+    f32 m_placeCooldown = 0.0f;
+
     /// Dropped blocks, and what the player is carrying.
     ItemEntities m_items;
     Inventory m_inventory;
@@ -439,6 +452,15 @@ private:
     /// the same trade `ItemEntities` and `FallingBlocks` make for their substeps and
     /// is invisible next to the stall itself.
     static constexpr u32 kMaxTicksPerFrame = 4;
+
+    /// Minecraft's `rightClickDelayTimer`: four ticks between placements while the
+    /// button is held. Fast enough that a wall goes up by dragging the crosshair,
+    /// slow enough that it is still the player choosing where each block goes.
+    ///
+    /// Declared here rather than beside `m_placeCooldown` because it is derived from
+    /// `kTickSeconds`, and a static member's initializer can only name what has
+    /// already been declared in the class.
+    static constexpr f32 kPlaceIntervalSeconds = 4.0f * kTickSeconds;
 
     /// Shared spin clock for every dropped item, so a pile turns together.
     f32 m_itemSpin = 0.0f;

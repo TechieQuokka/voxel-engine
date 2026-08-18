@@ -5,10 +5,15 @@
 # the test binary creates a GL context, so no test may reach into rhi -- the link
 # succeeds because glad's symbols come along, not because a context exists.
 #
-# test_items.cpp includes render/CharacterRenderer.hpp for the same reason, and it is
-# the one case worth naming: the player's height and eye height live there, and item
-# pickup shipped broken because nothing ever tested `kPickupRadius` against them. A
-# header include is not reaching into rhi; constructing anything in it would be.
+# test_items.cpp includes render/CharacterRenderer.hpp, which is allowed for the same
+# reason: a header include is not reaching into rhi, though constructing anything in
+# it would be.
+#
+# **The player's height and eye height no longer live there.** They were in the
+# renderer, and item pickup shipped broken because nothing could test `kPickupRadius`
+# against them; block placement then grew a collision box from the same numbers and
+# got a height with no width. Both are in `world/PlayerBox.hpp` now, which is why
+# test_player_box.cpp needs nothing but mc_world.
 
 add_executable(mc_tests
   test_main.cpp
@@ -37,6 +42,7 @@ add_executable(mc_tests
   test_crafting.cpp
   test_water.cpp
   test_flowing_water.cpp
+  test_player_box.cpp
 )
 
 target_link_libraries(mc_tests PRIVATE
