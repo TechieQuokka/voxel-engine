@@ -7,7 +7,7 @@ add_library(mc_render STATIC
   SectionMeshStore.cpp
   SelectionRenderer.cpp
   ItemRenderer.cpp
-  InventoryLayout.cpp
+  ScreenLayout.cpp
   HudRenderer.cpp
 )
 

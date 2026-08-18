@@ -51,6 +51,15 @@ enum class TextureRecipe : u8 {
     /// by the *seams*, which are darker lines at fixed intervals rather than noise.
     Planks,
 
+    /// Planks with a 3x3 lattice cut into them, for the top of a crafting table.
+    ///
+    /// **The pattern is the label.** A player who cannot find the table cannot craft
+    /// at all, and that is not a hypothetical -- the first person to play Phase 16
+    /// could not find the crafting grid because it was inside a window rather than
+    /// on a block. A cube of plain planks would repeat the mistake in a new place, so
+    /// the block says what it is from the one angle you look at it from.
+    CraftGrid,
+
     // -- item icons ------------------------------------------------------------
     //
     // **These layers are never meshed.** They live in the same texture array only
@@ -155,6 +164,12 @@ inline constexpr std::array kLayers{
     // Planks. Lighter than the bark they come from, because a sawn face is the inside
     // of the trunk; the secondary colour is the seam between boards.
     LayerInfo{"oak_planks",   TextureRecipe::Planks, 0xFFB08A55u, 0xFF8A6A3Eu, 9.0f, 60u},
+
+    // The crafting table: a lattice on the top, darker worked boards on the sides.
+    // The bottom reuses `oak_planks`, which is what it is made of and what vanilla
+    // shows there too.
+    LayerInfo{"crafting_table_top",  TextureRecipe::CraftGrid, 0xFFA97F4Eu, 0xFF54402Bu, 8.0f, 61u},
+    LayerInfo{"crafting_table_side", TextureRecipe::Planks,    0xFF8F6F45u, 0xFF5E4830u, 9.0f, 62u},
 
     // -- item icons, transparent outside the shape ------------------------------
     // `argb` is the body and `argbSecondary` the shading or the handle. Roughness is
@@ -443,6 +458,18 @@ inline constexpr std::array kBlocks{
     // way from a recipe to a placed block.
     uniformBlock("oak_planks", "oak_planks", 'p', 2.0f, false, {}, false, ToolKind::Axe),
 
+    // **The first block you use rather than stand on.** Right-clicking it opens a 3x3
+    // grid, which is the only way to reach a pickaxe -- the player's own grid is 2x2
+    // and a pickaxe does not fit in four cells. Vanilla's gate, and the reason the
+    // table exists at all rather than being a decoration.
+    //
+    // Vanilla hardness is 2.5. Bottom face is plain planks, which is what it is made
+    // of; see the layer table for why the top is not.
+    BlockInfo{"crafting_table", true, layerOf("crafting_table_top"),
+                                      layerOf("crafting_table_side"),
+                                      layerOf("oak_planks"), 'w', false, 2.5f, {},
+                                      false, false, ToolKind::Axe},
+
     // -- water ----------------------------------------------------------------
     // Not opaque, so it hides nothing behind it; a fluid, so it holds nothing up.
     // Unbreakable because a bucket is the only thing that removes water in vanilla
@@ -512,6 +539,9 @@ inline constexpr BlockId kDeepslateBlock = blockIdOf("deepslate");
 inline constexpr BlockId kOakLogBlock    = blockIdOf("oak_log");
 inline constexpr BlockId kOakLeavesBlock = blockIdOf("oak_leaves");
 inline constexpr BlockId kOakPlanksBlock = blockIdOf("oak_planks");
+/// The one block so far that is *used* rather than built against. `Engine` compares
+/// against this to decide whether a right click opens a window or places a block.
+inline constexpr BlockId kCraftingTableBlock = blockIdOf("crafting_table");
 inline constexpr BlockId kWaterBlock     = blockIdOf("water");
 
 /// Sea level. Vanilla's 63 is the first block *above* the water surface, so the

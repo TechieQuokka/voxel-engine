@@ -3,7 +3,7 @@
 #include "core/Math.hpp"
 #include "core/Types.hpp"
 #include "render/BlockTextures.hpp"
-#include "render/InventoryLayout.hpp"
+#include "render/ScreenLayout.hpp"
 #include "rhi/Buffer.hpp"
 #include "rhi/Device.hpp"
 #include "rhi/Shader.hpp"
@@ -17,9 +17,10 @@
 namespace mc {
 
 class Inventory;
+class Screen;
 
-/// Everything drawn in screen space: the crosshair, the hotbar, the hearts, and the
-/// inventory window.
+/// Everything drawn in screen space: the crosshair, the hotbar, the hearts, and
+/// whatever window is open.
 ///
 /// **It used to say, in this comment, that it was deliberately not a UI framework.**
 /// That was true and it stopped being enough. The count-based inventory it was built
@@ -27,11 +28,12 @@ class Inventory;
 /// a container needs a window, a cursor and hit testing -- the three things this was
 /// written to avoid needing. It is a small UI layer now.
 ///
-/// What it still is not is a *general* one. There is no widget tree, no layout
-/// engine and no event routing: there is one window, its geometry lives in
-/// `InventoryLayout`, and clicks are resolved by asking that layout which slot a
-/// point is in. A second window would be the moment to reconsider, and a second
-/// window is what a chest or a crafting bench would be.
+/// It still has no widget tree, no layout engine and no event routing, and it does
+/// not need them: **a window is a list of slots**, its geometry comes from
+/// `ScreenLayout`, its contents come from `Screen`, and a click is resolved by asking
+/// the layout which slot a point is in. The second window -- a crafting table -- cost
+/// this class one loop and no new drawing code, and a furnace or a chest will cost it
+/// none at all.
 ///
 /// Drawn in NDC with no projection at all, one draw call, one shader, a mode per
 /// quad. The glyph font is hard-coded bit patterns expanded into a texture array at
@@ -62,13 +64,22 @@ public:
         /// Drawn under the crosshair, uppercased, underscores as spaces.
         std::string_view targetName;
 
-        bool inventoryOpen = false;
-        /// Where the pointer is, in NDC. Only read while the window is open, which
-        /// is the only time there is a pointer to read.
+        /// The open window, or null when there is none. **Null is what "closed"
+        /// means**, rather than a separate flag that could disagree with it: there
+        /// is no state in which a screen is open and there is nothing to draw.
+        const Screen* screen = nullptr;
+        /// Which window it is, which is all the layout needs to know about it.
+        ScreenKind screenKind = ScreenKind::Player;
+
+        /// Where the pointer is, in NDC. Only read while a window is open, which is
+        /// the only time there is a pointer to read.
         f32 cursorX = 0.0f;
         f32 cursorY = 0.0f;
     };
 
+    /// `inventory` is drawn when no window is open -- the hotbar along the bottom --
+    /// and supplies the dragged stack when one is. The slots inside a window come
+    /// from `state.screen`, which composes these same slots with the container's.
     void draw(rhi::Device& device, const BlockTextures& textures,
               const Inventory& inventory, const State& state, f32 aspect);
 
@@ -124,7 +135,7 @@ private:
     /// the window, so a slot looks the same wherever it is drawn.
     void pushSlot(const UiRect& rect, const struct ItemStack& stack, bool highlight,
                   f32 aspect);
-    void pushHearts(const InventoryLayout& layout, const State& state, f32 aspect);
+    void pushHearts(const ScreenLayout& layout, const State& state, f32 aspect);
     /// Draws `text` centred on `centreX`, with its top at `topY`, in NDC. Letters
     /// only: anything that is not a-z or A-Z advances the cursor as a space, which
     /// is what turns `oak_log` into `OAK LOG` without a second table.

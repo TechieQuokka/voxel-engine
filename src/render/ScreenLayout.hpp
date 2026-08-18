@@ -20,7 +20,22 @@ struct UiRect {
     }
 };
 
-/// Where every slot is, on screen.
+/// Which window is open, and therefore what sits above the player's own slots.
+///
+/// **An enum in the render layer rather than a layout description coming out of
+/// `world`.** A container knows how many slots it has and what they do; where they
+/// are drawn is a question about screens, and answering it in `world` would put
+/// pixel geometry in the module that is meant to know nothing about rendering.
+/// Adding a furnace is an entry here and a case in one function.
+enum class ScreenKind : u8 {
+    /// The player's own window: a 2x2 crafting grid and its output.
+    Player,
+    /// A crafting table: 3x3 and its output. The only difference is the edge, which
+    /// is the only difference vanilla has either.
+    CraftingTable,
+};
+
+/// Where every slot of the open screen is, on screen.
 ///
 /// **One class, used by both the renderer and the hit test, and that is the whole
 /// point of it existing.** If drawing computed slot rectangles and clicking computed
@@ -29,22 +44,27 @@ struct UiRect {
 /// unresponsive rather than as misaligned, and is miserable to track down. There is
 /// one function, and the pixels and the pointer cannot disagree.
 ///
+/// It was `InventoryLayout` and knew one window. The generalisation is small on
+/// purpose: the player's thirty-six slots are laid out identically in every screen
+/// there will ever be, so what varies is only the block above them.
+///
 /// Screen space is NDC with y up, x scaled by aspect so slots come out square on a
 /// window that is not.
-class InventoryLayout {
+class ScreenLayout {
 public:
-    explicit InventoryLayout(f32 aspect);
+    ScreenLayout(f32 aspect, ScreenKind kind);
 
-    /// Slot rectangles, indexed exactly as `Inventory` indexes its slots: 0-8 the
-    /// hotbar, 9-35 the main grid, 36-44 the 3x3 crafting grid, 45 the output.
-    /// **The hotbar is drawn as the bottom row of the window**, below the grid and
-    /// separated by a gap, which is where vanilla puts it and is why a player can
-    /// drag between the two without thinking about it.
+    /// Slot rectangles, indexed exactly as `Screen` indexes its slots: the
+    /// container's own slots first, then the player's thirty-six with the hotbar at
+    /// 0-8.
     ///
-    /// **One function for all forty-six, which is the point of this class.** The
-    /// crafting grid needed no new hit-testing code at all: it is slots 36-44, and
-    /// `hitTest` already walks every slot there is.
+    /// **The hotbar is drawn as the bottom row of the window**, below the main grid
+    /// and separated by a gap, which is where vanilla puts it and is why a player can
+    /// drag between the two without thinking about it.
     UiRect slot(usize index) const;
+
+    usize containerSlots() const noexcept { return m_containerSlots; }
+    usize slotCount() const noexcept { return m_containerSlots + Inventory::kStorageSlots; }
 
     /// The arrow between the crafting grid and its output. Decoration, and the only
     /// rectangle here that is not a slot -- it is here rather than in the renderer
@@ -59,21 +79,29 @@ public:
     /// Which slot contains this point, if any.
     std::optional<usize> hitTest(f32 x, f32 y) const;
 
-    /// The hotbar as it is drawn when the window is *closed* -- centred along the
-    /// bottom of the screen rather than inside a panel. A separate function because
-    /// it is a different position, not a different size.
+    /// The hotbar as it is drawn when no window is open -- centred along the bottom
+    /// of the screen rather than inside a panel. A separate function because it is a
+    /// different position, not a different size.
     UiRect closedHotbarSlot(usize index) const;
 
     static constexpr usize kColumns = 9;
     static constexpr usize kMainRows = Inventory::kMainSlots / kColumns;
-    /// The crafting grid is square, so one number covers rows and columns.
-    static constexpr usize kCraftColumns = 3;
 
 private:
+    /// A container slot: a cell of the craft grid, or its output.
+    UiRect containerSlot(usize index) const;
+    /// One of the player's thirty-six, indexed as `Inventory` indexes them.
+    UiRect playerSlot(usize index) const;
+
     f32 m_aspect = 1.0f;
     /// Slot edge length in NDC y units. x is divided by the aspect at use.
     f32 m_slotSize = 0.0f;
     f32 m_gap = 0.0f;
+
+    /// Edge of the crafting grid: 2 for the player's window, 3 for a table.
+    usize m_craftEdge = 2;
+    usize m_containerSlots = 5;
+
     /// Bottom-left of the main grid's first (top-left) slot row.
     f32 m_gridLeft = 0.0f;
     f32 m_gridTop = 0.0f;

@@ -208,6 +208,31 @@ void generatePlanks(std::vector<u8>& out, u32 layer, u32 plankArgb, u32 seamArgb
     }
 }
 
+/// Planks with a 3x3 lattice cut into them: the top of a crafting table.
+///
+/// Drawn as divisions rather than as nine drawn squares, because the lines are what
+/// the eye reads. A tile is sixteen pixels, so the thirds fall between pixels -- 5 and
+/// 10 are the nearest, and being one pixel off centre is invisible while an uneven
+/// *number* of cells would not be.
+void generateCraftGrid(std::vector<u8>& out, u32 layer, u32 plankArgb, u32 seamArgb,
+                       f32 roughness, u32 seed) {
+    generatePlanks(out, layer, plankArgb, seamArgb, roughness, seed);
+
+    const Rgba seam = fromArgb(seamArgb);
+
+    for (u32 y = 0; y < kSize; ++y) {
+        for (u32 x = 0; x < kSize; ++x) {
+            const bool border = x == 0 || y == 0 || x == kSize - 1 || y == kSize - 1;
+            const bool division = x == 5 || x == 10 || y == 5 || y == 10;
+            if (!border && !division) {
+                continue;
+            }
+            const f32 n = noise(x, y, seed) * roughness * 0.5f;
+            writePixel(out, layer, x, y, shade(seam, n));
+        }
+    }
+}
+
 // -- item icons ------------------------------------------------------------------
 //
 // **Shapes are hard-coded bit patterns, exactly as the HUD's font is.** That is
@@ -377,6 +402,10 @@ BlockTextures::BlockTextures() {
         case TextureRecipe::Planks:
             generatePlanks(pixels, index, layer.argb, layer.argbSecondary,
                            layer.roughness, layer.seed);
+            break;
+        case TextureRecipe::CraftGrid:
+            generateCraftGrid(pixels, index, layer.argb, layer.argbSecondary,
+                              layer.roughness, layer.seed);
             break;
         case TextureRecipe::Nugget:
             generateNugget(pixels, index, layer.argb, layer.argbSecondary,

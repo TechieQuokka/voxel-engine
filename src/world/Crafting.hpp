@@ -8,18 +8,19 @@
 
 namespace mc {
 
-/// The crafting grid and the recipes it matches.
+/// The recipe table, and the match against a 3x3 of item ids.
 ///
-/// **The grid is 3x3 and it is in the player's own window, which is not vanilla.**
-/// Vanilla gives the player 2x2 and puts 3x3 behind a crafting bench, and that
-/// restriction is the bench's entire reason to exist. It is not copied here because
-/// **a pickaxe is a 3x3 recipe** -- three planks across the top and two sticks down
-/// the middle -- so a 2x2 grid could not make the one thing Phase 16 is for, and a
-/// bench is a second window, which is Phase 17's cost and not this one's.
+/// **Vanilla's gate is now in place: the player has 2x2 and 3x3 is behind a crafting
+/// table.** Phase 16 shipped 3x3 in the player's own window, and this comment used to
+/// explain why -- a pickaxe is a 3x3 recipe, so a 2x2 grid could not make the one
+/// thing that phase was for, and a table was a second window nothing could open.
+/// `Container` and `Screen` are that second window, so the restriction is real and a
+/// player who wants a pickaxe has to build a table first.
 ///
-/// Phase 17 moves 3x3 to the bench and cuts the player's grid to 2x2. That is a
-/// *reduction* in what the player can do without walking to a block, and presenting
-/// it as a feature is exactly what vanilla does.
+/// The matcher is still written against 3x3 and there is still one recipe table. A
+/// smaller grid is laid into the corner of a 3x3 and matched as it stands, which is
+/// what makes a 2x2 fit every small recipe and no large one -- see
+/// `CraftingGrid::paddedIds`. No recipe needed a size annotation for that to work.
 ///
 /// Recipes are a table of ids resolved at compile time, so a typo in a recipe is a
 /// compile error rather than a recipe that silently never matches -- the same
@@ -76,7 +77,18 @@ inline constexpr std::array kRecipes{
            "oak_planks", "", "",
            "",           "", ""),
 
+    // **Four planks make the table, and the table is what makes everything below
+    // reachable.** Shaped rather than shapeless, and a 2x2 square, which is exactly
+    // what fits in the player's own grid -- vanilla's bootstrap: the one recipe that
+    // has to be craftable without a table is the recipe for the table.
+    shaped(itemIdOf("crafting_table"), 1,
+           "oak_planks", "oak_planks", "",
+           "oak_planks", "oak_planks", "",
+           "",           "",           ""),
+
     // -- wooden tools ----------------------------------------------------------
+    // **Everything from here down needs a crafting table.** Each is three cells
+    // wide, and the player's own grid is two.
     shaped(itemIdOf("wooden_pickaxe"), 1,
            "oak_planks", "oak_planks", "oak_planks",
            "",           "stick",      "",

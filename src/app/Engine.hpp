@@ -18,9 +18,11 @@
 #include "world/BlockUpdates.hpp"
 #include "world/FallingBlocks.hpp"
 #include "world/Inventory.hpp"
+#include "world/CraftingGrid.hpp"
 #include "world/ItemEntities.hpp"
 #include "world/PlayerBox.hpp"
 #include "world/Raycast.hpp"
+#include "world/Screen.hpp"
 #include "world/World.hpp"
 #include "worldgen/Generator.hpp"
 
@@ -482,15 +484,48 @@ private:
     /// slots 0-8 now, and an empty slot is empty.
     usize m_hotbarSlot = 0;
 
-    /// The inventory window, and whether it has the pointer.
+    /// The player's own 2x2 crafting grid.
+    ///
+    /// **Owned by the engine rather than by `Inventory`, and that is Phase 17's whole
+    /// structural change.** It was inside the inventory because there was one window
+    /// and nowhere else to put it. It is a container now, composed into a `Screen`
+    /// alongside the player's slots -- exactly as a crafting table's 3x3 is, which is
+    /// why a table needed no new window code.
+    CraftingGrid m_playerCraft{2};
+
+    /// The 3x3 of the crafting table currently open, if one is.
+    ///
+    /// **Created on open and destroyed on close, because a table has no memory in
+    /// vanilla either**: what you leave in the grid falls out when you walk away.
+    /// A chest is the opposite and is why `Container::releaseOne` is virtual.
+    std::optional<CraftingGrid> m_tableCraft;
+
+    /// The open window, or nothing. **One optional rather than a bool plus a kind**,
+    /// so there is no state where a screen is open and nobody knows which.
     ///
     /// While it is open the world is not interacted with at all -- no aim ray, no
     /// breaking, no placing, no mouse-look. That is a mode, and modes are worth being
     /// suspicious of, but this one is exactly vanilla's and the alternative is aiming
     /// a crosshair the player cannot see.
-    bool m_inventoryOpen = false;
+    std::optional<Screen> m_screen;
+    ScreenKind m_screenKind = ScreenKind::Player;
 
+    bool screenOpen() const noexcept { return m_screen.has_value(); }
+
+    /// Opens the player's own window, or the table's. Closing goes through
+    /// `closeScreen`, which is the only place that gives the contents back.
+    void openScreen(ScreenKind kind);
+    void closeScreen();
+    /// `E`: opens the player's window, or closes whatever is open.
     void toggleInventory();
+
+    /// Right-clicking a block that opens rather than being built against. Returns
+    /// whether it handled the click, in which case nothing is placed.
+    ///
+    /// **Vanilla's rule, including the exception**: sneaking suppresses it, which is
+    /// how a player puts a block on top of a crafting table rather than opening it.
+    bool useTargetBlock();
+
     /// Resolves a click inside the window to a slot and applies it.
     void updateInventoryScreen();
     /// The pointer in NDC, for hit testing and for drawing the dragged stack.

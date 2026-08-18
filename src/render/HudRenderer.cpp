@@ -4,6 +4,7 @@
 #include "core/Profile.hpp"
 #include "world/BlockTable.hpp"
 #include "world/Inventory.hpp"
+#include "world/Screen.hpp"
 
 #include <algorithm>
 #include <array>
@@ -291,7 +292,7 @@ void HudRenderer::pushSlot(const UiRect& rect, const ItemStack& stack, bool high
     }
 }
 
-void HudRenderer::pushHearts(const InventoryLayout& layout, const State& state,
+void HudRenderer::pushHearts(const ScreenLayout& layout, const State& state,
                              f32 aspect) {
     if (state.maxHealth <= 0.0f) {
         return;
@@ -338,9 +339,11 @@ void HudRenderer::draw(rhi::Device& device, const BlockTextures& textures,
 
     m_quads.clear();
 
-    const InventoryLayout layout{aspect};
+    const ScreenLayout layout{aspect, state.screenKind};
 
-    if (state.inventoryOpen) {
+    if (state.screen != nullptr) {
+        const Screen& screen = *state.screen;
+
         // A dim over the world, so the window reads as in front of it rather than
         // painted on it. Full-screen, and the first thing drawn.
         push(vec4{-1.0f, -1.0f, 1.0f, 1.0f}, vec4{0.0f, 0.0f, 0.0f, 0.55f}, Mode::Solid);
@@ -349,27 +352,23 @@ void HudRenderer::draw(rhi::Device& device, const BlockTextures& textures,
         push(vec4{panel.x0, panel.y0, panel.x1, panel.y1},
              vec4{0.11f, 0.11f, 0.13f, 0.94f}, Mode::Solid);
 
-        // Storage and the crafting grid, both drawn by the same loop -- the crafting
-        // grid is slots 36-44 and needed no drawing code of its own.
-        for (usize i = 0; i < Inventory::kOutputSlot; ++i) {
-            const bool hovered = layout.slot(i).contains(state.cursorX, state.cursorY);
-            pushSlot(layout.slot(i), inventory.at(i), hovered, aspect);
-        }
-
-        // The arrow, then the output.
+        // The arrow first, so the slots draw over its ends rather than under them.
         const UiRect arrow = layout.craftArrow();
         push(vec4{arrow.x0, arrow.y0, arrow.x1, arrow.y1},
              vec4{0.42f, 0.42f, 0.46f, 1.0f}, Mode::Solid);
 
-        // **The output slot draws a preview, not a stack.** Nothing is ever stored
-        // there: `Inventory::at(kOutputSlot)` is always empty, and what the player
-        // sees is what the grid *would* make. Storing the result instead would mean
-        // deciding what happens to it when the grid changes underneath, and the
-        // answer -- it evaporates -- is a rule nobody should have to learn.
-        const UiRect outputRect = layout.slot(Inventory::kOutputSlot);
-        const CraftResult result = inventory.craftResult();
-        const bool outputHovered = outputRect.contains(state.cursorX, state.cursorY);
-        pushSlot(outputRect, ItemStack{result.item, result.count}, outputHovered, aspect);
+        // **Every slot in the screen, drawn by one loop, including the output.** The
+        // container's slots, the player's thirty-six and the crafting result are one
+        // index space and one call each; a furnace will need no drawing code either.
+        //
+        // The output is still a preview rather than a stored stack -- `CraftingGrid`
+        // computes it on demand, so there is no state to decide the fate of when the
+        // grid changes underneath it.
+        for (usize i = 0; i < screen.slotCount(); ++i) {
+            const UiRect rect = layout.slot(i);
+            const bool hovered = rect.contains(state.cursorX, state.cursorY);
+            pushSlot(rect, screen.at(i), hovered, aspect);
+        }
 
         // The dragged stack last, so it is over every slot it passes across --
         // otherwise it would disappear behind the one it is being dropped into,

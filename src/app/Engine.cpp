@@ -85,21 +85,42 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
     m_thirdPerson = m_options.thirdPerson;
     m_flying = m_options.flying;
 
-    if (m_options.openInventory) {
-        m_inventoryOpen = true;
+    m_window = std::make_unique<Window>(Window::Config{
+        .width = 1280,
+        .height = 720,
+        .title = "minecraft",
+        .vsync = true,
+        .debugContext = true,
+        .fullscreen = m_options.fullscreen,
+    });
 
-        // **The crafting grid is seeded first, and the order is load-bearing.** Items
-        // reach the grid the way a player puts them there -- pick a stack up, right
-        // click into a cell -- which needs the storage slot they landed in, and the
-        // only slot whose index is predictable is the first one into an empty pack.
-        // Seeding this after the blocks below asked `usedSlots()` for an index, which
+    m_device = std::make_unique<rhi::Device>(Window::glProcLoader());
+    m_device->setViewport(0, 0, m_window->framebufferWidth(), m_window->framebufferHeight());
+    m_device->setDepthTest(true);
+    m_device->setBackfaceCulling(true);
+
+    m_input = std::make_unique<Input>(*m_window);
+
+    if (m_options.openInventory) {
+        // **The crafting table's window, not the player's**, because the 3x3 is where
+        // a pickaxe is made and a 2x2 capture would show the smaller half of the
+        // feature. All of this lives after `m_input` exists rather than beside the
+        // other member setup, because opening a screen releases the cursor and
+        // `m_input` is what owns it.
+        openScreen(ScreenKind::CraftingTable);
+
+        // **The grid is seeded first, and the order is load-bearing.** Items reach it
+        // the way a player puts them there -- pick a stack up, right click into a
+        // cell -- which needs the storage slot they landed in, and the only
+        // predictable index is slot 0 of a pack that is still empty. Seeding this
+        // after the display items below once asked `usedSlots()` for an index, which
         // is a count and not one, and quietly dragged the wrong items in.
         const auto intoGrid = [this](ItemId item, u32 amount,
                                      std::initializer_list<usize> cells) {
             m_inventory.add(item, amount);
-            m_inventory.clickSlot(0);
+            m_screen->click(m_screen->containerSlots()); // The pack's slot 0.
             for (const usize cell : cells) {
-                m_inventory.splitSlot(Inventory::kFirstCraftSlot + cell);
+                m_screen->split(cell);
             }
         };
         // A stone pickaxe, mid-recipe: cobblestone across the top, sticks down the
@@ -120,31 +141,19 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
         m_inventory.add(blockIdOf("gravel"), 1);
 
         // Phase 16's half: items that are not blocks, and one tool of each kind, so a
-        // capture shows every icon recipe rather than only the cubes.
+        // capture shows every icon recipe rather than only the cubes. Phase 17 adds
+        // the table itself, which is a block whose icon is the thing you go and place.
         m_inventory.add(itemIdOf("coal"), 9);
         m_inventory.add(itemIdOf("stick"), 6);
         m_inventory.add(itemIdOf("wooden_pickaxe"), 1);
         m_inventory.add(itemIdOf("stone_axe"), 1);
         m_inventory.add(itemIdOf("stone_sword"), 1);
         m_inventory.add(itemIdOf("wooden_shovel"), 1);
+        m_inventory.add(blockIdOf("crafting_table"), 2);
 
         m_health = 13.0f; // An odd number, so a half heart is in the frame too.
     }
-    m_window = std::make_unique<Window>(Window::Config{
-        .width = 1280,
-        .height = 720,
-        .title = "minecraft",
-        .vsync = true,
-        .debugContext = true,
-        .fullscreen = m_options.fullscreen,
-    });
 
-    m_device = std::make_unique<rhi::Device>(Window::glProcLoader());
-    m_device->setViewport(0, 0, m_window->framebufferWidth(), m_window->framebufferHeight());
-    m_device->setDepthTest(true);
-    m_device->setBackfaceCulling(true);
-
-    m_input = std::make_unique<Input>(*m_window);
     m_chunkRenderer.emplace();
     m_character.emplace();
     m_selection.emplace();
@@ -699,7 +708,7 @@ void Engine::updateCamera(f64 deltaTime) {
     const f32 dt = static_cast<f32>(deltaTime);
 
     if (m_input->wasPressed(Key::Escape)) {
-        if (m_inventoryOpen) {
+        if (screenOpen()) {
             // Escape closes the window before it does anything else, which is what
             // every game does and what stops the reflex to back out of a menu from
             // quitting instead.
@@ -968,6 +977,14 @@ void Engine::updatePlacing(f32 dt) {
         return;
     }
 
+    // **Using a block beats placing against it, and it is edge-triggered even though
+    // placing is not.** Opening a window is not something to repeat five times a
+    // second; holding the button after a table opens must not reopen it every tick.
+    if (m_input->wasPressed(MouseButton::Right) && useTargetBlock()) {
+        m_placeCooldown = kPlaceIntervalSeconds;
+        return;
+    }
+
     // The cooldown is spent only on a placement that actually happened. A player
     // sweeping the crosshair across the sky while holding the button is not using
     // anything up, so the first block they reach goes down immediately rather than
@@ -989,33 +1006,81 @@ vec2 Engine::cursorNdc() const {
                 1.0f - static_cast<f32>(m_input->mouseY()) / height * 2.0f};
 }
 
-void Engine::toggleInventory() {
-    m_inventoryOpen = !m_inventoryOpen;
+void Engine::openScreen(ScreenKind kind) {
+    if (screenOpen()) {
+        closeScreen();
+    }
 
-    if (m_inventoryOpen) {
-        m_input->setCursorCaptured(false);
+    m_screenKind = kind;
+
+    if (kind == ScreenKind::CraftingTable) {
+        // A table's grid exists only while its window is open. Vanilla is the same:
+        // walk away mid-recipe and the cells fall out at your feet.
+        m_tableCraft.emplace(3);
+        m_screen.emplace(m_inventory, *m_tableCraft);
+    } else {
+        m_screen.emplace(m_inventory, m_playerCraft);
+    }
+
+    m_input->setCursorCaptured(false);
+}
+
+void Engine::closeScreen() {
+    if (!screenOpen()) {
         return;
     }
 
-    // Closing with a stack in hand must not delete it. It goes back into the
-    // inventory, and whatever does not fit is dropped at the player's feet -- which
-    // is vanilla's answer and is why `releaseCursor` hands the remainder back rather
-    // than swallowing it.
-    const ItemStack leftover = m_inventory.releaseCursor();
-    if (!leftover.empty()) {
-        m_items.spawn(m_camera.position(), leftover.item, leftover.count);
+    // **Nothing the player put in may evaporate because a window shut.** The stack in
+    // hand and every filled crafting cell come back, and whatever the pack has no room
+    // for is dropped at the player's feet -- which is vanilla's answer and is why
+    // `releaseOne` hands a remainder back rather than swallowing it.
+    //
+    // One loop for both, because `Screen::releaseOne` is the one thing that knows what
+    // this screen owes: a crafting grid gives its cells back and a chest gives nothing.
+    //
+    // **The loop ends on `moved`, not on an empty stack.** Ending on the stack was the
+    // first version and it stopped after the first crafting cell, because a cell that
+    // fitted into storage spills nothing and looks exactly like having nothing left.
+    for (Screen::Release step = m_screen->releaseOne(); step.moved;
+         step = m_screen->releaseOne()) {
+        if (!step.spilled.empty()) {
+            m_items.spawn(m_camera.position(), step.spilled.item, step.spilled.count);
+        }
     }
 
-    // **The crafting grid is emptied on the same rule**, and it is nine slots rather
-    // than one: a player who closes the window mid-recipe has not thrown their planks
-    // away. `releaseCraftGrid` returns one spilled stack at a time, so this loops
-    // until the grid is clear -- a full pack can refuse several cells.
-    for (ItemStack spilled = m_inventory.releaseCraftGrid(); !spilled.empty();
-         spilled = m_inventory.releaseCraftGrid()) {
-        m_items.spawn(m_camera.position(), spilled.item, spilled.count);
-    }
+    m_screen.reset();
+    m_tableCraft.reset();
+    m_screenKind = ScreenKind::Player;
 
     m_input->setCursorCaptured(true);
+}
+
+void Engine::toggleInventory() {
+    if (screenOpen()) {
+        closeScreen();
+    } else {
+        openScreen(ScreenKind::Player);
+    }
+}
+
+bool Engine::useTargetBlock() {
+    if (!m_target.has_value()) {
+        return false;
+    }
+
+    // Sneaking suppresses the interaction, which is how a player builds *on* a
+    // crafting table rather than opening it. Vanilla's rule, and the reason placing
+    // is still reachable for every block that also does something.
+    if (m_input->isDown(Key::LeftShift)) {
+        return false;
+    }
+
+    if (m_world->blockAt(m_target->block) != kCraftingTableBlock) {
+        return false;
+    }
+
+    openScreen(ScreenKind::CraftingTable);
+    return true;
 }
 
 void Engine::updateInventoryScreen() {
@@ -1023,7 +1088,7 @@ void Engine::updateInventoryScreen() {
 
     const auto aspect = static_cast<f32>(m_window->framebufferWidth())
                       / static_cast<f32>(std::max(1, m_window->framebufferHeight()));
-    const InventoryLayout layout{aspect};
+    const ScreenLayout layout{aspect, m_screenKind};
 
     const bool left = m_input->wasPressed(MouseButton::Left);
     const bool right = m_input->wasPressed(MouseButton::Right);
@@ -1046,9 +1111,9 @@ void Engine::updateInventoryScreen() {
     }
 
     if (left) {
-        m_inventory.clickSlot(*slot);
+        m_screen->click(*slot);
     } else {
-        m_inventory.splitSlot(*slot);
+        m_screen->split(*slot);
     }
 }
 
@@ -1111,7 +1176,7 @@ void Engine::updateInteraction(f32 dt) {
         toggleInventory();
     }
 
-    if (m_inventoryOpen) {
+    if (screenOpen()) {
         // The world is not aimed at, broken, placed into or looked around while the
         // window is up. Clearing the target rather than leaving the last one is what
         // stops a stale selection box hanging in the world behind the panel.
@@ -1239,7 +1304,7 @@ void Engine::updateWalk(f32 dt) {
     // pause in singleplayer Minecraft either, and a player who opens their inventory
     // mid-fall should still land.
     vec3 wish{0.0f};
-    if (!m_inventoryOpen) {
+    if (!screenOpen()) {
         if (m_input->isDown(Key::W)) { wish += forward; }
         if (m_input->isDown(Key::S)) { wish -= forward; }
         if (m_input->isDown(Key::D)) { wish += right; }
@@ -1268,7 +1333,7 @@ void Engine::updateWalk(f32 dt) {
 
     // **Jump input is read once**, outside the substep loop below. Reading it per
     // substep would apply the same keypress several times over.
-    if (!m_inventoryOpen && m_input->isDown(Key::Space)) {
+    if (!screenOpen() && m_input->isDown(Key::Space)) {
         if (inWater(feet)) {
             m_verticalVelocity = kSwimSpeed;
         } else if (m_onGround) {
@@ -1771,7 +1836,8 @@ void Engine::renderFrame() {
     hud.hotbarSlot = m_hotbarSlot;
     hud.health = m_health;
     hud.maxHealth = kMaxHealth;
-    hud.inventoryOpen = m_inventoryOpen;
+    hud.screen = m_screen.has_value() ? &*m_screen : nullptr;
+    hud.screenKind = m_screenKind;
     hud.cursorX = cursor.x;
     hud.cursorY = cursor.y;
 
