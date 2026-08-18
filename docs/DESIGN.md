@@ -2538,6 +2538,107 @@ is that a feature nobody can observe in a log is a feature that ships broken.
 - **No lava.** The tier machinery is there — `fluidLevel` and `fluidSource` are per
   block type, and lava is the same algorithm with a step of 2 rather than 1.
 
+### 7.18 Building, and the seventh session
+
+Two changes, from one play session, and they are worth recording together because the
+session found them the same way: by a person trying to do an ordinary thing.
+
+#### Placing a block was one click per block
+
+`Input::wasPressed` carried the argument for edge-triggering placement, and it was a
+good one: a repeat at 60 Hz lays sixty blocks a second along the view ray, which is not
+building. The conclusion drawn from it — that no timer was worth having yet — is the
+part that did not survive someone trying to build a house, because it makes a wall cost
+a hundred deliberate clicks.
+
+Placing repeats on vanilla's four-tick timer now. The cooldown is charged for a
+placement that *happened* rather than for a click, so holding the button across sky and
+then onto a surface puts the first block down at once rather than up to 0.2 s later.
+
+#### The player had no width
+
+The refusal to place a block inside yourself compared integer feet coordinates against a
+two-block column. **That column had no width at all**, so a player standing on a block
+boundary read as occupying one column and a block placed into any of the other three
+went through their shoulder.
+
+`world/PlayerBox.hpp` is vanilla's 0.6-wide box. Getting it there meant moving the
+player's height and eye height out of `CharacterRenderer`, which is the fix
+`tests/CMakeLists.txt` had been asking for since item pickup: the dimensions lived in
+the renderer, no test could reach them, and *both* bugs that followed were in the
+relationship between a constant there and a constant somewhere else. The renderer
+aliases them now, so what is drawn cannot drift from what collides.
+
+Walking still uses a single point and a ground probe. That is knowingly inconsistent —
+placement now refuses cases walking allows — and the asymmetry is in the safe direction.
+A real swept capsule fixes both and is its own phase.
+
+### 7.19 Phase 17a — the crafting table, and the window layer
+
+**The finding is the phase.** The first person to play Phase 16 could not find crafting
+at all. They went looking for a crafting table, because that is what Minecraft has, and
+there was not one: the 3x3 was in the player's own window, where vanilla puts a 2x2.
+**Knowing the game made it harder to find, not easier**, which is the opposite of what
+"feels like the game" was supposed to buy.
+
+`Crafting.hpp` had already written down what to do and why it had not been done — a
+table is a second window, and there was exactly one. So the window layer is the phase
+and the table is what it carries.
+
+#### The shape of it
+
+| | |
+|---|---|
+| `Container` | what a thing with slots *is*: count, kind, access, take-output, give-back |
+| `CraftingGrid` | an N×N grid and its computed output. The edge is the only parameter |
+| `Screen` | one container plus the player's 36, in one flat index space, with the click routing |
+| `ScreenLayout` | where those slots are, given which window is open |
+
+**The click routing moved out of `Inventory`.** Which of pick-up, put-down, swap and
+split a click means is decided by what is in the hand and in the slot — not by which
+window is open — so it belongs above the inventory rather than inside it. `Inventory` is
+thirty-six slots and a hand again, which is what genuinely belongs to the player
+wherever they are standing.
+
+**Two kinds of slot is the whole taxonomy.** Normal, and take-only-and-consume. A
+crafting result and a smelted item are the second; everything else in the game is the
+first. That is what makes a furnace a `Container` subclass with no new interaction code.
+
+#### Vanilla's gate falls out as arithmetic
+
+There is one recipe table and one matcher. A smaller grid is laid into the corner of a
+3x3 and matched as it stands, so a 2x2 matches every recipe that fits in it and no
+recipe that does not. **A pickaxe is three cells wide; four cells cannot hold it.** No
+recipe needed a size annotation and no rule had to be written down — and the one recipe
+that must work without a table is the table itself, four planks in a square.
+
+This is a *reduction* in what the player can do without walking to a block, and
+presenting it as a feature is exactly what vanilla does.
+
+#### What the tests found
+
+`Screen::releaseOne` returned the spilled stack, so **"nothing left to give back" and
+"it went into storage cleanly" were the same empty answer** — and the loop that empties
+a crafting grid on close gave back the first cell and silently deleted the rest. It
+returns `Release{moved, spilled}` now.
+
+This is the same shape as `blockAt` answering air for a column that is not loaded, and
+as `usedSlots()` being read as an index: two different answers collapsed into one value,
+where the collapse is invisible at the call site. That is three instances in this project
+and it is worth naming as a pattern rather than as three bugs.
+
+#### What is not built
+
+- **No furnace**, so iron and everything past it is still out of reach. That is Phase
+  17's other half and the larger one.
+- **No durability.** The field belongs on `ItemStack` and means nothing until there are
+  tiers worth wearing out.
+- **The table has no inventory of its own**, so it is a machine rather than a container.
+  A chest is what proves `releaseOne` being virtual was the right call.
+- **Right click opens or places, and nothing else uses a block.** `useTargetBlock` is
+  one comparison against one block id today. A door or a lever makes that a table
+  column, which is where `BlockTable` would take it.
+
 ---
 
 ## 8. Open Questions

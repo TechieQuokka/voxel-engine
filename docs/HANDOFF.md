@@ -1,8 +1,8 @@
 # Handoff
 
-Snapshot for resuming work. Written 2026-08-09; last updated 2026-08-13, after the
-crafting track was planned, **Phase 16 built** -- items stopped being blocks -- and
-**water learned to flow**.
+Snapshot for resuming work. Written 2026-08-09; last updated 2026-08-18, after the
+seventh play session -- which found that **nobody could find crafting** -- and the
+container-window layer and **crafting table** that came out of it.
 
 Read `docs/DESIGN.md` for the full design, the reasoning behind every decision, and the
 measured result of every phase; `docs/RESEARCH.md` for the vanilla Minecraft mechanics
@@ -22,8 +22,8 @@ no use for.
 | Track | State |
 |---|---|
 | **Performance** — phases 0-8 | 0-3 done. **4 in progress**: 4a-4c built, **4d (biomes) is the last step and is *not* next** — it still has the unresolved input in section 6. 5-8 untouched. |
-| **Interaction** — 9-15 | **Done**, plus trees, oceans and flowing water. |
-| **Crafting** — 16-19 | **16 done.** 17-19 open, below. |
+| **Interaction** — 9-15 | **Done**, plus trees, oceans, flowing water, held placement and a real player box. |
+| **Crafting** — 16-19 | **16 done. 17 half done** -- the window layer and the table are built; the furnace is not. 18-19 open, below. |
 
 The two tracks are independent, so 4d being open alongside finished interaction work
 is not a contradiction.
@@ -71,14 +71,19 @@ carrying as method rather than as history:
 
 ### Where to resume
 
-**Nothing is half-finished.** Working tree clean, 249 tests, asan and tsan all pass.
+**Nothing is half-finished.** Working tree clean, 261 tests, asan passes. **tsan has not
+been re-run since the container layer landed** -- it touches no threading, but the rule
+in section 2 is to run it rather than to reason about it.
 
 Four of these need a person, and they are first on purpose — the list of things this
 project found by playing is longer than the list it found by reasoning.
 
-1. **Play Phase 16 and try to reach iron.** Punch a tree, craft planks, sticks and a
-   wooden pickaxe, mine stone, craft a stone pickaxe, find iron ore. That path has
-   tests behind it and **has never been walked by a person**.
+1. **Play the crafting table.** Punch a tree, make planks, make a table *in the 2x2*,
+   place it, right click it, make sticks and a wooden pickaxe, mine stone, make a stone
+   pickaxe. That whole path has tests behind it and **has never been walked by a
+   person** -- and the last time that was true of a crafting path, the finding was that
+   nobody could find the grid at all. Iron is still out of reach on purpose: it needs
+   the furnace.
 2. **Play the water.** Dig into the side of a lake and watch it pour in; wall it off
    and break the wall. **Flowing water has never been seen by anyone either** — a
    benchmark flight never edits the world, so it never notifies a fluid. The stats
@@ -177,8 +182,10 @@ git worktree remove --force /tmp/baseline
 # is also how a capture at the monitor's native resolution is taken.
 ./build/release/src/app/minecraft --fullscreen --capture /tmp/shot.ppm
 
-# Open the inventory and seed it, then capture. The window is the only thing in the
-# engine that needs a pointer to exist, so --capture cannot otherwise reach it.
+# Open a **crafting table's** window and seed it, then capture. A window is the only
+# thing in the engine that needs a pointer to exist, so --capture cannot otherwise
+# reach it. The table rather than the player's own 2x2, because the 3x3 is where a
+# pickaxe is made and the smaller grid would show the smaller half of the feature.
 ./build/release/src/app/minecraft --inventory --capture /tmp/shot.ppm
 ```
 
@@ -297,7 +304,19 @@ src/world/              pure data; knows nothing about rendering
                  dedupe set, the retry discipline, **and the fluid flow** -- levels,
                  the five-block slope search, draining, and suspending at a column
                  that is not Ready
-  Inventory    — 36 storage slots, the 3x3 craft grid, the output, the cursor stack
+  Inventory    — the player's 36 slots and the stack in their hand. Nothing else:
+                 the craft grid moved out in Phase 17
+  ItemStack    — one slot's contents, in its own header because a grid, a furnace
+                 and a chest all hold stacks and none should include the player
+  Container    — **what a thing with slots is**: count, kind, access, take-output,
+                 give-back. The interface a furnace and a chest plug into
+  CraftingGrid — an N x N grid and its computed output. **The edge is the only
+                 difference** between the player's 2x2 and a table's 3x3
+  Screen       — one container plus the player's 36, in one flat index space, and
+                 the click routing that used to live in Inventory. `releaseOne`
+                 returns `{moved, spilled}` -- see the note in section 5
+  PlayerBox    — the player's collision box, 0.6 wide. Height and eye height live
+                 here rather than in the renderer, and section 5 says why
   ItemTable    — **every item, and the id space that extends BlockId's**; tools,
                  mining speed, harvest tiers, and what a block drops
   Crafting     — the recipe table and the 3x3 match (shaped, mirrored, shapeless)
@@ -321,10 +340,11 @@ src/render/
   CharacterRenderer (the second render path; not voxels),
   SelectionRenderer (the block outline and the breaking cracks; no buffer at all),
   ItemRenderer (every dropped item *and every falling block* in one draw call),
-  InventoryLayout (every slot rectangle -- storage, craft grid and output alike; the
-                   renderer AND the hit test use it, which is the whole reason it
-                   exists, and why the craft grid needed no new hit-testing code),
-  HudRenderer (crosshair, hotbar, hearts, the inventory window — a small UI layer)
+  ScreenLayout (every slot rectangle of whatever window is open; the renderer AND
+                the hit test use it, which is the whole reason it exists. Was
+                InventoryLayout and knew one window; `ScreenKind` is what varies),
+  HudRenderer (crosshair, hotbar, hearts, and whatever window is open — a small UI
+               layer. A window is a list of slots, so the table cost it one loop)
 src/app/
   main, Engine (streaming pipeline: submit-only frame loop, upload thread)
 
@@ -641,6 +661,23 @@ Learned the hard way; all of them cost real time.
   block-buffered, so a probe killed by a timeout prints nothing at all and looks like a
   hang with no information. `setvbuf(stdout, nullptr, _IONBF, 0)` is the difference
   between "it hangs" and "it hangs at tick 25 with 176 pending".
+- **An empty return that means two different things is this project's recurring bug,
+  and there are now three of it.** `blockAt` answers air for a column that is not
+  loaded; `usedSlots()` is a count that was read as an index; and `Screen::releaseOne`
+  returned the spilled stack, so "nothing left to give back" and "it went into storage
+  cleanly" were both an empty stack -- and the loop that empties a crafting grid on
+  close gave back the first cell and **deleted the rest**. All three are invisible at
+  the call site, because the wrong answer is a perfectly ordinary value. When a
+  function can succeed, do nothing, or fail, it needs somewhere to say which.
+- **Placement and walking disagree about how wide the player is, deliberately.**
+  `PlayerBox` is vanilla's 0.6-wide box and is what placement refuses against; walking
+  is still a single point with a ground probe. Placement therefore refuses cases
+  walking allows, which is the safe direction. Fixing it properly is a swept capsule
+  for both, and doing one without the other is how they would drift apart silently.
+- **A crafting table has no memory and a chest must.** `Container::releaseOne` is
+  virtual for exactly this: the grid gives its cells back when the window closes and a
+  chest gives nothing. Making it a rule `Screen` applies to every container would empty
+  the first chest anyone opens.
 - CMake needs `LANGUAGES C CXX`; GLFW and glad are C.
 - Ninja is not installed; presets use Unix Makefiles.
 
@@ -778,19 +815,22 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
 - **Trees leave a two-block band along every column edge with no trees in it.** The
   deliberate cost of trees not crossing columns; see `TreeSpec` and DESIGN.md 7.9.
   Fixing it properly means a chunk-status pipeline like vanilla's.
-- **Placing a block is refused only where the player stands, and the test is crude.**
-  A two-block column at the feet with no width, matching the walk code's own shape.
-  Since walking has no collision volume either, the two are at least consistent — but
-  a real capsule would refuse cases this lets through, and building a proper collider
-  should fix both together rather than one of them.
+- ~~**Placing a block is refused only where the player stands, and the test is
+  crude.**~~ **Half fixed 2026-08-18** (DESIGN.md 7.18). Placement uses `PlayerBox`, a
+  real 0.6-wide box, so a player standing on a block boundary no longer has blocks put
+  through their shoulder. **Walking still has no collision volume**, so the two now
+  disagree and placement refuses cases walking allows -- the safe direction, and the
+  note in section 5 says why doing one without the other is the trap. A swept capsule
+  for both is the honest finish.
 - ~~**Items are `BlockId`s, and crafting will break that.**~~ **Resolved in Phase 16.**
   Item ids extend the block id space rather than replacing it, so a stick exists and
   coal ore drops coal. What is left of it is the type-safety note in section 5.
-- **The UI layer handles exactly one window.** No widget tree, no event routing --
-  `HudRenderer` plus `InventoryLayout` and nothing else. A chest, a crafting bench or a
-  furnace is a second window and is the point at which that stops being enough; its
-  header says so. **This is what Phase 17 pays for and Phase 16 avoided** by putting
-  the 3x3 grid inside the window that already exists.
+- ~~**The UI layer handles exactly one window.**~~ **Built 2026-08-18** (DESIGN.md
+  7.19). `Container`, `Screen` and `ScreenLayout` are the layer; a furnace or a chest is
+  a `Container` subclass and one `ScreenKind` entry, and neither needs a line in
+  `HudRenderer`. What is left of it: there is still no widget tree and no event routing,
+  which is fine while every window is a list of slots and stops being fine at the first
+  one that is not -- a death screen with a button on it.
 - **No durability, so a tool never wears out.** The field belongs on `ItemStack` and
   means nothing until there are tiers worth wearing out. Phase 17.
 - **A dropped tool is a cube with a tool painted on it.** Vanilla draws dropped items

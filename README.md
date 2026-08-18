@@ -40,8 +40,10 @@ You start walking, in third person. `WASD` to move, `Space` to jump, `LeftContro
 sprint, `LeftShift` to sneak, mouse to look. A full block has to be jumped, not walked
 up — vanilla's 0.6-block step height.
 
-**Hold left click to break the highlighted block, right click to place one, `1`-`9` to
-pick a hotbar slot.** Reach is 5 blocks, cracks spread across the block while you
+**Hold left click to break the highlighted block, hold right click to place them, `1`-`9`
+to pick a hotbar slot.** Placing repeats four times a second while the button is held,
+which is vanilla's rate and the difference between building a wall and clicking a
+hundred times. Reach is 5 blocks, cracks spread across the block while you
 mine it, and the time is vanilla's hardness — 0.75 s for dirt, 1.125 s for stone with
 a wooden pickaxe. Bedrock is unbreakable.
 
@@ -54,10 +56,17 @@ shows what you are carrying. **`E` opens the inventory** — 36 slots with
 vanilla's stack limit of 64, click to pick a stack up and put it down, right click to
 split it in half or place one at a time.
 
-**The same window crafts.** Right click items into the 3x3 grid on its top right and
-the slot past the arrow shows what they make. A log makes four planks, planks make
-sticks, and planks or cobblestone plus sticks make a pickaxe, axe, shovel or sword —
-in wood and stone. Iron needs smelting, which is not built.
+**The same window crafts, and it is 2x2 — exactly as much as vanilla gives you.** Right
+click items into the small grid on its top right and the slot past the arrow shows what
+they make. A log makes four planks, two planks make sticks, and **four planks make a
+crafting table**.
+
+**Place the table and right click it.** That is the 3x3, and it is the only way to a
+pickaxe: three planks across the top and two sticks down the middle does not fit in four
+cells. Planks or cobblestone plus sticks make a pickaxe, axe, shovel or sword, in wood
+and stone. Iron needs smelting, which is not built.
+
+Sneak while right clicking to build on top of the table rather than opening it.
 
 The block under the crosshair is **named on the HUD**, and the selection outline is
 thick enough to pick out of a textured world. Third person is over the shoulder, so
@@ -72,8 +81,9 @@ Sand and gravel fall. Dig out from under a stack and it comes down one block at 
 time, on a 20 Hz tick rather than at your frame rate.
 
 There are oceans. You swim in them rather than standing on them, and falling into one
-cancels the fall damage. No flooded caves and no flowing water — both need vanilla's
-aquifer system, whose internals are not published anywhere usable.
+cancels the fall damage. **Water flows**: break into the side of a lake and it pours in,
+down first and then sideways, seven blocks before it runs out. No flooded caves yet —
+those need vanilla's aquifer system, whose barrier noise is not published anywhere usable.
 
 `F` switches to flying, `F5` to first person, `Escape` releases the cursor and again
 quits.
@@ -82,7 +92,7 @@ Dig down. The caves, ores and darkness are the point, and they are not visible f
 surface.
 
 ```bash
-ctest --preset debug                       # 240 test cases
+ctest --preset debug                       # 261 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
@@ -147,12 +157,12 @@ tracks remain, independent of each other:
 - **Performance** — indirect draw with GPU culling, four-level LOD, brickmap ray marching
   for the far field, occlusion culling. This is what the render-distance target needs.
 - **Interaction** — block placement and breaking, trees, item drops, a slot inventory
-  with its window, a HUD, health, block updates and oceans are all **done**. Still
-  open: aquifers and flowing water, the rest of vegetation, and persistence.
-- **Crafting** — Phases 16 to 19. **16 is built**: items stopped being block types,
-  there is a 3x3 grid in the inventory window, and ten vanilla recipes make planks,
-  sticks and four tools in two tiers. Still open: a crafting bench and furnace, torches
-  and block light, then mobs and combat.
+  with its window, a HUD, health, block updates, oceans and flowing water are all
+  **done**. Still open: aquifers, the rest of vegetation, and persistence.
+- **Crafting** — Phases 16 to 19. **16 and half of 17 are built**: items stopped being
+  block types, there is a container-window layer, and a crafting table gates the 3x3
+  recipes exactly as vanilla does. Still open: the furnace and smelting (and with them
+  iron and diamond), durability, torches and block light, then mobs and combat.
 
 Entities, a slot inventory with a UI layer under it, a game tick and a translucent
 draw pass all exist now.
