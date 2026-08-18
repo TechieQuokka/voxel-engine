@@ -4,6 +4,8 @@
 #include "core/Types.hpp"
 #include "world/Coords.hpp"
 
+#include <cmath>
+
 namespace mc {
 
 /// The player's collision box: where they stand, how tall they are, and how wide.
@@ -41,6 +43,27 @@ struct PlayerBox {
     /// bug `playerFeet()` exists to prevent.
     vec3 feet{};
 
+    /// The inclusive range of block cells this box overlaps.
+    ///
+    /// **Returned as a range rather than tested against a world here**, so that
+    /// `world/PlayerBox.hpp` needs no `World` and a test can check the arithmetic
+    /// without building terrain. The caller walks the range asking whatever question
+    /// it has -- solid, fluid, or something Phase 18 has not invented yet.
+    struct CellRange {
+        i32 minX = 0;
+        i32 minY = 0;
+        i32 minZ = 0;
+        i32 maxX = 0;
+        i32 maxY = 0;
+        i32 maxZ = 0;
+    };
+
+    CellRange cells() const noexcept {
+        return CellRange{spanMin(feet.x - kHalfWidth), spanMin(feet.y),
+                         spanMin(feet.z - kHalfWidth), spanMax(feet.x + kHalfWidth),
+                         spanMax(feet.y + kHeight),    spanMax(feet.z + kHalfWidth)};
+    }
+
     /// Whether the unit cube at `pos` overlaps this box.
     ///
     /// **Touching is not overlapping, and that asymmetry is load bearing.** The block
@@ -56,6 +79,19 @@ struct PlayerBox {
         return x + 1.0f > feet.x - kHalfWidth && x < feet.x + kHalfWidth
             && y + 1.0f > feet.y && y < feet.y + kHeight
             && z + 1.0f > feet.z - kHalfWidth && z < feet.z + kHalfWidth;
+    }
+
+private:
+    /// First cell a span starting at `low` touches.
+    static i32 spanMin(f32 low) noexcept {
+        return static_cast<i32>(std::floor(low));
+    }
+
+    /// Last cell a span ending at `high` touches. **Touching is not overlapping**, so
+    /// a span that ends exactly on a boundary stops at the cell below it -- the same
+    /// rule `intersects` applies, spelled once so the two cannot disagree.
+    static i32 spanMax(f32 high) noexcept {
+        return static_cast<i32>(std::ceil(high)) - 1;
     }
 };
 

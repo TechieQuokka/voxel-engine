@@ -1280,6 +1280,28 @@ std::optional<f32> Engine::groundBelow(f32 x, f32 z, f32 fromY) const {
     return std::nullopt;
 }
 
+bool Engine::boxBlocked(const vec3& feet) const {
+    const PlayerBox::CellRange range = PlayerBox{feet}.cells();
+
+    // **`blockAt` answers air for a column that is not loaded**, so a player at the
+    // edge of the loaded region walks into the unknown rather than into a wall. That
+    // is the same call the ground probe already makes -- holding position at an
+    // unloaded edge would be a worse lie than passing through it, because the column
+    // is usually about to arrive and usually empty where the player is standing.
+    for (i32 y = range.minY; y <= range.maxY; ++y) {
+        for (i32 z = range.minZ; z <= range.maxZ; ++z) {
+            for (i32 x = range.minX; x <= range.maxX; ++x) {
+                // Solid, not merely non-air: water is walked into, which is what
+                // makes swimming possible at all.
+                if (isSolidBlock(m_world->blockAt(BlockPos{x, y, z}))) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 bool Engine::inWater(const vec3& feet) const {
     const BlockPos block{static_cast<i32>(std::floor(feet.x)),
                          static_cast<i32>(std::floor(feet.y + 0.1f)),
@@ -1315,20 +1337,58 @@ void Engine::updateWalk(f32 dt) {
         const f32 speed = m_input->isDown(Key::LeftControl)  ? kSprintSpeed
                           : m_input->isDown(Key::LeftShift) ? kSneakSpeed
                                                             : kWalkSpeed;
-        const vec3 target = feet + math::normalize(wish) * speed * dt;
+        const vec3 motion = math::normalize(wish) * speed * dt;
 
-        // Accepted or refused whole, by asking how high the ground is where the
-        // step would land. Anything within a step is walked up; anything taller is
-        // a wall. No swept volume, so a corner can be cut -- worth knowing before
-        // trusting this for anything but looking around.
-        const auto ground = groundBelow(target.x, target.z, feet.y + kStepHeight);
-        if (ground.has_value() && *ground - feet.y <= kStepHeight) {
-            feet.x = target.x;
-            feet.z = target.z;
-            if (m_onGround && *ground > feet.y) {
-                feet.y = *ground; // Step up onto it rather than bumping into it.
+        // **This used to ask only how high the ground was at the destination**, which
+        // is not a collision test at all: nothing above the feet was ever consulted,
+        // so a block at head height with air beneath it was walked straight through --
+        // the edge of every tree canopy, every overhang, every block placed one up.
+        // And the player was a point, so corners could be cut diagonally.
+        //
+        // It is the real box now, swept one axis at a time. Axis-separated because
+        // that is what makes a player slide along a wall they walk into at an angle
+        // rather than stopping dead: X is refused and Z still goes through.
+        //
+        // **A player who is already inside something may always move.** Terrain can
+        // arrive around them, a falling block can land on them, and refusing motion
+        // then would wedge them in place with no way out but quitting.
+        const bool wedged = boxBlocked(feet);
+
+        const auto tryAxis = [&](f32 dx, f32 dz) {
+            if (dx == 0.0f && dz == 0.0f) {
+                return;
             }
-        }
+
+            vec3 candidate = feet;
+            candidate.x += dx;
+            candidate.z += dz;
+
+            if (wedged || !boxBlocked(candidate)) {
+                feet = candidate;
+                return;
+            }
+
+            // Blocked. Try stepping up onto it, which is what makes a single block or
+            // a slope walkable rather than a wall. Only from the ground: stepping up
+            // in mid-air is climbing.
+            if (!m_onGround) {
+                return;
+            }
+
+            for (f32 lift = kStepProbe; lift <= kStepHeight + 1e-3f; lift += kStepProbe) {
+                vec3 lifted = candidate;
+                lifted.y += lift;
+                if (!boxBlocked(lifted)) {
+                    // Left slightly above the surface; the ground probe in the substep
+                    // loop below snaps the feet down onto it in the same frame.
+                    feet = lifted;
+                    return;
+                }
+            }
+        };
+
+        tryAxis(motion.x, 0.0f);
+        tryAxis(0.0f, motion.z);
     }
 
     // **Jump input is read once**, outside the substep loop below. Reading it per
@@ -1380,7 +1440,18 @@ void Engine::updateWalk(f32 dt) {
                 std::max(m_verticalVelocity - kGravity * step, -kTerminalVelocity);
         }
 
+        const f32 beforeY = feet.y;
         feet.y += m_verticalVelocity * step;
+
+        // **Heads hit ceilings.** Only on the way up: downward motion is the ground
+        // probe's job, and asking the box on the way down would fight it -- the probe
+        // deliberately snaps the feet *onto* a surface the box would call an overlap.
+        // Without this a jump under an overhang put the player's head through it, and
+        // then the ground probe found the floor again and nothing looked wrong.
+        if (m_verticalVelocity > 0.0f && boxBlocked(feet)) {
+            feet.y = beforeY;
+            m_verticalVelocity = 0.0f;
+        }
 
         const bool wasOnGround = m_onGround;
 

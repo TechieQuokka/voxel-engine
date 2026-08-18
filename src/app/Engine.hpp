@@ -323,6 +323,11 @@ private:
     /// The jump clears it with room to spare: 8.5 m/s against 28 m/s^2 peaks at
     /// v^2/2g = 1.29 blocks.
     static constexpr f32 kStepHeight = 0.6f;
+
+    /// How finely the step-up is probed. Six tries between 0 and `kStepHeight`, which
+    /// is enough to find the top of any surface on the block lattice and cheap enough
+    /// that it does not matter that it is a search rather than a solve.
+    static constexpr f32 kStepProbe = 0.1f;
     /// How far down to look for something to stand on before giving up.
     static constexpr i32 kGroundSearchDepth = 96;
 
@@ -375,6 +380,15 @@ private:
 
     /// True when the block at the player's feet is a liquid.
     bool inWater(const vec3& feet) const;
+
+    /// Whether the player's box at `feet` overlaps any solid block.
+    ///
+    /// **The collision test walking did not have.** The ground probe answers "how high
+    /// is the floor here", which says nothing about head height and nothing about
+    /// width -- so a block one above the feet, or one the player only clips the corner
+    /// of, was walked straight through. `PlayerBox::cells` gives the range and this
+    /// asks the world about each cell in it.
+    bool boxBlocked(const vec3& feet) const;
 
     /// The camera the frame is actually drawn from.
     ///

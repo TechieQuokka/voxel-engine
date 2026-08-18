@@ -85,3 +85,64 @@ TEST_CASE("the eye is inside the box and the box is vanilla's width") {
     CHECK(PlayerBox::kWidth < 1.0f);
     CHECK(PlayerBox::kHalfWidth * 2.0f == doctest::Approx(PlayerBox::kWidth));
 }
+
+TEST_CASE("the cell range covers exactly the cells the box overlaps") {
+    // **The arithmetic walking's collision is built on.** A range that is one cell
+    // short on any face is a face the player walks through, and the face it would be
+    // short on is the head -- which is precisely the bug this replaced.
+    const PlayerBox box = standing();
+    const PlayerBox::CellRange range = box.cells();
+
+    CHECK(range.minX == 8);
+    CHECK(range.maxX == 8);
+    CHECK(range.minZ == 8);
+    CHECK(range.maxZ == 8);
+    CHECK(range.minY == 64);
+    CHECK(range.maxY == 65); // Feet and head. Not just the feet.
+}
+
+TEST_CASE("the cell range and the overlap test agree everywhere") {
+    // Two spellings of the same rule, so they are checked against each other rather
+    // than each being checked against my expectations. Touching-is-not-overlapping is
+    // easy to get right in one and wrong in the other.
+    const PlayerBox boxes[]{
+        PlayerBox{vec3{8.5f, 64.0f, 8.5f}},  // centred, on the grid
+        PlayerBox{vec3{8.0f, 64.0f, 8.0f}},  // straddling four columns
+        PlayerBox{vec3{8.5f, 64.5f, 8.5f}},  // mid-step
+        PlayerBox{vec3{-3.2f, -7.5f, 0.1f}}, // negative coordinates
+    };
+
+    for (const PlayerBox& box : boxes) {
+        const PlayerBox::CellRange range = box.cells();
+        CAPTURE(box.feet.x);
+        CAPTURE(box.feet.y);
+        CAPTURE(box.feet.z);
+
+        // Everything in the range overlaps...
+        for (i32 y = range.minY; y <= range.maxY; ++y) {
+            for (i32 z = range.minZ; z <= range.maxZ; ++z) {
+                for (i32 x = range.minX; x <= range.maxX; ++x) {
+                    CHECK(box.intersects(BlockPos{x, y, z}));
+                }
+            }
+        }
+
+        // ...and one cell outside it on any face does not.
+        CHECK_FALSE(box.intersects(BlockPos{range.minX - 1, range.minY, range.minZ}));
+        CHECK_FALSE(box.intersects(BlockPos{range.maxX + 1, range.minY, range.minZ}));
+        CHECK_FALSE(box.intersects(BlockPos{range.minX, range.minY - 1, range.minZ}));
+        CHECK_FALSE(box.intersects(BlockPos{range.minX, range.maxY + 1, range.minZ}));
+        CHECK_FALSE(box.intersects(BlockPos{range.minX, range.minY, range.minZ - 1}));
+        CHECK_FALSE(box.intersects(BlockPos{range.minX, range.minY, range.maxZ + 1}));
+    }
+}
+
+TEST_CASE("a block at head height is inside the box") {
+    // The case walking could not see at all: the ground probe asked how high the floor
+    // was and never looked up, so a canopy edge or an overhang one block above the
+    // feet was walked straight through.
+    const PlayerBox box = standing();
+
+    CHECK(box.intersects(BlockPos{8, 65, 8}));
+    CHECK(box.cells().maxY >= 65);
+}
