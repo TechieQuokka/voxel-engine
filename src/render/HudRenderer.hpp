@@ -6,6 +6,7 @@
 #include "render/ScreenLayout.hpp"
 #include "rhi/Buffer.hpp"
 #include "rhi/Device.hpp"
+#include "rhi/FrameRing.hpp"
 #include "rhi/Shader.hpp"
 #include "rhi/Texture.hpp"
 #include "rhi/VertexArray.hpp"
@@ -92,7 +93,8 @@ public:
     /// and supplies the dragged stack when one is. The slots inside a window come
     /// from `state.screen`, which composes these same slots with the container's.
     void draw(rhi::Device& device, const BlockTextures& textures,
-              const Inventory& inventory, const State& state, f32 aspect);
+              const Inventory& inventory, const State& state, f32 aspect,
+              rhi::FrameRing& ring);
 
 private:
     /// Layer of 'A' in the glyph atlas. Public because the atlas is built by a free
@@ -117,7 +119,8 @@ private:
 
     /// Room for the open window: a panel, 36 slots each with a plate, an icon and up
     /// to two shadowed digits, the hearts and the dragged stack. About 400 in the
-    /// worst case, and the buffer is 24 KiB either way.
+    /// worst case. It is a cap on the CPU-side list now rather than a buffer size --
+    /// the GPU side is the shared frame ring, which budgets for exactly this many.
     static constexpr usize kMaxQuads = 1024;
     static constexpr u32 kVerticesPerQuad = 6;
     static constexpr u32 kQuadBufferBinding = 0;
@@ -154,7 +157,6 @@ private:
 
     rhi::Shader m_shader;
     rhi::VertexArray m_vao;
-    std::optional<rhi::Buffer> m_buffer;
     std::optional<rhi::TextureArray> m_glyphs;
 
     std::vector<GpuQuad> m_quads;

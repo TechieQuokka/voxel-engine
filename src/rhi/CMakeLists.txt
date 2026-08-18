@@ -1,6 +1,8 @@
 add_library(mc_rhi STATIC
   Buffer.cpp
   Device.cpp
+  FrameRing.cpp
+  RingLayout.cpp
   Shader.cpp
   Texture.cpp
   VertexArray.cpp

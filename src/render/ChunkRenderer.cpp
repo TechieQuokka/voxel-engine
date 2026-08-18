@@ -5,6 +5,7 @@
 #include "core/Profile.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <span>
 
 namespace mc {
@@ -18,8 +19,6 @@ ChunkRenderer::ChunkRenderer() {
     m_firsts.reserve(kInitialVisibleCapacity);
     m_counts.reserve(kInitialVisibleCapacity);
     m_origins.reserve(kInitialVisibleCapacity);
-
-    ensureSectionBuffer(kInitialVisibleCapacity);
 }
 
 void ChunkRenderer::beginFrame() {
@@ -67,47 +66,36 @@ void ChunkRenderer::addSection(SectionPos pos, const SectionMeshStore::Placement
     m_stats.waterQuadsDrawn += placement.translucentCount();
 }
 
-void ChunkRenderer::ensureSectionBuffer(usize sectionCount) {
-    if (sectionCount <= m_sectionBufferCapacity) {
-        return;
-    }
-
-    // Grow geometrically. A visible set that jumped in size once will do it again
-    // when the camera turns back, and reallocating a GL buffer mid-frame is the
-    // kind of hitch that shows up as a dropped frame rather than as a slow average.
-    usize capacity = m_sectionBufferCapacity == 0 ? kInitialVisibleCapacity
-                                                  : m_sectionBufferCapacity;
-    while (capacity < sectionCount) {
-        capacity *= 2;
-    }
-
-    m_sectionBuffer = rhi::Buffer::createPersistent(capacity * sizeof(vec4));
-    m_sectionBufferCapacity = capacity;
-
-    logDebug("Section origin buffer grown to {} entries ({} KiB)",
-             capacity, capacity * sizeof(vec4) / 1024);
-}
-
-void ChunkRenderer::draw(rhi::Device& device, const Camera& camera, const SectionMeshStore& store) {
+void ChunkRenderer::draw(rhi::Device& device, const Camera& camera,
+                         const SectionMeshStore& store, rhi::FrameRing& ring) {
     MC_PROFILE_SCOPE_N("ChunkRenderer::draw");
 
     if (m_firsts.empty() && m_waterFirsts.empty()) {
         return;
     }
 
-    // One buffer, opaque origins then water origins. The water pass reaches its half
-    // through u_drawIdBase rather than through a second buffer or a second binding.
-    ensureSectionBuffer(m_origins.size() + m_waterOrigins.size());
+    // **One slice, opaque origins then water origins.** The water pass reaches its
+    // half through u_drawIdBase rather than through a second binding, so the two
+    // lists have to be contiguous -- which is why this reserves once and writes
+    // twice instead of uploading each list on its own.
+    const usize originBytes = m_origins.size() * sizeof(vec4);
+    const usize waterBytes = m_waterOrigins.size() * sizeof(vec4);
 
-    const std::span<const std::byte> originBytes{
-        reinterpret_cast<const std::byte*>(m_origins.data()), m_origins.size() * sizeof(vec4)};
-    m_sectionBuffer->write(0, originBytes);
+    const std::optional<rhi::FrameRing::Slice> slice = ring.reserve(originBytes + waterBytes);
+    if (!slice.has_value()) {
+        // The ring logs why. Skipping the terrain for one frame is visible and bad,
+        // but it is a frame rather than a corrupted draw reading a neighbour's data.
+        return;
+    }
+
+    ring.write(*slice, 0,
+               std::span<const std::byte>{
+                   reinterpret_cast<const std::byte*>(m_origins.data()), originBytes});
 
     if (!m_waterOrigins.empty()) {
-        const std::span<const std::byte> waterBytes{
-            reinterpret_cast<const std::byte*>(m_waterOrigins.data()),
-            m_waterOrigins.size() * sizeof(vec4)};
-        m_sectionBuffer->write(m_origins.size() * sizeof(vec4), waterBytes);
+        ring.write(*slice, originBytes,
+                   std::span<const std::byte>{
+                       reinterpret_cast<const std::byte*>(m_waterOrigins.data()), waterBytes});
     }
 
     // Both the arena and the origin buffer are persistently mapped and were written
@@ -124,7 +112,7 @@ void ChunkRenderer::draw(rhi::Device& device, const Camera& camera, const Sectio
 
     m_textures->bind(kTextureUnit);
     store.buffer().bindBase(rhi::BufferTarget::Storage, kQuadBufferBinding);
-    m_sectionBuffer->bindBase(rhi::BufferTarget::Storage, kSectionBufferBinding);
+    ring.bind(rhi::BufferTarget::Storage, kSectionBufferBinding, *slice);
     m_vao.bind();
 
     m_shader.setUniform("u_drawIdBase", 0);

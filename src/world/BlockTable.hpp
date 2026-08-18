@@ -192,7 +192,7 @@ inline constexpr std::array kLayers{
     // `argb` is the body and `argbSecondary` the shading or the handle. Roughness is
     // reused as the amount of per-pixel variation, which keeps an icon from reading
     // as flat vector art beside sixteen noisy block textures.
-    LayerInfo{"stick",           TextureRecipe::Stick,  0xFF9C7A4Bu, 0xFF6B5230u, 8.0f, 70u},
+    LayerInfo{"stick",           TextureRecipe::Stick,  0xFF9C7A4Bu, 0xFF6B5230u, 3.0f, 70u},
 
     // Smelted metal. Phase 17's output, and the reason half the ore table stops
     // being decoration.
@@ -206,25 +206,32 @@ inline constexpr std::array kLayers{
 
     // Tools. The head colour is the tier and the handle is always oak, which is what
     // makes a row of them read as the same tool in four materials at a glance.
-    LayerInfo{"wooden_pickaxe",  TextureRecipe::ToolPickaxe, 0xFFB08A55u, 0xFF9C7A4Bu, 8.0f, 80u},
-    LayerInfo{"wooden_axe",      TextureRecipe::ToolAxe,     0xFFB08A55u, 0xFF9C7A4Bu, 8.0f, 81u},
-    LayerInfo{"wooden_shovel",   TextureRecipe::ToolShovel,  0xFFB08A55u, 0xFF9C7A4Bu, 8.0f, 82u},
-    LayerInfo{"wooden_sword",    TextureRecipe::ToolSword,   0xFFB08A55u, 0xFF9C7A4Bu, 8.0f, 83u},
-    LayerInfo{"stone_pickaxe",   TextureRecipe::ToolPickaxe, 0xFF8C8C8Cu, 0xFF9C7A4Bu, 14.0f, 84u},
-    LayerInfo{"stone_axe",       TextureRecipe::ToolAxe,     0xFF8C8C8Cu, 0xFF9C7A4Bu, 14.0f, 85u},
-    LayerInfo{"stone_shovel",    TextureRecipe::ToolShovel,  0xFF8C8C8Cu, 0xFF9C7A4Bu, 14.0f, 86u},
-    LayerInfo{"stone_sword",     TextureRecipe::ToolSword,   0xFF8C8C8Cu, 0xFF9C7A4Bu, 14.0f, 87u},
+    //
+    // **Their roughness is a third of a block's, and that is not a style choice.**
+    // A held tool is the sprite extruded into a model (DESIGN.md 7.22), and the rim
+    // faces take the colour of the pixel they came from -- so per-pixel noise on the
+    // sprite becomes a barcode along every edge of the thing in your hand. Vanilla's
+    // tool sprites are two or three flat shades for the same reason a pixel artist
+    // would give: at sixteen pixels, noise reads as dirt rather than as material.
+    LayerInfo{"wooden_pickaxe",  TextureRecipe::ToolPickaxe, 0xFFB08A55u, 0xFF9C7A4Bu, 3.0f, 80u},
+    LayerInfo{"wooden_axe",      TextureRecipe::ToolAxe,     0xFFB08A55u, 0xFF9C7A4Bu, 3.0f, 81u},
+    LayerInfo{"wooden_shovel",   TextureRecipe::ToolShovel,  0xFFB08A55u, 0xFF9C7A4Bu, 3.0f, 82u},
+    LayerInfo{"wooden_sword",    TextureRecipe::ToolSword,   0xFFB08A55u, 0xFF9C7A4Bu, 3.0f, 83u},
+    LayerInfo{"stone_pickaxe",   TextureRecipe::ToolPickaxe, 0xFF8C8C8Cu, 0xFF9C7A4Bu, 4.0f, 84u},
+    LayerInfo{"stone_axe",       TextureRecipe::ToolAxe,     0xFF8C8C8Cu, 0xFF9C7A4Bu, 4.0f, 85u},
+    LayerInfo{"stone_shovel",    TextureRecipe::ToolShovel,  0xFF8C8C8Cu, 0xFF9C7A4Bu, 4.0f, 86u},
+    LayerInfo{"stone_sword",     TextureRecipe::ToolSword,   0xFF8C8C8Cu, 0xFF9C7A4Bu, 4.0f, 87u},
 
     // Iron and diamond. The two tiers smelting opens: iron needs an ingot, and
     // diamond needs an iron pickaxe to have been mined with.
-    LayerInfo{"iron_pickaxe",    TextureRecipe::ToolPickaxe, 0xFFD8D8D8u, 0xFF9C7A4Bu, 10.0f, 88u},
-    LayerInfo{"iron_axe",        TextureRecipe::ToolAxe,     0xFFD8D8D8u, 0xFF9C7A4Bu, 10.0f, 89u},
-    LayerInfo{"iron_shovel",     TextureRecipe::ToolShovel,  0xFFD8D8D8u, 0xFF9C7A4Bu, 10.0f, 90u},
-    LayerInfo{"iron_sword",      TextureRecipe::ToolSword,   0xFFD8D8D8u, 0xFF9C7A4Bu, 10.0f, 91u},
-    LayerInfo{"diamond_pickaxe", TextureRecipe::ToolPickaxe, 0xFF4AEDD9u, 0xFF9C7A4Bu, 10.0f, 92u},
-    LayerInfo{"diamond_axe",     TextureRecipe::ToolAxe,     0xFF4AEDD9u, 0xFF9C7A4Bu, 10.0f, 93u},
-    LayerInfo{"diamond_shovel",  TextureRecipe::ToolShovel,  0xFF4AEDD9u, 0xFF9C7A4Bu, 10.0f, 94u},
-    LayerInfo{"diamond_sword",   TextureRecipe::ToolSword,   0xFF4AEDD9u, 0xFF9C7A4Bu, 10.0f, 95u},
+    LayerInfo{"iron_pickaxe",    TextureRecipe::ToolPickaxe, 0xFFD8D8D8u, 0xFF9C7A4Bu, 4.0f, 88u},
+    LayerInfo{"iron_axe",        TextureRecipe::ToolAxe,     0xFFD8D8D8u, 0xFF9C7A4Bu, 4.0f, 89u},
+    LayerInfo{"iron_shovel",     TextureRecipe::ToolShovel,  0xFFD8D8D8u, 0xFF9C7A4Bu, 4.0f, 90u},
+    LayerInfo{"iron_sword",      TextureRecipe::ToolSword,   0xFFD8D8D8u, 0xFF9C7A4Bu, 4.0f, 91u},
+    LayerInfo{"diamond_pickaxe", TextureRecipe::ToolPickaxe, 0xFF4AEDD9u, 0xFF9C7A4Bu, 4.0f, 92u},
+    LayerInfo{"diamond_axe",     TextureRecipe::ToolAxe,     0xFF4AEDD9u, 0xFF9C7A4Bu, 4.0f, 93u},
+    LayerInfo{"diamond_shovel",  TextureRecipe::ToolShovel,  0xFF4AEDD9u, 0xFF9C7A4Bu, 4.0f, 94u},
+    LayerInfo{"diamond_sword",   TextureRecipe::ToolSword,   0xFF4AEDD9u, 0xFF9C7A4Bu, 4.0f, 95u},
 };
 
 inline constexpr u16 kTextureLayerCount = static_cast<u16>(kLayers.size());

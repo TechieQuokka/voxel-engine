@@ -6,10 +6,10 @@
 #include "render/Camera.hpp"
 #include "rhi/Buffer.hpp"
 #include "rhi/Device.hpp"
+#include "rhi/FrameRing.hpp"
 #include "rhi/Shader.hpp"
 #include "rhi/VertexArray.hpp"
 
-#include <optional>
 #include <vector>
 
 namespace mc {
@@ -43,7 +43,8 @@ public:
     /// of sand is not what vanilla does and reads as debris rather than as terrain
     /// coming down.
     void draw(rhi::Device& device, const Camera& camera, const BlockTextures& textures,
-              const ItemEntities& items, const FallingBlocks& falling, f32 spinSeconds);
+              const ItemEntities& items, const FallingBlocks& falling, f32 spinSeconds,
+              rhi::FrameRing& ring);
 
     usize drawnLastFrame() const noexcept { return m_drawn; }
 
@@ -54,8 +55,8 @@ private:
         vec4 rotation; ///< x yaw, y texture layer
     };
 
-    /// Grown geometrically; a mining session that dropped this many once will do it
-    /// again, and reallocating mid-frame is a dropped frame rather than a slow one.
+    /// What the CPU-side list reserves. The GPU side is the shared frame ring, so
+    /// this is a vector's capacity and nothing more.
     static constexpr usize kInitialCapacity = 256;
     static constexpr u32 kVerticesPerCube = 36;
     static constexpr u32 kItemBufferBinding = 0;
@@ -69,12 +70,8 @@ private:
     static constexpr f32 kBobHeight = 0.06f;
     static constexpr f32 kSpinRate = 1.1f;
 
-    void ensureCapacity(usize count);
-
     rhi::Shader m_shader;
     rhi::VertexArray m_vao;
-    std::optional<rhi::Buffer> m_buffer;
-    usize m_capacity = 0;
 
     std::vector<GpuItem> m_gpuItems;
     usize m_drawn = 0;

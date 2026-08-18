@@ -6,6 +6,7 @@ add_library(mc_render STATIC
   Frustum.cpp
   SectionMeshStore.cpp
   SelectionRenderer.cpp
+  ItemModel.cpp
   ItemRenderer.cpp
   ScreenLayout.cpp
   HudRenderer.cpp

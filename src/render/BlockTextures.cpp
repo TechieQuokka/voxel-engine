@@ -1,5 +1,6 @@
 #include "render/BlockTextures.hpp"
 
+#include "core/Assert.hpp"
 #include "core/Log.hpp"
 #include "world/BlockTable.hpp"
 
@@ -293,31 +294,37 @@ void drawMask(std::vector<u8>& out, u32 layer, const IconMask& mask, u32 argb,
     }
 }
 
-/// The shaft every tool shares, running from under the head down to the lower left.
+/// The shaft every tool shares, running from under the head to the bottom-left
+/// corner of the tile.
+///
+/// **It used to stop eight pixels short of both ends and the tools looked wrong for
+/// it.** Vanilla's tools fill the tile's diagonal; a shaft floating in the middle of
+/// a 16x16 square reads as a twig at icon size and as a stick with something stuck to
+/// it once the sprite is extruded into a model the player holds. See DESIGN.md 7.23.
 constexpr IconMask kHandleArt{
     0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
-    0b0000000000000000, 0b0000000011000000, 0b0000000110000000, 0b0000001100000000,
+    0b0000000001100000, 0b0000000011000000, 0b0000000110000000, 0b0000001100000000,
     0b0000011000000000, 0b0000110000000000, 0b0001100000000000, 0b0011000000000000,
-    0b0110000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0110000000000000, 0b1100000000000000, 0b0000000000000000, 0b0000000000000000,
 };
 
 constexpr IconMask kPickaxeHeadArt{
-    0b0000000000000000, 0b0000000000000000, 0b0000111111111000, 0b0001111111111100,
-    0b0001100000011000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0000000000000000, 0b0000000111110000, 0b0000011111111100, 0b0000111000001110,
+    0b0001100000000110, 0b0001100000000110, 0b0000000000000000, 0b0000000000000000,
     0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
     0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
 };
 
 constexpr IconMask kAxeHeadArt{
-    0b0000000000000000, 0b0000000000000000, 0b0000000111110000, 0b0000001111111000,
-    0b0000001111111000, 0b0000001111110000, 0b0000000111100000, 0b0000000111000000,
+    0b0000000000000000, 0b0000000011110000, 0b0000000011111100, 0b0000000111111110,
+    0b0000000011111110, 0b0000000001111100, 0b0000000000111000, 0b0000000000000000,
     0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
     0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
 };
 
 constexpr IconMask kShovelHeadArt{
-    0b0000000000000000, 0b0000000000000000, 0b0000001111000000, 0b0000001111000000,
-    0b0000001111000000, 0b0000001110000000, 0b0000000000000000, 0b0000000000000000,
+    0b0000000000000000, 0b0000000011111000, 0b0000000111111100, 0b0000000111111100,
+    0b0000000011111000, 0b0000000001110000, 0b0000000000000000, 0b0000000000000000,
     0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
     0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
 };
@@ -325,8 +332,8 @@ constexpr IconMask kShovelHeadArt{
 /// A sword is a blade rather than a head on a stick, so it does not use the shared
 /// handle: the grip runs on past the guard where a tool's shaft simply stops.
 constexpr IconMask kSwordBladeArt{
-    0b0000000000000000, 0b0000000000111000, 0b0000000001110000, 0b0000000011100000,
-    0b0000000111000000, 0b0000001110000000, 0b0000011100000000, 0b0000111000000000,
+    0b0000000000000000, 0b0000000000001100, 0b0000000000011100, 0b0000000000111000,
+    0b0000000001110000, 0b0000000011100000, 0b0000000111000000, 0b0000001110000000,
     0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
     0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
 };
@@ -334,8 +341,8 @@ constexpr IconMask kSwordBladeArt{
 constexpr IconMask kSwordGripArt{
     0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
     0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
-    0b0001111110000000, 0b0001100000000000, 0b0011000000000000, 0b0110000000000000,
-    0b1110000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0001111111000000, 0b0001100000000000, 0b0011000000000000, 0b0110000000000000,
+    0b1100000000000000, 0b1100000000000000, 0b0000000000000000, 0b0000000000000000,
 };
 
 /// An ingot: a flat bar with bevelled ends, which is what says "smelted" rather than
@@ -359,6 +366,10 @@ constexpr IconMask kStickArt{
 /// colour. Head second so an overlapping pixel belongs to the head, which is what
 /// makes the joint read as the head being mounted rather than the shaft passing
 /// through it.
+/// **The head is drawn over the shaft and the shaft shows through its opening.**
+/// A pickaxe's crescent is hollow between its horns and the handle passes behind it,
+/// which is vanilla's arrangement and the thing that makes the head read as mounted
+/// rather than balanced on top.
 void generateTool(std::vector<u8>& out, u32 layer, const IconMask& head, u32 headArgb,
                   u32 handleArgb, f32 roughness, u32 seed) {
     drawMask(out, layer, kHandleArt, handleArgb, roughness * 0.6f, seed + 1u);
@@ -402,7 +413,8 @@ void generateNugget(std::vector<u8>& out, u32 layer, u32 bodyArgb, u32 rimArgb,
 } // namespace
 
 BlockTextures::BlockTextures() {
-    std::vector<u8> pixels(static_cast<usize>(kSize) * kSize * kTextureLayerCount * 4, 0);
+    std::vector<u8>& pixels = m_pixels;
+    pixels.assign(static_cast<usize>(kSize) * kSize * kTextureLayerCount * 4, 0);
 
     // One pass over the layer table, in table order -- an entry's position in
     // kLayers is its array layer, so nothing here assigns an index. Adding a layer
@@ -481,6 +493,13 @@ BlockTextures::BlockTextures() {
                                           rhi::ColorSpace::Srgb8A8);
 
     logDebug("Generated {} block textures at {}x{}", kTextureLayerCount, kSize, kSize);
+}
+
+std::span<const u8> BlockTextures::layerPixels(u32 layer) const {
+    constexpr usize kBytesPerLayer = static_cast<usize>(kSize) * kSize * 4;
+    MC_ASSERT(layer < kTextureLayerCount);
+    return std::span<const u8>{m_pixels}.subspan(static_cast<usize>(layer) * kBytesPerLayer,
+                                                 kBytesPerLayer);
 }
 
 } // namespace mc

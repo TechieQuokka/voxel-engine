@@ -60,6 +60,21 @@ public:
     /// Binds to an indexed target, e.g. `layout(binding = N)` in GLSL.
     void bindBase(BufferTarget target, u32 index) const;
 
+    /// Binds one range of the buffer to an indexed target, so the shader sees the
+    /// range's start as element zero. `offset` must be a multiple of
+    /// `storageOffsetAlignment()` and `size` must be non-zero.
+    ///
+    /// This is what makes a frame ring possible: without it there is no way to point
+    /// a binding at anything but offset 0, which is why every per-frame buffer in the
+    /// engine used to be written there.
+    void bindRange(BufferTarget target, u32 index, usize offset, usize size) const;
+
+    /// The driver's alignment requirement for `bindRange` on a storage buffer.
+    ///
+    /// Queried once and cached. 16 to 256 bytes in practice, and it is a hard error
+    /// rather than a slow path to get it wrong, so nothing may assume a value.
+    static usize storageOffsetAlignment();
+
     u32 handle() const noexcept { return m_handle; }
     usize size() const noexcept { return m_size; }
     bool valid() const noexcept { return m_handle != 0; }

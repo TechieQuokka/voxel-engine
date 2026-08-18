@@ -22,6 +22,7 @@ add_executable(mc_tests
   test_mpmc_queue.cpp
   test_jobsystem.cpp
   test_range_allocator.cpp
+  test_ring_layout.cpp
   test_frustum.cpp
   test_coords.cpp
   test_palette.cpp
@@ -43,7 +44,10 @@ add_executable(mc_tests
   test_water.cpp
   test_flowing_water.cpp
   test_player_box.cpp
+  test_walk_move.cpp
+  test_item_model.cpp
   test_furnace.cpp
+  test_progression.cpp
 )
 
 target_link_libraries(mc_tests PRIVATE

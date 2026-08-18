@@ -14,6 +14,7 @@
 #include "render/SectionMeshStore.hpp"
 #include "render/SelectionRenderer.hpp"
 #include "rhi/Device.hpp"
+#include "rhi/FrameRing.hpp"
 #include "world/BlockTable.hpp"
 #include "world/BlockUpdates.hpp"
 #include "world/FallingBlocks.hpp"
@@ -22,6 +23,7 @@
 #include "world/Furnace.hpp"
 #include "world/ItemEntities.hpp"
 #include "world/PlayerBox.hpp"
+#include "world/WalkMove.hpp"
 #include "world/Raycast.hpp"
 #include "world/Screen.hpp"
 #include "world/World.hpp"
@@ -71,6 +73,17 @@ public:
         /// Start in fly mode rather than walking. Walking cannot reach a cave, so
         /// anything inspecting the underground wants this.
         bool flying = false;
+
+        /// Put this item in the first hotbar slot and select it, so a capture can be
+        /// taken of something being *held*.
+        ///
+        /// **`--capture` cannot craft**, and the held item is now geometry rather
+        /// than a number on the HUD -- a tool in the fist in third person, a view
+        /// model in first. Reaching that state otherwise means walking the whole
+        /// chain to a pickaxe by hand, which is exactly the kind of thing this
+        /// project has repeatedly shipped broken for want of a way to look at it.
+        /// Same purpose as `--fly`, `--first-person` and `--furnace`.
+        std::string heldItem;
 
         /// Open the inventory window at startup, and seed it with something to look
         /// at.
@@ -293,6 +306,16 @@ private:
     std::optional<ItemRenderer> m_itemRenderer;
     std::optional<HudRenderer> m_hud;
 
+    /// Where every renderer's per-frame data goes, and the only buffer in the engine
+    /// any of them writes.
+    ///
+    /// **Owned here rather than by the renderers, because the cycle is per frame and
+    /// not per renderer.** Each of them used to hold its own persistently mapped
+    /// buffer and rewrite offset 0 of it every frame, which is data a queued frame
+    /// may still be reading; one ring advanced once per frame in `renderFrame` is
+    /// what makes that safe, and it is one budget instead of five.
+    std::optional<rhi::FrameRing> m_frameRing;
+
     std::unique_ptr<World> m_world;
     std::unique_ptr<Generator> m_generator;
 
@@ -320,22 +343,12 @@ private:
     static constexpr f32 kGravity = 28.0f;
     static constexpr f32 kJumpVelocity = 8.5f;
     static constexpr f32 kTerminalVelocity = 60.0f;
-    /// Vanilla's step height, and the reason a full block has to be jumped.
-    ///
-    /// This was 1.05 and it felt wrong, because it *was* wrong: Minecraft steps up at
-    /// most 0.6 of a block without jumping, which covers slabs and stairs and nothing
-    /// else. Stepping a whole block automatically is a mod, not the game. Since every
-    /// block in this world is full height, 0.6 means no rise is ever walked up and
-    /// every one of them is a jump -- which is exactly how the real thing feels.
-    ///
-    /// The jump clears it with room to spare: 8.5 m/s against 28 m/s^2 peaks at
-    /// v^2/2g = 1.29 blocks.
-    static constexpr f32 kStepHeight = 0.6f;
-
-    /// How finely the step-up is probed. Six tries between 0 and `kStepHeight`, which
-    /// is enough to find the top of any surface on the block lattice and cheap enough
-    /// that it does not matter that it is a search rather than a solve.
-    static constexpr f32 kStepProbe = 0.1f;
+    /// The step height and its probe are `WalkMove`'s, in `world/WalkMove.hpp`, with
+    /// the rules that use them. The jump is sized against the step height and so is
+    /// checked here: 8.5 m/s against 28 m/s^2 peaks at v^2/2g = 1.29 blocks, which
+    /// clears vanilla's 0.6 step with room to spare.
+    static_assert(kJumpVelocity * kJumpVelocity / (2.0f * kGravity) > WalkMove::kStepHeight,
+                  "the jump must clear a step, or a full block cannot be climbed at all");
     /// How far down to look for something to stand on before giving up.
     static constexpr i32 kGroundSearchDepth = 96;
 

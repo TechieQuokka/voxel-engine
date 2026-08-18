@@ -92,4 +92,27 @@ void Buffer::bindBase(BufferTarget target, u32 index) const {
     glBindBufferBase(toGlTarget(target), index, m_handle);
 }
 
+void Buffer::bindRange(BufferTarget target, u32 index, usize offset, usize size) const {
+    MC_ASSERT(size > 0);
+    MC_ASSERT(offset + size <= m_size);
+    MC_ASSERT(offset % storageOffsetAlignment() == 0);
+
+    glBindBufferRange(toGlTarget(target), index, m_handle, static_cast<GLintptr>(offset),
+                      static_cast<GLsizeiptr>(size));
+}
+
+usize Buffer::storageOffsetAlignment() {
+    // Function-local static: queried on first use, which is after the context exists,
+    // and never again. A file-scope value would have to be initialized before glad
+    // has loaded the entry points.
+    static const usize alignment = [] {
+        GLint value = 0;
+        glGetIntegerv(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT, &value);
+        MC_VERIFY_MSG(value > 0, "GL reported a zero storage-buffer bind alignment");
+        return static_cast<usize>(value);
+    }();
+
+    return alignment;
+}
+
 } // namespace mc::rhi

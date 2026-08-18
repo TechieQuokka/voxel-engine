@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <optional>
 
 namespace mc {
 namespace {
@@ -186,7 +187,6 @@ HudRenderer::HudRenderer()
     m_shader.setUniform("u_glyphs", static_cast<i32>(kGlyphTextureUnit));
 
     m_quads.reserve(kMaxQuads);
-    m_buffer = rhi::Buffer::createPersistent(kMaxQuads * sizeof(GpuQuad));
 }
 
 void HudRenderer::push(const vec4& rect, const vec4& tint, Mode mode, u32 layer) {
@@ -334,7 +334,8 @@ void HudRenderer::pushHearts(const ScreenLayout& layout, const State& state,
 }
 
 void HudRenderer::draw(rhi::Device& device, const BlockTextures& textures,
-                       const Inventory& inventory, const State& state, f32 aspect) {
+                       const Inventory& inventory, const State& state, f32 aspect,
+                       rhi::FrameRing& ring) {
     MC_PROFILE_SCOPE_N("HudRenderer::draw");
 
     m_quads.clear();
@@ -476,15 +477,19 @@ void HudRenderer::draw(rhi::Device& device, const BlockTextures& textures,
         return;
     }
 
-    const std::span<const std::byte> bytes{
-        reinterpret_cast<const std::byte*>(m_quads.data()), m_quads.size() * sizeof(GpuQuad)};
-    m_buffer->write(0, bytes);
+    const std::optional<rhi::FrameRing::Slice> slice = ring.upload(
+        std::span<const std::byte>{reinterpret_cast<const std::byte*>(m_quads.data()),
+                                   m_quads.size() * sizeof(GpuQuad)});
+    if (!slice.has_value()) {
+        return;
+    }
+
     rhi::Buffer::barrierAfterClientWrites();
 
     m_shader.bind();
     textures.bind(kBlockTextureUnit);
     m_glyphs->bind(kGlyphTextureUnit);
-    m_buffer->bindBase(rhi::BufferTarget::Storage, kQuadBufferBinding);
+    ring.bind(rhi::BufferTarget::Storage, kQuadBufferBinding, *slice);
     m_vao.bind();
 
     // Over everything, and depth-testing against nothing. Restored afterwards so the

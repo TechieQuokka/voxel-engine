@@ -2,8 +2,15 @@
 
 in vec3 v_normal;
 in vec3 v_color;
+in vec2 v_uv;
+flat in float v_layer;
 
 out vec4 o_fragColor;
+
+// The block texture array, which carries item icons too. Bound only because the
+// character can now be holding something; the player model itself is flat colours
+// and samples nothing.
+uniform sampler2DArray u_blockTextures;
 
 // Identical to chunk.frag's, and identical on purpose: the character has to sit in
 // the same light as the terrain it stands on. Two different face-brightness tables
@@ -23,6 +30,23 @@ float faceShading(vec3 normal) {
 }
 
 void main() {
+    vec3 albedo = v_color;
+
+    if (v_layer >= 0.0) {
+        // A held item: the two flat faces of an extruded sprite, or the six faces of
+        // a held block. The array is sRGB so the sampler has already decoded.
+        vec4 texel = texture(u_blockTextures, vec3(v_uv, v_layer));
+
+        // **The discard is what gives a tool its shape.** The sprite is a 16x16 tile
+        // with a transparent background and the model is one quad; without this a
+        // held pickaxe is a square card with a pickaxe painted on it. Rim faces
+        // carry a colour rather than a texture and never reach this branch.
+        if (texel.a < 0.5) {
+            discard;
+        }
+        albedo = texel.rgb;
+    }
+
     // v_color arrives linear; the framebuffer is sRGB and encodes on write.
-    o_fragColor = vec4(v_color * faceShading(v_normal), 1.0);
+    o_fragColor = vec4(albedo * faceShading(v_normal), 1.0);
 }

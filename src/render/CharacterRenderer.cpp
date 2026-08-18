@@ -1,10 +1,12 @@
 #include "render/CharacterRenderer.hpp"
 
+#include "core/Log.hpp"
 #include "core/Paths.hpp"
 #include "core/Profile.hpp"
 
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <span>
 
 namespace mc {
@@ -43,6 +45,29 @@ vec3 swingVector(const vec3& v, f32 cosA, f32 sinA) {
     return vec3{v.x, v.y * cosA - v.z * sinA, v.y * sinA + v.z * cosA};
 }
 
+/// The three axis rotations, spelled out rather than reached for in a glm extension.
+///
+/// Minecraft composes a display rotation as X, then Y, then Z, and the order is not
+/// a detail: -90 about Y turns a tool's flat face to the side, and 55 about Z tilts
+/// it up out of the fist. Swapping them tilts first and turns the tilt into a lean.
+mat3 rotationX(f32 radians) {
+    const f32 c = std::cos(radians);
+    const f32 s = std::sin(radians);
+    return mat3{vec3{1.0f, 0.0f, 0.0f}, vec3{0.0f, c, s}, vec3{0.0f, -s, c}};
+}
+
+mat3 rotationY(f32 radians) {
+    const f32 c = std::cos(radians);
+    const f32 s = std::sin(radians);
+    return mat3{vec3{c, 0.0f, -s}, vec3{0.0f, 1.0f, 0.0f}, vec3{s, 0.0f, c}};
+}
+
+mat3 rotationZ(f32 radians) {
+    const f32 c = std::cos(radians);
+    const f32 s = std::sin(radians);
+    return mat3{vec3{c, s, 0.0f}, vec3{-s, c, 0.0f}, vec3{0.0f, 0.0f, 1.0f}};
+}
+
 /// Shoulder angle of the mining chop, in radians.
 ///
 /// Negative swings the arm forward -- see swingPoint: a point below the pivot moves
@@ -60,6 +85,7 @@ f32 miningAngle(f32 phase) {
 CharacterRenderer::CharacterRenderer() {
     m_shader = rhi::Shader::fromFiles(assetPath("shaders/character.vert"),
                                       assetPath("shaders/character.frag"));
+    m_shader.setUniform("u_blockTextures", static_cast<i32>(kTextureUnit));
 
     // Feet at y = 0, facing +Z. Legs 12 units, body 12, head 8: two blocks tall,
     // which is the model rather than the 1.8-block hitbox.
@@ -93,7 +119,6 @@ CharacterRenderer::CharacterRenderer() {
     }};
 
     m_quads.reserve(kQuadCount);
-    m_buffer = rhi::Buffer::createPersistent(kQuadCount * sizeof(GpuQuad));
 }
 
 void CharacterRenderer::appendBox(const Box& box, f32 swingAngle, const vec3& feetPosition,
@@ -151,7 +176,11 @@ void CharacterRenderer::appendBox(const Box& box, f32 swingAngle, const vec3& fe
         const vec3 worldV = toWorldVector(vAxis);
 
         m_quads.push_back(GpuQuad{
-            vec4{worldOrigin.x, worldOrigin.y, worldOrigin.z, 0.0f},
+            // **`w` is the texture layer now, and the player model has none.**
+            // Leaving the old 0.0f here would have drawn every box as texture layer
+            // zero, which is stone -- a player made of rock, and a silent one,
+            // because 0 is a perfectly valid layer.
+            vec4{worldOrigin.x, worldOrigin.y, worldOrigin.z, ItemQuad::kFlatColour},
             vec4{worldU.x, worldU.y, worldU.z, 0.0f},
             vec4{worldV.x, worldV.y, worldV.z, 0.0f},
             face == 2 ? top : side,
@@ -159,10 +188,88 @@ void CharacterRenderer::appendBox(const Box& box, f32 swingAngle, const vec3& fe
     }
 }
 
+const std::vector<ItemQuad>& CharacterRenderer::modelFor(ItemId item,
+                                                        const BlockTextures& textures) {
+    const auto found = m_itemModels.find(item);
+    if (found != m_itemModels.end()) {
+        return found->second;
+    }
+
+    // **A block is held as a block and an item as a picture given depth.** That is
+    // vanilla's split and it is not cosmetic: a cobblestone held as a flat sprite of
+    // its top face reads as a tile, and a pickaxe held as a cube reads as a crate.
+    std::vector<ItemQuad> model;
+    if (itemIsBlock(item)) {
+        const BlockInfo& info = kBlocks[blockOfItem(item)];
+        model = buildBlockModel(static_cast<f32>(info.top), static_cast<f32>(info.side),
+                                static_cast<f32>(info.bottom));
+    } else {
+        const u16 layer = itemIcon(item);
+
+        model = buildSpriteModel(textures.layerPixels(layer), BlockTextures::kTextureSize,
+                                 static_cast<f32>(layer));
+    }
+
+    return m_itemModels.emplace(item, std::move(model)).first->second;
+}
+
+void CharacterRenderer::appendHeldItem(const std::vector<ItemQuad>& model,
+                                       const HeldTransform& display, const vec3& anchor,
+                                       const vec3& right, const vec3& up,
+                                       const vec3& forward) {
+    // Scale, then rotate, then translate -- the order Minecraft applies a display
+    // transform in. Doing the translation first would move the item along the
+    // *rotated* axes and swing it out of the hand as the tilt changed.
+    const mat3 rotation = rotationX(math::radians(display.rotationDegrees.x))
+                        * rotationY(math::radians(display.rotationDegrees.y))
+                        * rotationZ(math::radians(display.rotationDegrees.z));
+
+    // **Minecraft's model space is Y-down and Z-back; this engine's is Y-up and
+    // Z-forward.** The two differ by a half turn about X, so the display numbers
+    // above are conjugated into this engine's frame rather than used as they stand:
+    // a rotation becomes `C R C^-1` and a translation becomes `C T`.
+    //
+    // **The model itself is not turned, and that is the whole subtlety.** Turning
+    // the frame *and* the model leaves a tool hanging head-down, which is what the
+    // first attempt at this drew: the conversion belongs to the transform, not to
+    // the sprite, whose own +Y is up in both worlds.
+    const mat3 halfTurnX{vec3{1.0f, 0.0f, 0.0f}, vec3{0.0f, -1.0f, 0.0f},
+                         vec3{0.0f, 0.0f, -1.0f}};
+
+    const mat3 inFrame = halfTurnX * rotation * halfTurnX;
+    const vec3 translation = halfTurnX * (display.translationTexels * kUnit);
+
+    // Into the hand's frame, and then into the world. The frame is the character's
+    // basis rotated by the arm's swing in third person and the camera's in first,
+    // which is the whole reason this takes a basis rather than a matrix.
+    const auto toWorld = [&](const vec3& p) {
+        const vec3 inHand = translation + inFrame * (p * display.scale);
+        return anchor + right * inHand.x + up * inHand.y + forward * inHand.z;
+    };
+    const auto toWorldVector = [&](const vec3& v) {
+        const vec3 inHand = inFrame * (v * display.scale);
+        return right * inHand.x + up * inHand.y + forward * inHand.z;
+    };
+
+    for (const ItemQuad& quad : model) {
+        const vec3 origin = toWorld(quad.origin);
+        const vec3 uAxis = toWorldVector(quad.uAxis);
+        const vec3 vAxis = toWorldVector(quad.vAxis);
+
+        m_quads.push_back(GpuQuad{
+            vec4{origin.x, origin.y, origin.z, quad.layer},
+            vec4{uAxis.x, uAxis.y, uAxis.z, quad.mirrorU ? 1.0f : 0.0f},
+            vec4{vAxis.x, vAxis.y, vAxis.z, 0.0f},
+            vec4{quad.color.x, quad.color.y, quad.color.z, 1.0f},
+        });
+    }
+}
+
 void CharacterRenderer::draw(rhi::Device& device, const Camera& camera,
                              const vec3& feetPosition, const vec3& facing,
                              f32 walkPhase, f32 walkAmount,
-                             f32 swingPhase, f32 swingAmount) {
+                             f32 swingPhase, f32 swingAmount, ItemId heldItem,
+                             const BlockTextures& textures, rhi::FrameRing& ring) {
     MC_PROFILE_SCOPE_N("CharacterRenderer::draw");
 
     // A basis from whatever the caller calls forward, so the model needs no
@@ -197,22 +304,66 @@ void CharacterRenderer::draw(rhi::Device& device, const Camera& camera,
         appendBox(box, angle, feetPosition, right, up, forward);
     }
 
-    const std::span<const std::byte> bytes{
-        reinterpret_cast<const std::byte*>(m_quads.data()), m_quads.size() * sizeof(GpuQuad)};
-    m_buffer->write(0, bytes);
+    if (itemExists(heldItem)) {
+        // The angle the right arm ended up at, recomputed rather than remembered --
+        // the same expression the loop above uses for the arm that holds the tool.
+        const f32 walkAngle = amplitude * std::sin(walkPhase);
+        const f32 armAngle = math::mix(walkAngle, miningAngle(swingPhase), chop);
+        const f32 cosA = std::cos(armAngle);
+        const f32 sinA = std::sin(armAngle);
+
+        // The fist, at the far end of the lower right arm and swung with it. The
+        // model's right arm hangs from x = -6 units, and the arm box stops at 12 up,
+        // which is where a hand is.
+        const vec3 shoulderRight{-u(6.0f), u(24.0f), 0.0f};
+        const vec3 fistRest{-u(6.0f), u(12.0f), 0.0f};
+
+        // **The hand's frame is the model's frame, swung.** Passing the character's
+        // basis unrotated would leave the tool pointing forward while the arm went
+        // up, which is a tool sliding through a fist rather than one held by it.
+        const vec3 fist = swingPoint(fistRest, shoulderRight, cosA, sinA);
+        const vec3 handRight = swingVector(vec3{1.0f, 0.0f, 0.0f}, cosA, sinA);
+        const vec3 handUp = swingVector(vec3{0.0f, 1.0f, 0.0f}, cosA, sinA);
+        const vec3 handForward = swingVector(vec3{0.0f, 0.0f, 1.0f}, cosA, sinA);
+
+        const auto intoWorld = [&](const vec3& p) {
+            return feetPosition + right * p.x + up * p.y + forward * p.z;
+        };
+        const auto intoWorldVector = [&](const vec3& v) {
+            return right * v.x + up * v.y + forward * v.z;
+        };
+
+        appendHeldItem(modelFor(heldItem, textures),
+                       itemIsBlock(heldItem) ? kBlockThirdPerson : kHandheldThirdPerson,
+                       intoWorld(fist), intoWorldVector(handRight),
+                       intoWorldVector(handUp), intoWorldVector(handForward));
+    }
+
+    const std::optional<rhi::FrameRing::Slice> slice = ring.upload(
+        std::span<const std::byte>{reinterpret_cast<const std::byte*>(m_quads.data()),
+                                   m_quads.size() * sizeof(GpuQuad)});
+    if (!slice.has_value()) {
+        return;
+    }
+
     rhi::Buffer::barrierAfterClientWrites();
 
     m_shader.bind();
     m_shader.setUniform("u_viewProjection", camera.viewProjectionMatrix());
 
-    m_buffer->bindBase(rhi::BufferTarget::Storage, kQuadBufferBinding);
+    // Bound whether or not anything is held: the shader samples only where a quad
+    // names a layer, but leaving the unit unbound is undefined rather than merely
+    // unread.
+    textures.bind(kTextureUnit);
+    ring.bind(rhi::BufferTarget::Storage, kQuadBufferBinding, *slice);
     m_vao.bind();
 
     device.drawTriangles(static_cast<u32>(m_quads.size()) * kVerticesPerQuad);
 }
 
 void CharacterRenderer::drawHand(rhi::Device& device, const Camera& camera,
-                                 f32 swingPhase, f32 swingAmount) {
+                                 f32 swingPhase, f32 swingAmount, ItemId heldItem,
+                                 const BlockTextures& textures, rhi::FrameRing& ring) {
     MC_PROFILE_SCOPE_N("CharacterRenderer::drawHand");
 
     const f32 chop = math::clamp(swingAmount, 0.0f, 1.0f);
@@ -252,9 +403,64 @@ void CharacterRenderer::drawHand(rhi::Device& device, const Camera& camera,
     m_quads.clear();
     appendBox(arm, 0.0f, anchor, across, vertical, tilt);
 
-    const std::span<const std::byte> bytes{
-        reinterpret_cast<const std::byte*>(m_quads.data()), m_quads.size() * sizeof(GpuQuad)};
-    m_buffer->write(0, bytes);
+    if (itemExists(heldItem)) {
+        // **The item's axes are given here rather than through vanilla's first-person
+        // rotation, and that is a deliberate deviation.** Vanilla's `[0, -90, 25]` is
+        // expressed in the frame of a rigged arm with a wrist; this engine's view
+        // model is a single tilted box and has no such frame, so those numbers land
+        // somewhere arbitrary in it -- three captures' worth of somewhere arbitrary.
+        // What is copied is the *look* they produce, stated directly:
+        //
+        //   - the flat face turned towards the eye, tipped just enough that the
+        //     extrusion's edge shows and the tool reads as an object,
+        //   - the sprite's up -- handle at the bottom, head at the top -- pointing up
+        //     and to the left, so the head sits towards the crosshair,
+        //   - the handle running down into the fist.
+        //
+        // Vanilla's scale is kept, because a scale needs no frame to mean something.
+        const vec3 itemUp = math::normalize(up * 0.86f - right * 0.51f);
+        const vec3 towardsEye = math::normalize(-forward * 0.98f + right * 0.12f);
+        const vec3 planeRight = math::normalize(math::cross(itemUp, towardsEye));
+
+        // **Turned to show its other side, which is a rotation and not a mirror.**
+        // The icon is drawn with its handle running to the lower left, and the hand
+        // is at the lower *right*. Half a turn about the item's own up axis puts the
+        // handle where the fist is and leaves the head where it belongs, up and
+        // towards the crosshair with its horns still pointing down. Vanilla mirrors
+        // its model for the same reason; a mirror here would reverse every winding
+        // and back-face culling would then keep the wrong half of the tool.
+        //
+        // **Rolling the sprite in its plane was tried first and is wrong**: it puts
+        // the handle in the right place by turning the crescent on its side, which
+        // reads as a hook rather than as a pickaxe. One capture said so.
+        const vec3 itemRight = -planeRight;
+        const vec3 itemNormal = math::cross(itemRight, itemUp);
+
+        // **Held further down the arm than the fist, because it is too close to the
+        // eye otherwise.** At 0.7 blocks from a 70-degree camera a 0.68-block tool
+        // fills a third of the screen and crosses the crosshair; vanilla's sits in
+        // the lower right and leaves the aim clear. Pushing it along the arm is what
+        // buys that back without shrinking the model away from vanilla's scale.
+        const vec3 fist = anchor + tilt * u(9.0f);
+
+        // Offset up and left of the fist, so what disappears into the hand is the
+        // *handle* rather than the middle of the tool. A held block has no handle and
+        // sits in the hand itself -- offsetting a cube would hold it in mid-air.
+        const vec3 centre =
+            itemIsBlock(heldItem) ? fist : fist + itemUp * 0.11f + right * 0.04f;
+
+        appendHeldItem(modelFor(heldItem, textures),
+                       itemIsBlock(heldItem) ? kBlockFirstPerson : kHandheldFirstPerson,
+                       centre, itemRight, itemUp, itemNormal);
+    }
+
+    const std::optional<rhi::FrameRing::Slice> slice = ring.upload(
+        std::span<const std::byte>{reinterpret_cast<const std::byte*>(m_quads.data()),
+                                   m_quads.size() * sizeof(GpuQuad)});
+    if (!slice.has_value()) {
+        return;
+    }
+
     rhi::Buffer::barrierAfterClientWrites();
 
     // **Depth cleared first.** The arm lives half a block from the eye, so standing
@@ -267,7 +473,11 @@ void CharacterRenderer::drawHand(rhi::Device& device, const Camera& camera,
     m_shader.bind();
     m_shader.setUniform("u_viewProjection", camera.viewProjectionMatrix());
 
-    m_buffer->bindBase(rhi::BufferTarget::Storage, kQuadBufferBinding);
+    // Bound whether or not anything is held: the shader samples only where a quad
+    // names a layer, but leaving the unit unbound is undefined rather than merely
+    // unread.
+    textures.bind(kTextureUnit);
+    ring.bind(rhi::BufferTarget::Storage, kQuadBufferBinding, *slice);
     m_vao.bind();
 
     device.drawTriangles(static_cast<u32>(m_quads.size()) * kVerticesPerQuad);

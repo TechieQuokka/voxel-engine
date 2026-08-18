@@ -172,12 +172,26 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
         m_health = 13.0f; // An odd number, so a half heart is in the frame too.
     }
 
+    // Before the renderers, so a bad name fails immediately rather than after a
+    // window has been created and a region streamed in.
+    if (!m_options.heldItem.empty()) {
+        const ItemId item = itemIdOrNothing(m_options.heldItem);
+        MC_VERIFY_MSG(item != kNoItem, "--hold names an item that does not exist");
+
+        // Into the first hotbar slot, which is the one selected at startup. Placed
+        // rather than added, so it is held whatever else the seeding above put there.
+        m_inventory.mutableAt(0) = ItemStack{item, 1};
+        m_hotbarSlot = 0;
+        logInfo("Holding: {}", itemName(item));
+    }
+
     m_chunkRenderer.emplace();
     m_character.emplace();
     m_selection.emplace();
     m_itemRenderer.emplace();
     m_hud.emplace();
     m_meshStore.emplace(meshArenaBytesFor(m_options.renderDistance));
+    m_frameRing.emplace(frameRingBytesFor(m_options.renderDistance));
 
     m_world = std::make_unique<World>(m_options.renderDistance);
     m_generator = std::make_unique<Generator>();
@@ -1433,50 +1447,11 @@ void Engine::updateWalk(f32 dt) {
         // the edge of every tree canopy, every overhang, every block placed one up.
         // And the player was a point, so corners could be cut diagonally.
         //
-        // It is the real box now, swept one axis at a time. Axis-separated because
-        // that is what makes a player slide along a wall they walk into at an angle
-        // rather than stopping dead: X is refused and Z still goes through.
-        //
-        // **A player who is already inside something may always move.** Terrain can
-        // arrive around them, a falling block can land on them, and refusing motion
-        // then would wedge them in place with no way out but quitting.
-        const bool wedged = boxBlocked(feet);
-
-        const auto tryAxis = [&](f32 dx, f32 dz) {
-            if (dx == 0.0f && dz == 0.0f) {
-                return;
-            }
-
-            vec3 candidate = feet;
-            candidate.x += dx;
-            candidate.z += dz;
-
-            if (wedged || !boxBlocked(candidate)) {
-                feet = candidate;
-                return;
-            }
-
-            // Blocked. Try stepping up onto it, which is what makes a single block or
-            // a slope walkable rather than a wall. Only from the ground: stepping up
-            // in mid-air is climbing.
-            if (!m_onGround) {
-                return;
-            }
-
-            for (f32 lift = kStepProbe; lift <= kStepHeight + 1e-3f; lift += kStepProbe) {
-                vec3 lifted = candidate;
-                lifted.y += lift;
-                if (!boxBlocked(lifted)) {
-                    // Left slightly above the surface; the ground probe in the substep
-                    // loop below snaps the feet down onto it in the same frame.
-                    feet = lifted;
-                    return;
-                }
-            }
-        };
-
-        tryAxis(motion.x, 0.0f);
-        tryAxis(0.0f, motion.z);
+        // The rules are `slideWithStepUp` now, in `world/WalkMove.hpp`, which is
+        // where a test can reach them. What stays here is the only part that needs
+        // the engine: what counts as blocked.
+        feet = slideWithStepUp(feet, motion.x, motion.z, m_onGround,
+                               [this](const vec3& box) { return boxBlocked(box); });
     }
 
     // **Jump input is read once**, outside the substep loop below. Reading it per
@@ -1670,13 +1645,22 @@ void Engine::captureAndExit() {
 void Engine::reportStats(f64 fps, f64 frameMs) {
     const ChunkRenderer::Stats& stats = m_chunkRenderer->stats();
 
+    // **The ring's high-water mark is printed because a budget nobody can see is a
+    // budget nobody notices overflowing.** `frameRingBytesFor` estimates a worst
+    // case; this is what the frames actually used, and `refused` is how many draws
+    // the estimate cost. It should stay at zero.
+    const rhi::RingLayout& ring = m_frameRing->layout();
+
     logInfo("{:.1f} FPS ({:.2f} ms) | {} cols | drawn {} sec / {} quads | "
-            "culled {} col + {} sec | arena {} MiB",
+            "culled {} col + {} sec | arena {} MiB | ring {} of {} KiB{}",
             fps, frameMs,
             m_world->loadedChunkCount(),
             stats.sectionsDrawn, stats.quadsDrawn,
             stats.columnsCulled, stats.sectionsCulled,
-            m_meshStore->usedBytes() / (1024 * 1024));
+            m_meshStore->usedBytes() / (1024 * 1024),
+            ring.highWaterBytes() / 1024, ring.bytesPerFrame() / 1024,
+            ring.refusedCount() > 0 ? std::format(", {} REFUSED", ring.refusedCount())
+                                    : std::string{});
 
     // The interaction half of the line. Separate from the rendering half because it
     // answers a different question -- "did the player do anything" rather than "is
@@ -1942,8 +1926,13 @@ void Engine::renderFrame() {
     const vec3& sky = skyColorLinear();
     m_device->clear(sky.x, sky.y, sky.z, 1.0f);
 
+    // **Once per frame, before anything writes into it.** This is what moves every
+    // renderer off the range the GPU may still be reading; putting it anywhere later
+    // would put a write and its draw on opposite sides of a slot change.
+    m_frameRing->beginFrame();
+
     buildVisibleSet();
-    m_chunkRenderer->draw(*m_device, m_renderCamera, *m_meshStore);
+    m_chunkRenderer->draw(*m_device, m_renderCamera, *m_meshStore, *m_frameRing);
 
     // After the terrain, so the character is depth-tested against a filled buffer
     // rather than against nothing. Only in third person: in first person the model
@@ -1951,11 +1940,12 @@ void Engine::renderFrame() {
     if (m_thirdPerson) {
         const vec3 feet = playerFeet();
         m_character->draw(*m_device, m_renderCamera, feet, m_camera.forward(),
-                          m_walkPhase, m_walkAmount, m_swingPhase, m_swingAmount);
+                          m_walkPhase, m_walkAmount, m_swingPhase, m_swingAmount,
+                          heldItem(), m_chunkRenderer->textures(), *m_frameRing);
     }
 
     m_itemRenderer->draw(*m_device, m_renderCamera, m_chunkRenderer->textures(), m_items,
-                         m_falling, m_itemSpin);
+                         m_falling, m_itemSpin, *m_frameRing);
 
     // Last, so the outline sits on top of the block it surrounds and of the
     // character if one is in the way. It still depth-tests -- it is inflated just
@@ -1983,7 +1973,8 @@ void Engine::renderFrame() {
     // the character and a second one floating in front of the camera would be one
     // arm too many.
     if (!m_thirdPerson) {
-        m_character->drawHand(*m_device, m_renderCamera, m_swingPhase, m_swingAmount);
+        m_character->drawHand(*m_device, m_renderCamera, m_swingPhase, m_swingAmount,
+                              heldItem(), m_chunkRenderer->textures(), *m_frameRing);
     }
 
     // The HUD is genuinely last: it draws over everything, including the hand.
@@ -2016,7 +2007,7 @@ void Engine::renderFrame() {
     }
 
     m_hud->draw(*m_device, m_chunkRenderer->textures(), m_inventory, hud,
-                width / std::max(1.0f, height));
+                width / std::max(1.0f, height), *m_frameRing);
 }
 
 void Engine::updateRenderCamera() {

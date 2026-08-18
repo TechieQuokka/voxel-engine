@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <span>
 
 namespace mc {
@@ -17,24 +18,12 @@ ItemRenderer::ItemRenderer()
                                       assetPath("shaders/item.frag"))) {
     m_shader.setUniform("u_blockTextures", static_cast<i32>(kTextureUnit));
     m_gpuItems.reserve(kInitialCapacity);
-    ensureCapacity(kInitialCapacity);
-}
-
-void ItemRenderer::ensureCapacity(usize count) {
-    if (count <= m_capacity) {
-        return;
-    }
-    usize capacity = m_capacity == 0 ? kInitialCapacity : m_capacity;
-    while (capacity < count) {
-        capacity *= 2;
-    }
-    m_buffer = rhi::Buffer::createPersistent(capacity * sizeof(GpuItem));
-    m_capacity = capacity;
 }
 
 void ItemRenderer::draw(rhi::Device& device, const Camera& camera,
                         const BlockTextures& textures, const ItemEntities& items,
-                        const FallingBlocks& falling, f32 spinSeconds) {
+                        const FallingBlocks& falling, f32 spinSeconds,
+                        rhi::FrameRing& ring) {
     MC_PROFILE_SCOPE_N("ItemRenderer::draw");
 
     m_drawn = 0;
@@ -84,19 +73,20 @@ void ItemRenderer::draw(rhi::Device& device, const Camera& camera,
         return;
     }
 
-    ensureCapacity(m_gpuItems.size());
+    const std::optional<rhi::FrameRing::Slice> slice = ring.upload(
+        std::span<const std::byte>{reinterpret_cast<const std::byte*>(m_gpuItems.data()),
+                                   m_gpuItems.size() * sizeof(GpuItem)});
+    if (!slice.has_value()) {
+        return;
+    }
 
-    const std::span<const std::byte> bytes{
-        reinterpret_cast<const std::byte*>(m_gpuItems.data()),
-        m_gpuItems.size() * sizeof(GpuItem)};
-    m_buffer->write(0, bytes);
     rhi::Buffer::barrierAfterClientWrites();
 
     m_shader.bind();
     m_shader.setUniform("u_viewProjection", camera.viewProjectionMatrix());
 
     textures.bind(kTextureUnit);
-    m_buffer->bindBase(rhi::BufferTarget::Storage, kItemBufferBinding);
+    ring.bind(rhi::BufferTarget::Storage, kItemBufferBinding, *slice);
     m_vao.bind();
 
     m_drawn = m_gpuItems.size();

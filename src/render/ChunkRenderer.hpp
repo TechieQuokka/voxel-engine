@@ -8,6 +8,7 @@
 #include "render/SectionMeshStore.hpp"
 #include "rhi/Buffer.hpp"
 #include "rhi/Device.hpp"
+#include "rhi/FrameRing.hpp"
 #include "rhi/Shader.hpp"
 #include "rhi/VertexArray.hpp"
 #include "world/Coords.hpp"
@@ -51,7 +52,12 @@ public:
     void addSection(SectionPos pos, const SectionMeshStore::Placement& placement);
 
     /// Uploads the visible set and issues the draw.
-    void draw(rhi::Device& device, const Camera& camera, const SectionMeshStore& store);
+    ///
+    /// The origins go through the caller's frame ring rather than into a buffer this
+    /// class owns. They are rewritten from scratch every frame, which is exactly the
+    /// pattern that needs a ring: the previous frame's copy may still be being read.
+    void draw(rhi::Device& device, const Camera& camera, const SectionMeshStore& store,
+              rhi::FrameRing& ring);
 
     /// 0 disables ambient occlusion shading without remeshing. Useful for
     /// judging what AO actually contributes visually against what it costs in
@@ -87,8 +93,6 @@ private:
     /// reallocating it per frame would be pure waste.
     static constexpr usize kInitialVisibleCapacity = 4096;
 
-    void ensureSectionBuffer(usize sectionCount);
-
     rhi::Shader m_shader;
     rhi::VertexArray m_vao;
     std::optional<BlockTextures> m_textures;
@@ -101,11 +105,6 @@ public:
     const BlockTextures& textures() const noexcept { return *m_textures; }
 
 private:
-
-    /// Per-section origins, persistently mapped so the visible set can be written
-    /// without a GL call per frame.
-    std::optional<rhi::Buffer> m_sectionBuffer;
-    usize m_sectionBufferCapacity = 0;
 
     std::vector<i32> m_firsts;
     std::vector<i32> m_counts;
@@ -122,5 +121,34 @@ private:
     vec3 m_fogColor{1.0f};
     Stats m_stats;
 };
+
+/// Per-frame budget for the shared frame ring, at a given render distance.
+///
+/// Derived rather than guessed, for `meshArenaBytesFor`'s reason: this is pinned,
+/// persistently mapped memory that exists whether or not it is used, and a number
+/// large enough for the eventual distance-64 target would be paid for at distance 8.
+///
+/// The section origins dominate and are the only term that grows: one `vec4` per
+/// section per pass, and a section holding both terrain and water is an entry in
+/// each. The bound is every section of every loaded column being visible in both
+/// passes at once, which no frustum can actually contain -- so this is comfortably
+/// above the worst real frame rather than merely at it.
+///
+/// The fixed part covers the other three renderers. The HUD is 1,024 quads of 48
+/// bytes at its own hard limit (48 KiB), the character is 54 quads of 64 bytes drawn
+/// at most twice (7 KiB), and dropped items and falling blocks share what is left at
+/// 32 bytes each -- about 6,400 entities, against a few dozen in a mining session.
+/// A frame that exceeds it loses a draw and logs, rather than dying.
+inline usize frameRingBytesFor(i32 renderDistance) {
+    constexpr usize kBytesPerSectionEntry = 2 * sizeof(vec4); // opaque pass + water pass
+    constexpr usize kFixedSlack = 256u * 1024u;
+    constexpr usize kMinimum = 1024u * 1024u;
+
+    const auto side = static_cast<usize>(2 * (renderDistance > 0 ? renderDistance : 1) + 1);
+    const usize sections = side * side * static_cast<usize>(kSectionsPerColumn);
+    const usize estimate = sections * kBytesPerSectionEntry + kFixedSlack;
+
+    return estimate < kMinimum ? kMinimum : estimate;
+}
 
 } // namespace mc
