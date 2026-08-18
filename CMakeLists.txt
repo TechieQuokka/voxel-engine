@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(minecraft
-  VERSION 0.0.1
+  VERSION 1.0.0
   DESCRIPTION "High-performance voxel engine"
   LANGUAGES C CXX   # C is required by the GLFW and glad sources
 )
