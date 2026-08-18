@@ -60,6 +60,13 @@ enum class TextureRecipe : u8 {
     /// the block says what it is from the one angle you look at it from.
     CraftGrid,
 
+    /// Grain with a dark arched mouth low on the tile: the side of a furnace.
+    ///
+    /// Same argument as `CraftGrid`. A furnace that reads as a grey cube is a furnace
+    /// the player walks past, and this phase exists because the last unrecognisable
+    /// block cost a whole play session.
+    Furnace,
+
     // -- item icons ------------------------------------------------------------
     //
     // **These layers are never meshed.** They live in the same texture array only
@@ -76,6 +83,9 @@ enum class TextureRecipe : u8 {
     Nugget,
     /// A short diagonal shaft. The one item that is not made of anything else.
     Stick,
+    /// A flat bar. Everything that comes out of a furnace rather than out of rock,
+    /// and shaped unlike `Nugget` on purpose -- "smelted" has to read at slot size.
+    Ingot,
     /// The four tools. Separate recipes rather than one with a shape parameter,
     /// because the switch in BlockTextures.cpp is deliberately unguarded by a
     /// default -- a fifth tool then fails to compile rather than drawing a blank.
@@ -171,11 +181,24 @@ inline constexpr std::array kLayers{
     LayerInfo{"crafting_table_top",  TextureRecipe::CraftGrid, 0xFFA97F4Eu, 0xFF54402Bu, 8.0f, 61u},
     LayerInfo{"crafting_table_side", TextureRecipe::Planks,    0xFF8F6F45u, 0xFF5E4830u, 9.0f, 62u},
 
+    // The furnace: rough stone with a darker mouth on its sides. One block rather
+    // than vanilla's lit/unlit pair -- the mesher has no per-face orientation, so a
+    // furnace already faces every direction at once, and a second block type for the
+    // lit state would be a lie in four of them.
+    LayerInfo{"furnace_top",  TextureRecipe::Grain,   0xFF7A7A7Au, 0u,          22.0f, 63u},
+    LayerInfo{"furnace_side", TextureRecipe::Furnace, 0xFF7A7A7Au, 0xFF2B2B2Du, 22.0f, 64u},
+
     // -- item icons, transparent outside the shape ------------------------------
     // `argb` is the body and `argbSecondary` the shading or the handle. Roughness is
     // reused as the amount of per-pixel variation, which keeps an icon from reading
     // as flat vector art beside sixteen noisy block textures.
     LayerInfo{"stick",           TextureRecipe::Stick,  0xFF9C7A4Bu, 0xFF6B5230u, 8.0f, 70u},
+
+    // Smelted metal. Phase 17's output, and the reason half the ore table stops
+    // being decoration.
+    LayerInfo{"iron_ingot",      TextureRecipe::Ingot,  0xFFD8D8D8u, 0u,          7.0f, 71u},
+    LayerInfo{"copper_ingot",    TextureRecipe::Ingot,  0xFFD8794Au, 0u,          7.0f, 72u},
+    LayerInfo{"gold_ingot",      TextureRecipe::Ingot,  0xFFFCEE4Bu, 0u,          7.0f, 73u},
     LayerInfo{"coal",            TextureRecipe::Nugget, 0xFF262626u, 0xFF0D0D0Du, 14.0f, 71u},
     LayerInfo{"diamond",         TextureRecipe::Nugget, 0xFF5DECF5u, 0xFF2FA8B4u, 12.0f, 72u},
     LayerInfo{"redstone",        TextureRecipe::Nugget, 0xFFAA0F01u, 0xFF6E0A00u, 12.0f, 73u},
@@ -191,6 +214,17 @@ inline constexpr std::array kLayers{
     LayerInfo{"stone_axe",       TextureRecipe::ToolAxe,     0xFF8C8C8Cu, 0xFF9C7A4Bu, 14.0f, 85u},
     LayerInfo{"stone_shovel",    TextureRecipe::ToolShovel,  0xFF8C8C8Cu, 0xFF9C7A4Bu, 14.0f, 86u},
     LayerInfo{"stone_sword",     TextureRecipe::ToolSword,   0xFF8C8C8Cu, 0xFF9C7A4Bu, 14.0f, 87u},
+
+    // Iron and diamond. The two tiers smelting opens: iron needs an ingot, and
+    // diamond needs an iron pickaxe to have been mined with.
+    LayerInfo{"iron_pickaxe",    TextureRecipe::ToolPickaxe, 0xFFD8D8D8u, 0xFF9C7A4Bu, 10.0f, 88u},
+    LayerInfo{"iron_axe",        TextureRecipe::ToolAxe,     0xFFD8D8D8u, 0xFF9C7A4Bu, 10.0f, 89u},
+    LayerInfo{"iron_shovel",     TextureRecipe::ToolShovel,  0xFFD8D8D8u, 0xFF9C7A4Bu, 10.0f, 90u},
+    LayerInfo{"iron_sword",      TextureRecipe::ToolSword,   0xFFD8D8D8u, 0xFF9C7A4Bu, 10.0f, 91u},
+    LayerInfo{"diamond_pickaxe", TextureRecipe::ToolPickaxe, 0xFF4AEDD9u, 0xFF9C7A4Bu, 10.0f, 92u},
+    LayerInfo{"diamond_axe",     TextureRecipe::ToolAxe,     0xFF4AEDD9u, 0xFF9C7A4Bu, 10.0f, 93u},
+    LayerInfo{"diamond_shovel",  TextureRecipe::ToolShovel,  0xFF4AEDD9u, 0xFF9C7A4Bu, 10.0f, 94u},
+    LayerInfo{"diamond_sword",   TextureRecipe::ToolSword,   0xFF4AEDD9u, 0xFF9C7A4Bu, 10.0f, 95u},
 };
 
 inline constexpr u16 kTextureLayerCount = static_cast<u16>(kLayers.size());
@@ -470,6 +504,14 @@ inline constexpr std::array kBlocks{
                                       layerOf("oak_planks"), 'w', false, 2.5f, {},
                                       false, false, ToolKind::Axe},
 
+    // **The block that opens the ore table.** Iron, copper and gold come out of here
+    // and nowhere else, and half of `kBlocks` above is gated behind the pickaxes they
+    // make. Vanilla hardness 3.5, and it needs a pickaxe to drop -- a furnace is
+    // stone, and mining it bare-handed giving nothing is the same rule as stone.
+    BlockInfo{"furnace", true, layerOf("furnace_top"), layerOf("furnace_side"),
+                               layerOf("furnace_top"), 'F', false, 3.5f, {}, false,
+                               false, ToolKind::Pickaxe, ToolTier::Wood},
+
     // -- water ----------------------------------------------------------------
     // Not opaque, so it hides nothing behind it; a fluid, so it holds nothing up.
     // Unbreakable because a bucket is the only thing that removes water in vanilla
@@ -542,6 +584,7 @@ inline constexpr BlockId kOakPlanksBlock = blockIdOf("oak_planks");
 /// The one block so far that is *used* rather than built against. `Engine` compares
 /// against this to decide whether a right click opens a window or places a block.
 inline constexpr BlockId kCraftingTableBlock = blockIdOf("crafting_table");
+inline constexpr BlockId kFurnaceBlock = blockIdOf("furnace");
 inline constexpr BlockId kWaterBlock     = blockIdOf("water");
 
 /// Sea level. Vanilla's 63 is the first block *above* the water surface, so the

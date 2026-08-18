@@ -43,6 +43,9 @@ int main(int argc, char** argv) {
             options.fullscreen = true;
         } else if (arg == "--fly") {
             options.flying = true;
+        } else if (arg == "--furnace") {
+            options.openInventory = true;
+            options.openFurnace = true;
         } else if (arg == "--inventory") {
             options.openInventory = true;
         } else if (arg == "--mesh-benchmark") {
@@ -63,7 +66,7 @@ int main(int argc, char** argv) {
             mc::logError("Usage: minecraft [--capture <path.ppm>] [--mesh-benchmark]"
                          " [--render-distance N] [--warm-up] [--bench-seconds S]"
                          " [--probe [--probe-columns N]] [--first-person] [--fly]"
-                         " [--inventory] [--fullscreen]");
+                         " [--inventory] [--furnace] [--fullscreen]");
             return EXIT_FAILURE;
         }
     }

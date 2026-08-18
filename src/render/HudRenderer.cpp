@@ -354,8 +354,48 @@ void HudRenderer::draw(rhi::Device& device, const BlockTextures& textures,
 
         // The arrow first, so the slots draw over its ends rather than under them.
         const UiRect arrow = layout.craftArrow();
+        const bool furnace = state.screenKind == ScreenKind::Furnace;
+
+        // A furnace's arrow is a progress bar: dark for the whole span, then filled
+        // from the left by how far through the smelt it is. A crafting table's is
+        // decoration, because a craft is instant and has nothing to show.
         push(vec4{arrow.x0, arrow.y0, arrow.x1, arrow.y1},
-             vec4{0.42f, 0.42f, 0.46f, 1.0f}, Mode::Solid);
+             furnace ? vec4{0.20f, 0.20f, 0.22f, 1.0f} : vec4{0.42f, 0.42f, 0.46f, 1.0f},
+             Mode::Solid);
+
+        if (furnace) {
+            const f32 filled = std::clamp(state.cookProgress, 0.0f, 1.0f);
+            if (filled > 0.0f) {
+                push(vec4{arrow.x0, arrow.y0,
+                          arrow.x0 + (arrow.x1 - arrow.x0) * filled, arrow.y1},
+                     vec4{0.86f, 0.78f, 0.36f, 1.0f}, Mode::Solid);
+            }
+
+            // The flame, shrinking as the fuel burns down.
+            //
+            // **Beside the column rather than in the gap between the two slots**,
+            // which is where it went first: the gap is one `kGap` tall, the gauge is
+            // a third of a slot, and it was drawn before the slots -- so it ended up
+            // underneath the ingredient and was invisible in the first capture. The
+            // panel's left half is empty, which is where vanilla draws a player model
+            // and this has nothing to put.
+            const UiRect input = layout.slot(0);
+            const UiRect fuel = layout.slot(1);
+
+            const f32 width = (fuel.x1 - fuel.x0) * 0.42f;
+            const f32 height = (input.y1 - fuel.y0) * 0.30f;
+            const f32 right = fuel.x0 - width * 0.45f;
+            const f32 base = (fuel.y0 + input.y1) * 0.5f - height * 0.5f;
+
+            push(vec4{right - width, base, right, base + height},
+                 vec4{0.16f, 0.15f, 0.14f, 0.9f}, Mode::Solid);
+
+            const f32 fire = std::clamp(state.burnProgress, 0.0f, 1.0f);
+            if (fire > 0.0f) {
+                push(vec4{right - width, base, right, base + height * fire},
+                     vec4{0.95f, 0.55f, 0.12f, 1.0f}, Mode::Solid);
+            }
+        }
 
         // **Every slot in the screen, drawn by one loop, including the output.** The
         // container's slots, the player's thirty-six and the crafting result are one

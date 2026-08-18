@@ -101,7 +101,25 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
 
     m_input = std::make_unique<Input>(*m_window);
 
-    if (m_options.openInventory) {
+    if (m_options.openFurnace) {
+        // A furnace part-way through a smelt, which is the only state worth a still
+        // frame: an empty one shows three slots and proves nothing about the gauges.
+        m_openFurnace = BlockPos{0, 0, 0};
+        Furnace& furnace = m_furnaces[m_openFurnace];
+        furnace.mutableAt(Furnace::kInputSlot) = ItemStack{itemIdOf("iron_ore"), 5};
+        furnace.mutableAt(Furnace::kFuelSlot) = ItemStack{itemIdOf("coal"), 3};
+        furnace.tick(kSmeltTicks + kSmeltTicks / 2); // One done, one half done.
+
+        openScreen(ScreenKind::Furnace);
+
+        m_inventory.add(itemIdOf("iron_ore"), 12);
+        m_inventory.add(itemIdOf("coal"), 9);
+        m_inventory.add(blockIdOf("furnace"), 2);
+        m_inventory.add(itemIdOf("iron_ingot"), 4);
+        m_inventory.add(itemIdOf("iron_pickaxe"), 1);
+        m_inventory.add(itemIdOf("diamond_pickaxe"), 1);
+        m_health = 13.0f;
+    } else if (m_options.openInventory) {
         // **The crafting table's window, not the player's**, because the 3x3 is where
         // a pickaxe is made and a 2x2 capture would show the smaller half of the
         // feature. All of this lives after `m_input` exists rather than beside the
@@ -804,6 +822,13 @@ void Engine::breakTargetBlock() {
     }
     ++m_blocksBroken;
 
+    // **Whatever the block was holding comes out with it.** A furnace is the only
+    // block with contents so far; anything else this map ever holds gets the same
+    // treatment here, because breaking is the one path that destroys a block.
+    if (broken == kFurnaceBlock) {
+        spillFurnace(m_target->block);
+    }
+
     // **The block breaks whether or not it can be harvested, and only the drop is
     // withheld.** That is vanilla's rule and it is the one that teaches: a player who
     // punches stone for seven seconds and watches it vanish leaving nothing has been
@@ -1018,6 +1043,10 @@ void Engine::openScreen(ScreenKind kind) {
         // walk away mid-recipe and the cells fall out at your feet.
         m_tableCraft.emplace(3);
         m_screen.emplace(m_inventory, *m_tableCraft);
+    } else if (kind == ScreenKind::Furnace) {
+        // The opposite: a furnace outlives its window, so the screen points at the
+        // one that lives in the map rather than at a fresh one.
+        m_screen.emplace(m_inventory, m_furnaces[m_openFurnace]);
     } else {
         m_screen.emplace(m_inventory, m_playerCraft);
     }
@@ -1050,6 +1079,17 @@ void Engine::closeScreen() {
 
     m_screen.reset();
     m_tableCraft.reset();
+
+    // A furnace nobody put anything into is forgotten again, so opening one to look
+    // inside costs nothing permanent. One that is burning or holding something stays,
+    // and keeps burning with the window shut.
+    if (m_screenKind == ScreenKind::Furnace) {
+        const auto entry = m_furnaces.find(m_openFurnace);
+        if (entry != m_furnaces.end() && entry->second.idle()) {
+            m_furnaces.erase(entry);
+        }
+    }
+
     m_screenKind = ScreenKind::Player;
 
     m_input->setCursorCaptured(true);
@@ -1075,12 +1115,55 @@ bool Engine::useTargetBlock() {
         return false;
     }
 
-    if (m_world->blockAt(m_target->block) != kCraftingTableBlock) {
-        return false;
+    const BlockId block = m_world->blockAt(m_target->block);
+
+    if (block == kCraftingTableBlock) {
+        openScreen(ScreenKind::CraftingTable);
+        return true;
     }
 
-    openScreen(ScreenKind::CraftingTable);
-    return true;
+    if (block == kFurnaceBlock) {
+        // **Created on first use rather than when the block is placed.** A furnace
+        // that nobody has opened has nothing in it, and building a wall of them
+        // should not cost a map entry each. `closeScreen` drops it again if it is
+        // still empty when the player walks away.
+        m_openFurnace = m_target->block;
+        openScreen(ScreenKind::Furnace);
+        return true;
+    }
+
+    return false;
+}
+
+void Engine::tickFurnaces(u32 ticks) {
+    if (ticks == 0) {
+        return;
+    }
+    for (auto& [pos, furnace] : m_furnaces) {
+        furnace.tick(ticks);
+    }
+}
+
+void Engine::spillFurnace(BlockPos pos) {
+    const auto entry = m_furnaces.find(pos);
+    if (entry == m_furnaces.end()) {
+        return;
+    }
+
+    // **Breaking the block is what empties a furnace**, not closing its window. The
+    // window closing is the player walking away, and vanilla leaves the contents
+    // where they are for that -- which is the whole reason `Container::releaseOne`
+    // is virtual and a furnace's returns nothing.
+    const vec3 centre{static_cast<f32>(pos.x) + 0.5f, static_cast<f32>(pos.y) + 0.5f,
+                      static_cast<f32>(pos.z) + 0.5f};
+    for (usize slot = 0; slot < Furnace::kSlots; ++slot) {
+        const ItemStack& stack = entry->second.at(slot);
+        if (!stack.empty()) {
+            m_items.spawn(centre, stack.item, stack.count);
+        }
+    }
+
+    m_furnaces.erase(entry);
 }
 
 void Engine::updateInventoryScreen() {
@@ -1252,6 +1335,11 @@ void Engine::updateTicks(f32 dt) {
 
     while (m_tickAccumulator >= kTickSeconds) {
         m_tickAccumulator -= kTickSeconds;
+        // **Furnaces burn whether or not anyone is watching**, which is what makes
+        // them a simulation rather than a window. One tick each, on the same 20 Hz
+        // clock block updates and falling sand run on.
+        tickFurnaces(1);
+
         const BlockUpdates::Stats stats = m_blockUpdates.tick(*m_world, m_falling);
         // **Counted so a play session can see it.** The lesson from 7.14 is that a
         // feature nobody can observe in the log is a feature that ships broken: item
@@ -1909,6 +1997,14 @@ void Engine::renderFrame() {
     hud.maxHealth = kMaxHealth;
     hud.screen = m_screen.has_value() ? &*m_screen : nullptr;
     hud.screenKind = m_screenKind;
+
+    if (m_screenKind == ScreenKind::Furnace) {
+        const auto entry = m_furnaces.find(m_openFurnace);
+        if (entry != m_furnaces.end()) {
+            hud.cookProgress = entry->second.cookProgress();
+            hud.burnProgress = entry->second.burnProgress();
+        }
+    }
     hud.cursorX = cursor.x;
     hud.cursorY = cursor.y;
 

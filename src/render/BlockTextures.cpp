@@ -233,6 +233,31 @@ void generateCraftGrid(std::vector<u8>& out, u32 layer, u32 plankArgb, u32 seamA
     }
 }
 
+/// The side of a furnace: rough stone with a dark arched mouth low on the tile.
+///
+/// Low rather than centred, because a furnace is looked at from standing height and a
+/// mouth in the middle of the face reads as an eye.
+void generateFurnace(std::vector<u8>& out, u32 layer, u32 stoneArgb, u32 mouthArgb,
+                     f32 roughness, u32 seed) {
+    generateGrain(out, layer, stoneArgb, roughness, seed);
+
+    const Rgba mouth = fromArgb(mouthArgb);
+
+    constexpr u32 kMouthTop = 7;
+    constexpr u32 kMouthLeft = 4;
+    constexpr u32 kMouthRight = 11;
+
+    for (u32 y = kMouthTop; y < kSize - 2; ++y) {
+        // The arch: the opening narrows by one column on its top row, which is the
+        // whole difference between a mouth and a rectangle.
+        const u32 inset = y == kMouthTop ? 1u : 0u;
+        for (u32 x = kMouthLeft + inset; x <= kMouthRight - inset; ++x) {
+            const f32 n = noise(x, y, seed + 4u) * roughness * 0.3f;
+            writePixel(out, layer, x, y, shade(mouth, n));
+        }
+    }
+}
+
 // -- item icons ------------------------------------------------------------------
 //
 // **Shapes are hard-coded bit patterns, exactly as the HUD's font is.** That is
@@ -311,6 +336,16 @@ constexpr IconMask kSwordGripArt{
     0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
     0b0001111110000000, 0b0001100000000000, 0b0011000000000000, 0b0110000000000000,
     0b1110000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+};
+
+/// An ingot: a flat bar with bevelled ends, which is what says "smelted" rather than
+/// "dug up". The nugget shape is already the dug-up one, and a coal and an iron ingot
+/// sharing a silhouette would make the furnace's output unreadable at slot size.
+constexpr IconMask kIngotArt{
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0000000000000000, 0b0000111111110000, 0b0001111111111000, 0b0011111111111100,
+    0b0011111111111100, 0b0011111111111100, 0b0011111111111100, 0b0000000000000000,
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
 };
 
 constexpr IconMask kStickArt{
@@ -403,6 +438,10 @@ BlockTextures::BlockTextures() {
             generatePlanks(pixels, index, layer.argb, layer.argbSecondary,
                            layer.roughness, layer.seed);
             break;
+        case TextureRecipe::Furnace:
+            generateFurnace(pixels, index, layer.argb, layer.argbSecondary,
+                            layer.roughness, layer.seed);
+            break;
         case TextureRecipe::CraftGrid:
             generateCraftGrid(pixels, index, layer.argb, layer.argbSecondary,
                               layer.roughness, layer.seed);
@@ -413,6 +452,9 @@ BlockTextures::BlockTextures() {
             break;
         case TextureRecipe::Stick:
             drawMask(pixels, index, kStickArt, layer.argb, layer.roughness, layer.seed);
+            break;
+        case TextureRecipe::Ingot:
+            drawMask(pixels, index, kIngotArt, layer.argb, layer.roughness, layer.seed);
             break;
         case TextureRecipe::ToolPickaxe:
             generateTool(pixels, index, kPickaxeHeadArt, layer.argb,

@@ -71,6 +71,17 @@ public:
         /// Which window it is, which is all the layout needs to know about it.
         ScreenKind screenKind = ScreenKind::Player;
 
+        /// Furnace only: how far through the current smelt, and how much fuel is
+        /// left, both in [0, 1].
+        ///
+        /// **Drawn because a furnace that shows nothing is a furnace the player
+        /// thinks is broken.** It takes ten seconds to smelt one item, which is a
+        /// long time to look at a window with no evidence anything is happening --
+        /// and this project has already shipped one feature that did nothing for four
+        /// sessions because no number on screen would have been zero.
+        f32 cookProgress = 0.0f;
+        f32 burnProgress = 0.0f;
+
         /// Where the pointer is, in NDC. Only read while a window is open, which is
         /// the only time there is a pointer to read.
         f32 cursorX = 0.0f;

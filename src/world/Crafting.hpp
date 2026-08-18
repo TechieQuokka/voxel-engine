@@ -125,6 +125,54 @@ inline constexpr std::array kRecipes{
            "cobblestone", "", "",
            "cobblestone", "", "",
            "stick",       "", ""),
+
+    // **The furnace: eight cobblestone in a ring.** Vanilla's, and the shape matters
+    // -- a full 3x3 of cobblestone is not a furnace, and the empty middle is what a
+    // player has to notice.
+    shaped(itemIdOf("furnace"), 1,
+           "cobblestone", "cobblestone", "cobblestone",
+           "cobblestone", "",            "cobblestone",
+           "cobblestone", "cobblestone", "cobblestone"),
+
+    // -- iron tools ------------------------------------------------------------
+    // **Everything below here needs a furnace**, because an ingot is smelted and
+    // cannot be dug up. This is the wall Phase 16 stopped against, from the far side.
+    shaped(itemIdOf("iron_pickaxe"), 1,
+           "iron_ingot", "iron_ingot", "iron_ingot",
+           "",           "stick",      "",
+           "",           "stick",      ""),
+    shaped(itemIdOf("iron_axe"), 1,
+           "iron_ingot", "iron_ingot", "",
+           "iron_ingot", "stick",      "",
+           "",           "stick",      ""),
+    shaped(itemIdOf("iron_shovel"), 1,
+           "iron_ingot", "", "",
+           "stick",      "", "",
+           "stick",      "", ""),
+    shaped(itemIdOf("iron_sword"), 1,
+           "iron_ingot", "", "",
+           "iron_ingot", "", "",
+           "stick",      "", ""),
+
+    // -- diamond tools ---------------------------------------------------------
+    // And these need an *iron* pickaxe to have been swung, because that is the only
+    // thing that makes diamond ore drop anything.
+    shaped(itemIdOf("diamond_pickaxe"), 1,
+           "diamond", "diamond", "diamond",
+           "",        "stick",   "",
+           "",        "stick",   ""),
+    shaped(itemIdOf("diamond_axe"), 1,
+           "diamond", "diamond", "",
+           "diamond", "stick",   "",
+           "",        "stick",   ""),
+    shaped(itemIdOf("diamond_shovel"), 1,
+           "diamond", "", "",
+           "stick",   "", "",
+           "stick",   "", ""),
+    shaped(itemIdOf("diamond_sword"), 1,
+           "diamond", "", "",
+           "diamond", "", "",
+           "stick",   "", ""),
 };
 
 /// What a 3x3 grid of items produces.

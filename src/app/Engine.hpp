@@ -19,6 +19,7 @@
 #include "world/FallingBlocks.hpp"
 #include "world/Inventory.hpp"
 #include "world/CraftingGrid.hpp"
+#include "world/Furnace.hpp"
 #include "world/ItemEntities.hpp"
 #include "world/PlayerBox.hpp"
 #include "world/Raycast.hpp"
@@ -33,6 +34,7 @@
 #include <semaphore>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace mc {
@@ -80,6 +82,12 @@ public:
         /// `--capture`). Same purpose as `--fly` and `--first-person`: reach a state
         /// a still frame cannot otherwise be taken of.
         bool openInventory = false;
+
+        /// Open a **furnace's** window rather than a crafting table's, seeded with an
+        /// ore and a fuel and already burning. Same argument as `openInventory`: a
+        /// furnace is ten seconds of state that `--capture` has no other way to reach,
+        /// and its gauges are the part most likely to be drawn wrong.
+        bool openFurnace = false;
 
         /// Streams the whole region in before the first frame and logs how long it
         /// took, instead of filling in over several seconds. For measurement.
@@ -506,6 +514,34 @@ private:
     /// alongside the player's slots -- exactly as a crafting table's 3x3 is, which is
     /// why a table needed no new window code.
     CraftingGrid m_playerCraft{2};
+
+    /// Every furnace in the loaded world, by the block it lives in.
+    ///
+    /// **The first block with state of its own**, and the reason it cannot live in
+    /// `Section` with the block id: a furnace is three item stacks and two timers,
+    /// where a section stores a palette index per voxel. Vanilla makes the same split
+    /// and calls the other half a block entity.
+    ///
+    /// A map rather than an array because furnaces are rare and their positions are
+    /// arbitrary. Entries are created when a player first opens one and dropped again
+    /// when it turns out to be `idle()`, so right-clicking every furnace in a village
+    /// does not cost anything permanent.
+    ///
+    /// **This is not saved and does not survive unloading a column.** Persistence is
+    /// Phase 11 and this is the first thing that will genuinely need it -- a furnace
+    /// that forgets what it was smelting when the player walks away is a defect a
+    /// player will notice, and it is recorded rather than hidden.
+    std::unordered_map<BlockPos, Furnace, BlockPosHash> m_furnaces;
+
+    /// Advances every furnace by one simulation tick.
+    void tickFurnaces(u32 ticks);
+
+    /// Gives a broken furnace's contents back to the world, and forgets it.
+    void spillFurnace(BlockPos pos);
+
+    /// Which furnace the open window belongs to. Meaningful only while
+    /// `m_screenKind` is `Furnace`.
+    BlockPos m_openFurnace{};
 
     /// The 3x3 of the crafting table currently open, if one is.
     ///

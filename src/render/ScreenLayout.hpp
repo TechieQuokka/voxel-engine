@@ -33,6 +33,8 @@ enum class ScreenKind : u8 {
     /// A crafting table: 3x3 and its output. The only difference is the edge, which
     /// is the only difference vanilla has either.
     CraftingTable,
+    /// A furnace: one column of two -- ingredient over fuel -- and its output.
+    Furnace,
 };
 
 /// Where every slot of the open screen is, on screen.
@@ -98,8 +100,12 @@ private:
     f32 m_slotSize = 0.0f;
     f32 m_gap = 0.0f;
 
-    /// Edge of the crafting grid: 2 for the player's window, 3 for a table.
-    usize m_craftEdge = 2;
+    /// The container's cells as a rectangle, which is all three windows have in
+    /// common: 2x2 for the player, 3x3 for a table, 1 wide and 2 tall for a furnace.
+    /// **Generalising the crafting edge to rows and columns is what made the furnace
+    /// need no layout code of its own.**
+    usize m_containerRows = 2;
+    usize m_containerColumns = 2;
     usize m_containerSlots = 5;
 
     /// Bottom-left of the main grid's first (top-left) slot row.

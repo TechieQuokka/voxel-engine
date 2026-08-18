@@ -70,8 +70,8 @@ inline constexpr std::array kItems{
     ItemInfo{"redstone", layerOf("redstone")},
     ItemInfo{"lapis_lazuli", layerOf("lapis_lazuli")},
 
-    // Tools. Wood and stone only; iron and diamond need smelting, which needs a
-    // furnace, which is a second window and therefore Phase 17. See ToolTier.
+    // Tools, in tier order. Wood and stone are craftable from what the world hands
+    // you; iron and diamond are below and need the furnace.
     ItemInfo{"wooden_pickaxe", layerOf("wooden_pickaxe"), ToolKind::Pickaxe, ToolTier::Wood, 1},
     ItemInfo{"wooden_axe", layerOf("wooden_axe"), ToolKind::Axe, ToolTier::Wood, 1},
     ItemInfo{"wooden_shovel", layerOf("wooden_shovel"), ToolKind::Shovel, ToolTier::Wood, 1},
@@ -80,6 +80,25 @@ inline constexpr std::array kItems{
     ItemInfo{"stone_axe", layerOf("stone_axe"), ToolKind::Axe, ToolTier::Stone, 1},
     ItemInfo{"stone_shovel", layerOf("stone_shovel"), ToolKind::Shovel, ToolTier::Stone, 1},
     ItemInfo{"stone_sword", layerOf("stone_sword"), ToolKind::Sword, ToolTier::Stone, 1},
+
+    // **Smelted metal, which is what a furnace is for.** These cannot be blocks: a
+    // bar of iron is a thing you carry, and the ore block it came from is a different
+    // thing that is still in the wall.
+    ItemInfo{"iron_ingot", layerOf("iron_ingot")},
+    ItemInfo{"copper_ingot", layerOf("copper_ingot")},
+    ItemInfo{"gold_ingot", layerOf("gold_ingot")},
+
+    // Iron and diamond tools. **This is the far side of the wall Phase 16 stopped
+    // at**: iron ore needs a stone pickaxe, an iron pickaxe needs a smelted ingot,
+    // and diamond needs the iron pickaxe. Every step of that chain now exists.
+    ItemInfo{"iron_pickaxe", layerOf("iron_pickaxe"), ToolKind::Pickaxe, ToolTier::Iron, 1},
+    ItemInfo{"iron_axe", layerOf("iron_axe"), ToolKind::Axe, ToolTier::Iron, 1},
+    ItemInfo{"iron_shovel", layerOf("iron_shovel"), ToolKind::Shovel, ToolTier::Iron, 1},
+    ItemInfo{"iron_sword", layerOf("iron_sword"), ToolKind::Sword, ToolTier::Iron, 1},
+    ItemInfo{"diamond_pickaxe", layerOf("diamond_pickaxe"), ToolKind::Pickaxe, ToolTier::Diamond, 1},
+    ItemInfo{"diamond_axe", layerOf("diamond_axe"), ToolKind::Axe, ToolTier::Diamond, 1},
+    ItemInfo{"diamond_shovel", layerOf("diamond_shovel"), ToolKind::Shovel, ToolTier::Diamond, 1},
+    ItemInfo{"diamond_sword", layerOf("diamond_sword"), ToolKind::Sword, ToolTier::Diamond, 1},
 };
 
 inline constexpr ItemId kItemCount = static_cast<ItemId>(kFirstLooseItem + kItems.size());

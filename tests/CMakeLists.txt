@@ -43,6 +43,7 @@ add_executable(mc_tests
   test_water.cpp
   test_flowing_water.cpp
   test_player_box.cpp
+  test_furnace.cpp
 )
 
 target_link_libraries(mc_tests PRIVATE

@@ -31,22 +31,36 @@ constexpr f32 kClosedBottomMargin = 0.04f;
 constexpr f32 kClosedSlotHeight = 0.11f;
 constexpr f32 kClosedGap = 0.012f;
 
-usize craftEdgeOf(ScreenKind kind) {
+/// The container's cells as (rows, columns). The output is not one of them; it sits
+/// past the arrow and is placed separately.
+struct CellGrid {
+    usize rows = 2;
+    usize columns = 2;
+};
+
+CellGrid cellsOf(ScreenKind kind) {
     switch (kind) {
     case ScreenKind::Player:
-        return 2;
+        return CellGrid{2, 2};
     case ScreenKind::CraftingTable:
-        return 3;
+        return CellGrid{3, 3};
+    case ScreenKind::Furnace:
+        // One column, two rows: ingredient on top, fuel underneath. Vanilla's
+        // arrangement, and it is what makes the fire read as being *below* the thing
+        // it is heating.
+        return CellGrid{2, 1};
     }
-    return 2;
+    return CellGrid{2, 2};
 }
 
 } // namespace
 
 ScreenLayout::ScreenLayout(f32 aspect, ScreenKind kind)
-    : m_aspect(std::max(0.1f, aspect)), m_slotSize(kSlotSize), m_gap(kGap),
-      m_craftEdge(craftEdgeOf(kind)) {
-    m_containerSlots = m_craftEdge * m_craftEdge + 1;
+    : m_aspect(std::max(0.1f, aspect)), m_slotSize(kSlotSize), m_gap(kGap) {
+    const CellGrid grid = cellsOf(kind);
+    m_containerRows = grid.rows;
+    m_containerColumns = grid.columns;
+    m_containerSlots = m_containerRows * m_containerColumns + 1;
 
     const f32 slotX = m_slotSize / m_aspect;
     const f32 gapX = m_gap / m_aspect;
@@ -56,8 +70,9 @@ ScreenLayout::ScreenLayout(f32 aspect, ScreenKind kind)
     const f32 gridHeight = static_cast<f32>(kMainRows) * m_slotSize
                          + static_cast<f32>(kMainRows - 1) * m_gap;
 
-    const auto craftEdge = static_cast<f32>(m_craftEdge);
-    const f32 craftHeight = craftEdge * m_slotSize + (craftEdge - 1.0f) * m_gap;
+    const auto craftRows = static_cast<f32>(m_containerRows);
+    const auto craftColumns = static_cast<f32>(m_containerColumns);
+    const f32 craftHeight = craftRows * m_slotSize + (craftRows - 1.0f) * m_gap;
 
     const f32 totalHeight = craftHeight + kCraftSeparation + gridHeight
                           + kHotbarSeparation + m_slotSize;
@@ -80,7 +95,7 @@ ScreenLayout::ScreenLayout(f32 aspect, ScreenKind kind)
     const f32 arrowX = kArrowWidth * m_slotSize / m_aspect;
     const f32 outputRight = m_gridLeft + gridWidth;
     const f32 craftRight = outputRight - slotX - arrowX;
-    m_craftLeft = craftRight - (craftEdge * slotX + (craftEdge - 1.0f) * gapX);
+    m_craftLeft = craftRight - (craftColumns * slotX + (craftColumns - 1.0f) * gapX);
 
     const f32 craftMiddle = m_craftTop - craftHeight * 0.5f;
     m_output = UiRect{outputRight - slotX, craftMiddle - m_slotSize * 0.5f,
@@ -98,7 +113,7 @@ ScreenLayout::ScreenLayout(f32 aspect, ScreenKind kind)
 }
 
 UiRect ScreenLayout::containerSlot(usize index) const {
-    const usize cells = m_craftEdge * m_craftEdge;
+    const usize cells = m_containerRows * m_containerColumns;
     if (index == cells) {
         return m_output;
     }
@@ -109,8 +124,8 @@ UiRect ScreenLayout::containerSlot(usize index) const {
     const f32 slotX = m_slotSize / m_aspect;
     const f32 gapX = m_gap / m_aspect;
 
-    const usize row = index / m_craftEdge;
-    const usize column = index % m_craftEdge;
+    const usize row = index / m_containerColumns;
+    const usize column = index % m_containerColumns;
 
     const f32 x = m_craftLeft + static_cast<f32>(column) * (slotX + gapX);
     const f32 y = m_craftTop - static_cast<f32>(row + 1) * m_slotSize
