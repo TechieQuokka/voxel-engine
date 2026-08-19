@@ -105,6 +105,15 @@ surface with no texture does not read as a surface at all. No flooded caves yet,
 though: those need vanilla's aquifer system, whose barrier noise is not published
 anywhere usable.
 
+**What you build stays built.** Columns you have edited are written to disk when they
+unload and when you quit, and come back with their furnaces still smelting. Only the
+columns you touched are saved — the rest are regenerated, because generation is
+deterministic and a save should grow with what you did rather than with where you
+walked. The world lives in `saves/world` next to the executable; `--save-path` puts it
+elsewhere and `--no-save` throws the session away.
+
+**The player is not saved yet**, so position, inventory and health reset each run.
+
 `F` switches to flying, `F5` to first person, `Escape` releases the cursor and again
 quits.
 
@@ -112,13 +121,18 @@ Dig down. The caves, ores and darkness are the point, and they are not visible f
 surface.
 
 ```bash
-ctest --preset debug                       # 322 test cases
+ctest --preset debug                       # 350 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
 ./build/release/src/app/minecraft --furnace --capture /tmp/shot.ppm
 ./build/release/src/app/minecraft --hold wooden_pickaxe --first-person --capture /tmp/shot.ppm
 ./build/release/src/app/minecraft --at -52 64.2 14 --look 0 -0.12 --capture /tmp/shot.ppm
+
+# Persistence, checked the only way it can be: run twice against the same save.
+# The second run reports the block as already set, which only a working save produces.
+./build/release/src/app/minecraft --save-path /tmp/w --edit 0 91 0 air --capture /tmp/shot.ppm
+./build/release/src/app/minecraft --save-path /tmp/w --edit 0 91 0 air --capture /tmp/shot.ppm
 ```
 
 ## How it is built
@@ -134,6 +148,7 @@ cmake --preset asan && ctest --preset asan  # address + undefined
 | Depth | reversed-Z with an infinite far plane, so the frustum has five planes |
 | Terrain | density functions on a 4×8×4 interpolation grid, then surface rules, then carvers |
 | Errors | exceptions only at init and load boundaries; `Result<T, E>` everywhere else |
+| Saves | vanilla's region container, **only edited columns**, uncompressed — the palette words already are the compressed form |
 
 Dependency direction is enforced at link time rather than documented: `mc_render` does
 not link `mc_worldgen`, and glad, GLFW and FastNoise2 are all linked `PRIVATE` so their
@@ -181,8 +196,9 @@ tracks remain, independent of each other:
 - **Performance** — indirect draw with GPU culling, four-level LOD, brickmap ray marching
   for the far field, occlusion culling. This is what the render-distance target needs.
 - **Interaction** — block placement and breaking, trees, item drops, a slot inventory
-  with its window, a HUD, health, block updates, oceans and flowing water are all
-  **done**. Still open: aquifers, the rest of vegetation, and persistence.
+  with its window, a HUD, health, block updates, oceans, flowing water and
+  **persistence** are all **done**. Still open: saving the *player*, aquifers, and the
+  rest of vegetation.
 - **Crafting** — Phases 16 to 19. **16 and 17 are built**: items stopped being block
   types, there is a container-window layer, a crafting table gates the 3x3 recipes, and
   a furnace smelts — so iron and diamond are reachable and the whole ore table means

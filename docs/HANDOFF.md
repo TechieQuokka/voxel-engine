@@ -22,8 +22,16 @@ no use for.
 | Track | State |
 |---|---|
 | **Performance** — phases 0-8 | 0-3 done. **4 in progress**: 4a-4c built, **4d (biomes) is the last step and is *not* next** — it still has the unresolved input in section 6. 5-8 untouched. |
-| **Interaction** — 9-15 | **Done**, plus trees, oceans, flowing water, held placement and a real player box. |
+| **Interaction** — 9-15 | **Done**, plus trees, oceans, flowing water, held placement and a real player box. **11 (persistence) is built** -- DESIGN.md 7.24. |
 | **Crafting** — 16-19 | **16 and 17 done** -- the window layer, the crafting table, and the furnace. 18-19 open, below. |
+
+**The world survives being closed now, and the player does not.** Edited columns and
+their furnaces go to disk on unload and on exit; position, inventory, health and the
+hotbar selection all reset. That is the obvious next step and it is small -- one file,
+and a decision about what belongs in it. **Note that 4d (biomes) will move terrain
+under existing saves**, which is exactly why columns are stored whole rather than as
+deltas; old saves keep their edited columns and regenerate the rest, so the seam will
+be visible at the edges of anything built near where terrain shifted.
 
 The two tracks are independent, so 4d being open alongside finished interaction work
 is not a contradiction.
@@ -90,10 +98,17 @@ carrying as method rather than as history:
 
 ### Where to resume
 
-**Nothing is half-finished.** 322 tests, asan passes. **tsan is clean** over twelve
-seconds of the running app, re-run on 2026-08-19 after the water phase.
+**Nothing is half-finished.** 350 tests, asan passes. **tsan is clean** over twelve
+seconds of the running app, re-run on 2026-08-19 after persistence -- twice, once
+writing and once loading, because the two exercise different halves of the store.
 
-Four of these need a person, and they are first on purpose — the list of things this
+> **The asan preset had stopped building again**, on `-Wsign-conversion` in
+> `mesh/Quad.hpp:98` -- `fluidDrop`, from the water-surface commit. Fixed on
+> 2026-08-19. This is the second time, and both times `ctest --preset asan` reported
+> a pass because it ran a stale binary. **Build asan with `--clean-first` after a
+> long gap, and read the build output rather than the test summary.**
+
+Five of these need a person, and they are first on purpose — the list of things this
 project found by playing is longer than the list it found by reasoning.
 
 1. **Walk the whole chain to a diamond.** Tree, planks, table, sticks, wooden pickaxe,
@@ -110,6 +125,15 @@ project found by playing is longer than the list it found by reasoning.
    structurally cannot produce because it never edits the world.
    **Dig below the waterline** -- breaking blocks above it correctly leaves `flowed`
    at zero, which is what two earlier sessions of this phase were reporting.
+   **2026-08-19, a second session: digging the shore did nothing.** A block dug out
+   at the waterline, touching the sea, stayed a dry hole -- the first thing anyone
+   tries with water, never working, past eleven passing tests and past the `flowed 32`
+   session above. The slope search counted every direction back into the sea as a
+   drop worth preferring, because what is under water at the edge of a lake is more
+   water, and filtered out the one direction pointing at the hole. Fixed in
+   DESIGN.md 7.25. **The tests missed it because all of them were a single layer of
+   water on stone**, which is the same omission the `pool` helper's comment already
+   records being found once before.
    What is still unjudged, and needs eyes rather than a counter:
    - **The ripple amplitude**, now 26. Four was invisible, sixteen was better,
      twenty-six is where it sits; a still capture cannot show the scroll at all.
@@ -128,20 +152,33 @@ project found by playing is longer than the list it found by reasoning.
    - **Ten seconds in the real game would settle a deliberate deviation**: empty a
      bucket in mid-air and see whether vanilla makes a single column or a wide
      curtain. RESEARCH.md 7.1 has why it matters.
-3. **Knock a sand pillar over.** Phase 12 has *still* never been seen by a person, for
+3. **Build something, quit, and come back to it.** Persistence has been checked by
+   two runs of `--edit` and by 27 tests, and neither of those is a person finding
+   their house. What a session would find that a test cannot:
+   - **Walk far enough that the column unloads, then walk back.** That is the path
+     that was broken before this phase, and it is not the same path as quitting --
+     the save happens at unload, mid-session, with workers running.
+   - **Leave a furnace smelting and walk away.** It should still be burning, or
+     finished, when the column comes back. The timers are saved; whether the flame
+     reads right on return is a thing to look at.
+   - **Watch `saved` and `loaded` on the stats line.** They are new. `FAILED` only
+     appears when it is non-zero, which is the point.
+   - **The player is not saved**, so position, inventory and health reset every run.
+     Expect that; it is the next piece of work, not a bug.
+4. **Knock a sand pillar over.** Phase 12 has *still* never been seen by a person, for
    the same reason. Place a few sand blocks and dig out the bottom one. This is the
    oldest unverified thing in the project.
-4. **Look at water from underneath, and press `F11` back to windowed.** Back-face
+5. **Look at water from underneath, and press `F11` back to windowed.** Back-face
    culling is off for the translucent pass precisely so the surface reads from below,
    and `--capture` cannot put a camera under the sea. Both fullscreen sessions started
    from `--fullscreen`, so the path that restores the remembered windowed rectangle —
    the one with the Wayland caveat under it — has never run. Water is a short walk
    **west of spawn**.
-5. **Light does not cross column borders.** A cave lit through an opening one column
+6. **Light does not cross column borders.** A cave lit through an opening one column
    over stays dark, with a straight vertical boundary. Needs a light-changed signal
    threaded into the dirty-mask and pin machinery meshing already uses, so it is a
    phase rather than a patch. Section 6 has the shape of it.
-6. ~~**The persistent-buffer hazard**~~ — **done 2026-08-18** (DESIGN.md 7.21). One
+7. ~~**The persistent-buffer hazard**~~ — **done 2026-08-18** (DESIGN.md 7.21). One
    `rhi::FrameRing`, owned by `Engine` and advanced once per frame; all five writes go
    through it and `SectionMeshStore` keeps its own discipline. Phase 5's command buffer
    is the sixth caller and needs no new machinery.
@@ -157,7 +194,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (322 cases, doctest)
+# Test  (350 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
@@ -245,6 +282,30 @@ git worktree remove --force /tmp/baseline
 # the part most likely to be drawn wrong -- the flame's first placement was in the
 # one-pixel gap between two slots and drew underneath them.
 ./build/release/src/app/minecraft --furnace --capture /tmp/shot.ppm
+
+# **Set one block, once, after the world has streamed in.** This is how persistence
+# is checked, and it is the only way: `--capture` cannot dig, and the whole claim of
+# a save is about what happens *between* two runs.
+#
+# Run it twice against the same save directory. The first reports `grass -> air
+# [applied]`, the second `air -> air [UNCHANGED (already set)]` -- and nothing but a
+# column that came back off disk can produce the second.
+#
+# **Pick a block that is actually there.** The first version of this check used
+# (0, 92, 0), which is one block above the ground at spawn and was already air, so
+# both runs said UNCHANGED and it would have passed with persistence absent
+# entirely. Spawn ground is y=91.
+./build/release/src/app/minecraft --save-path /tmp/save --edit 0 91 0 air --capture /tmp/shot.ppm
+./build/release/src/app/minecraft --save-path /tmp/save --edit 0 91 0 air --capture /tmp/shot.ppm
+
+# Where the world is saved. Defaults to `saves/world` next to the executable,
+# resolved like assets are -- never relative to the working directory.
+./build/release/src/app/minecraft --save-path /tmp/some-world
+
+# **Run without touching the disk.** For measurement and for throwaway sessions.
+# A benchmark flight edits nothing so it would write nothing anyway; what this
+# removes is the region files being opened and the level file being created.
+./build/release/src/app/minecraft --no-save --bench-seconds 20
 
 # Open a **crafting table's** window and seed it, then capture. A window is the only
 # thing in the engine that needs a pointer to exist, so --capture cannot otherwise

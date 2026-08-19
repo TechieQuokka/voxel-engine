@@ -3235,6 +3235,224 @@ from playing rather than from a benchmark that structurally cannot produce it.
 
 ---
 
+### 7.24 Phase 11 — the world survives being closed
+
+Until this, everything the player did was thrown away. Not at exit, which would have
+been bad enough — **at column unload**. Walk two hundred blocks from a house and it
+was gone when you came back, because the column holding it fell outside the render
+distance and was destroyed. `Engine.hpp` had carried the admission in a comment since
+Phase 17b: *"a furnace that forgets what it was smelting when the player walks away is
+a defect a player will notice, and it is recorded rather than hidden."*
+
+#### What is saved, and the argument for saving so little
+
+**Only columns the player edited.** `Generator::generateColumn` is `const`, reads
+nothing but a shared noise graph and writes nothing but its own column, so an
+untouched column is reproduced exactly by generating it again. Writing it out as well
+would make the world on disk grow with where the player *walked* rather than with
+what they *did* — a twenty-minute flight at render distance 16 touches tens of
+thousands of columns and changes none of them.
+
+`Chunk::edited()` is what decides, and it is set in three places, which is two more
+than the obvious one:
+
+1. `World::setBlock`, after the `Unchanged` return — placing a block where that block
+   already is must not make a column worth writing.
+2. A furnace's tick, when `Furnace::tick` reports that something moved. **A furnace
+   burning down is a change to its column that no `setBlock` will ever mark.**
+3. A click in a furnace's window. An unlit furnace with fresh fuel ticks to no effect
+   until something starts it, so neither of the above would fire.
+
+The third was found by asking what changes a furnace, not by testing — and it is the
+kind of gap that would have shipped as "sometimes the furnace is empty when you come
+back."
+
+#### A snapshot, not a delta — and this is the decision worth reading
+
+The tempting design is to save only the blocks that changed. Generation is
+deterministic, so a delta plus a seed reconstructs the column; a column where the
+player broke twenty blocks costs about 120 bytes where a snapshot costs tens of
+kilobytes. Two orders of magnitude, for free.
+
+It is not free. **A delta reconstructs the column exactly for the generator that
+wrote it.** Phase 4d (biomes) is open and will move terrain everywhere. Every delta on
+disk would then replay onto ground that is no longer there: a house half-buried, a
+mine ending in rock, and no error anywhere to say why. Minecraft stores whole chunks
+for this reason. Here it is not a hypothetical risk but a scheduled change, which is
+what settles it.
+
+#### Three deliberate departures from vanilla
+
+**The container is vanilla's region file**, 32x32 columns per file, 4 KiB sectors, an
+8 KiB header of packed offsets and timestamps. A file per column would put tens of
+thousands of files in a directory; one file for the world would need its own index
+anyway. The layout is documented, inspectable in a hex editor, and the arithmetic is a
+shift. There was no reason to invent a different one.
+
+The departures:
+
+- **No compression.** Vanilla zlib-compresses every chunk. zlib would be this
+  project's seventh dependency, in a build that has kept six and every one of them a
+  foundation (section 4). The sections are palette-compressed already — typically four
+  bits per voxel — and `Palette::words()` goes to disk untouched, which is the whole
+  argument. **The compression byte is still there, in vanilla's position holding
+  vanilla's meaning**, so adding zlib later is a new enumerator rather than a format
+  break, and a file written with one is refused rather than misread as raw bytes.
+- **Little-endian integers**, where vanilla's are big. One architecture, by
+  constraint (section 1); a byte-swapping reader would be untestable code guarding
+  against a port that is ruled out.
+- **Sky light is not stored.** It is derived from the voxels, costs about 0.5 ms per
+  column, and would otherwise be the largest thing in the file — a nibble per voxel is
+  16 KiB per non-uniform section, against the 16 KiB the blocks themselves take at 4
+  bits. Decoding recomputes it, which also means a save written before a lighting fix
+  picks the fix up rather than preserving the bug.
+
+**Palette entries are names, not ids.** A `BlockId` is a position in `kBlocks`, so
+inserting one block type shifts every id above it and would turn saved stone into
+deepslate with nothing to detect it. Vanilla writes namespaced ids in its chunk
+palettes for the same reason. A name this build does not have loads as air with a
+warning, which is the one case where a save from a newer build stays partly readable.
+
+#### Where loading happens, and why it is there
+
+**Inside the generation job**, not on the main thread. That is the one point where
+exactly one thread owns a column and nothing else can see it: the column is in
+`Generating`, which is what stops the World unloading it and what makes
+`World::blockAt` answer air for it meanwhile. The load either fills the column or
+reports that nobody edited it, and the job generates in the second case. The tail is
+identical either way — `markAllDirty()` then `setState(Ready)` — so a loaded column
+and a generated one arrive in the same state by the same steps.
+
+Furnaces cannot go straight in. They live in a map the simulation walks every tick,
+which belongs to the main thread, so a worker parks them under a mutex and
+`adoptLoadedFurnaces()` collects them once a frame, before the tick — so a furnace
+that came off disk this frame burns on this frame's tick.
+
+`WorldStore` holds one lock over the whole store, because the interesting unit of
+exclusion is the region rather than the file object: two workers wanting neighbouring
+columns want the same sector table. The lock covers the file and not the codec —
+bytes are read under it and decoded after it is released, since decoding recomputes
+sky light and that is the expensive half.
+
+#### The seed is checked, and that check is load-bearing
+
+The whole scheme rests on unedited columns regenerating identically, so a save
+carries its seed and refuses to open against a different one. Opening a save from
+another world would drop edited columns into terrain that was never theirs, which
+looks like corruption and cannot be detected after the fact. It is detected before
+anything is read instead.
+
+Determinism holds within a machine. FastNoise2 dispatches on the widest SIMD the CPU
+has, so a save carried to a different one could in principle regenerate its *unedited*
+columns slightly differently; the edited ones, which are the only ones on disk, are
+unaffected. One Linux target by constraint, so that is recorded rather than guarded
+against.
+
+#### Two things found by running it rather than by reasoning
+
+**Reading was creating files.** The first end-to-end run saved nothing and still left
+four empty 8 KiB region files behind, because every column generated looks itself up
+on disk and `RegionFile::open` created what it did not find. A flight across the world
+would have littered a header file over every region it passed over — in a save whose
+entire premise is that it grows with what the player did. `open` takes
+`createIfMissing` now, and only writing passes true.
+
+**The first round-trip test proved nothing.** It broke the block at (0, 92, 0), which
+is one block above the ground at spawn and was already air, so both runs reported
+`UNCHANGED` and the check would have passed with persistence entirely absent. Choosing
+(0, 91, 0) — the grass — is what made it a test. This is the same failure as the item
+pickup counter that could only ever read zero, and it is worth writing down that it
+happened again, in the same session as the code that fixed the class of bug.
+
+#### What it cost, and what it needs
+
+`--edit X Y Z <block>` exists for the same reason `--hold`, `--furnace` and `--at`
+do: `--capture` cannot dig, and persistence is the one feature whose whole claim is
+about what happens *between* two runs. Run it twice against the same save and the
+second reports the block as already set, which nothing but a working save can
+produce. That is the verification, and it is in the commands section of HANDOFF.md.
+
+An edited surface column measures about 90 KiB on disk — 22 sectors — which is more
+than the 50 KiB estimated from "typically four bits per voxel," because a surface
+column has more non-uniform sections than the estimate assumed. The three save
+counters are on the stats line for this project's oldest reason: a save that has
+quietly stopped writing looks exactly like a save with nothing to write.
+
+**Still open**: the player is not saved. Position, inventory, health and the hotbar
+selection all reset, so walking back to a house means walking. That is a small file
+and a separate decision about what belongs in it, and it is the obvious next step
+rather than a hole in this one. Dropped items and falling blocks are also not saved,
+which vanilla does save; they are the shortest-lived things in the world and both are
+recreated by the blocks around them.
+
+---
+
+### 7.25 The shoreline never flooded, and eleven tests said it did
+
+One sentence of play, again: *dig near water and it should spread — it doesn't.*
+
+It didn't. Digging a block out of the shore **at the waterline, touching the sea**,
+left a dry hole forever. This is the first thing anyone tries with water and it had
+never worked, through the whole life of flowing water in 7.17 and 7.23, past a play
+session that reported `flowed 32`, and past eleven passing tests.
+
+#### The slope search preferred the sea over the hole
+
+`examineFluid`'s slope search looks up to five blocks in each of four directions for
+somewhere the water could fall and, finding one, flows *only* that way — which is what
+makes water seek a cliff edge rather than spread as a disc (7.17). A direction counts
+when the block **under** the candidate is replaceable.
+
+At the edge of a body of water, that test is always true in the wrong direction:
+
+| From the shore's water block | candidate | under it | verdict |
+|---|---|---|---|
+| toward the sea | water | **water** — replaceable | **preferred** |
+| toward the dug hole | air | sand — solid | not preferred |
+
+So every direction back into the sea came out preferred, the one direction pointing at
+the hole did not, and the spread loop filtered it out. The water then "flowed" into
+itself, which is a no-op against a full source, and nothing happened at all. Forever,
+and with no counter moving to say so.
+
+**The fix is one condition: a source is the body of water, not a hole in it.** The
+walk stops at a full source — you cannot flow into one and you cannot see past one to
+find a drop beyond it. Flowing water, level 1 to 7, still counts as a hole, so the
+rule 7.17 wrote down for that case is untouched: a hole that has already filled must
+keep counting, or a flow loses its direction the moment it succeeds.
+
+#### Why eleven tests missed it
+
+**Every one of them was a single layer of water on stone.** In that world the block
+under a candidate is always the floor, no direction is ever preferred, `anyPreferred`
+stays false, and the filter this bug lives in never runs. The `pool` helper's own
+comment records the same omission being found once before — *"all of them are a single
+layer of water on stone... water sat inert in the real game while all eight of those
+tests passed"* — and the shape that was missing this time was one step further out: a
+body of water with a **shore**, shallow at the edge and deeper away from it.
+
+That is now `digging the shore at water level lets the sea in`, built as a direct
+reduction of the real terrain at (-32, 62, 14).
+
+#### The harness lied first, and that is the part worth keeping
+
+The first attempt to reproduce this in the real game reported the hole staying dry
+**with the fix applied**, which nearly buried a correct diagnosis. `--edit` was calling
+`World::setBlock` directly rather than `Engine::applyEdit`, and `applyEdit` is what
+calls `BlockUpdates::notify`. Without it nothing in the world is ever told anything
+happened — no sand falls, no water flows — so the flag was not simulating a dig at
+all. A new flag, written the same session, tested nothing and looked like evidence
+against the fix.
+
+The A/B that settled it kept the harness fix and reverted only the flow fix:
+`air` without it, `water_1` with it, same terrain, same command.
+
+**Both halves of this entry are the same lesson.** A test that cannot fail and a
+harness that cannot act look identical to a passing result, and the only thing that
+has ever caught either in this project is someone playing it.
+
+---
+
 ## 8. Open Questions
 
 Filled in with recommended defaults above, but expected to need revisiting once
@@ -3248,11 +3466,14 @@ implementation makes contact with reality:
   procedurally, no binary assets in the repository.
 - **Occlusion culling method** — HZB, visibility graph, or both. Decided by
   profiling in Phase 8.
-- ~~**World persistence** — whether it is in scope at all~~ — **in scope as of the
-  2026-08-11 scope change**, as Phase 11. Once a player can edit the world, throwing
-  the edits away on exit is a defect rather than a simplification. The disk format is
-  still undecided; palette-compressed sections are already compact, so the open part
-  is the container and whether it compresses at all.
+- ~~**World persistence** — whether it is in scope at all, and the disk format~~ —
+  **built, 7.24.** Vanilla's region container, columns saved whole rather than as
+  deltas, and uncompressed: the palette words are already the compressed form and
+  zlib would be a seventh dependency, with the compression byte reserved in vanilla's
+  position so that stays reversible. Only edited columns are written, which is what
+  the seed check in the level file exists to protect. **What is still open is the
+  player**: position, inventory and health are not saved, which is a small file and a
+  separate decision about what belongs in it.
 - ~~**Where block light's sixteen bits come from**~~ — **resolved in 3.7 as part of
   planning Phase 18**: they do not. Sky and block light combine into the per-corner
   brightness the 64-bit quad already carries, and the tint is what that costs. 3.7
