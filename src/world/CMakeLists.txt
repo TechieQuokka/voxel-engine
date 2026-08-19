@@ -2,6 +2,9 @@ add_library(mc_world STATIC
   BlockRegistry.cpp
   SkyLight.cpp
   Chunk.cpp
+  ChunkCodec.cpp
+  RegionFile.cpp
+  WorldStore.cpp
   Palette.cpp
   Raycast.cpp
   Inventory.cpp

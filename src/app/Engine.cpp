@@ -196,6 +196,28 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
     m_world = std::make_unique<World>(m_options.renderDistance);
     m_generator = std::make_unique<Generator>();
 
+    // Opened before any worker exists, because the generation job reads from it.
+    //
+    // **Failure here throws rather than dropping to a session that cannot save.**
+    // This is an init boundary, where exceptions are the convention (DESIGN.md 6.2),
+    // and the alternative is worse than not starting: a player who opened the wrong
+    // directory, or whose disk is full, would play for an hour and lose it at the
+    // door with only a line in the log to say so.
+    if (!m_options.noSave) {
+        const std::filesystem::path savePath =
+            m_options.savePath.empty() ? executableDir() / "saves" / "world"
+                                       : std::filesystem::path(m_options.savePath);
+
+        Result<std::unique_ptr<WorldStore>, WorldStore::Error> store =
+            WorldStore::open(savePath, m_generator->seed());
+        if (!store) {
+            throw std::runtime_error(std::string("Cannot open the world save: ")
+                                     + describe(store.error()));
+        }
+        m_store = std::move(store).value();
+        logInfo("World save: {}", m_store->directory().string());
+    }
+
     // Worth one line: FastNoise2 dispatches on the CPU at runtime, and the gap between
     // AVX2 and SSE2 is large enough that a generation timing is meaningless without
     // knowing which one ran.
@@ -283,12 +305,53 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
         m_reportedWarm = true;
     }
 
+    applyStartupEdit();
+
     logInfo("Engine initialized (render distance {}, {} columns loaded)",
             m_options.renderDistance, m_world->loadedChunkCount());
 }
 
+void Engine::applyStartupEdit() {
+    if (!m_options.editPosition.has_value()) {
+        return;
+    }
+
+    const BlockPos pos = *m_options.editPosition;
+    const std::optional<BlockId> block =
+        BlockRegistry::instance().findByName(m_options.editBlock);
+    if (!block.has_value()) {
+        logError("--edit names '{}', which is not a block", m_options.editBlock);
+        return;
+    }
+
+    // Read before writing, and log both. **The "before" is the whole point of this
+    // flag**: run it twice against the same save and the second run reports the
+    // block as already set, which nothing but a column that came back off disk can
+    // produce.
+    const BlockId before = m_world->blockAt(pos);
+
+    // **Through `applyEdit`, not `World::setBlock`.** The first version called
+    // `setBlock` directly and was therefore not a dig at all: `applyEdit` is what
+    // calls `m_blockUpdates.notify`, and without it nothing in the world is told
+    // anything happened -- no sand falls, and no water flows in. That made this flag
+    // silently useless for the one thing it was about to be used for, and it read as
+    // a bug in the water rather than in the harness.
+    const bool ok = applyEdit(pos, *block);
+
+    logInfo("--edit ({}, {}, {}): {} -> {} [{}]", pos.x, pos.y, pos.z,
+            BlockRegistry::instance()[before].name, m_options.editBlock,
+            before == *block ? "UNCHANGED (already set)" : ok ? "applied" : "refused");
+}
+
 Engine::~Engine() {
+    // Streaming stops first. A worker part-way through loading a column is reading
+    // the same region file this is about to write, and the store's lock would let
+    // both happen in an order nobody chose.
     shutdownStreaming();
+
+    // After the workers and before the World: `m_world` is a member and outlives
+    // this body, so every loaded column is still here to be written.
+    saveEverything();
 }
 
 void Engine::runMeshBenchmark() {
@@ -415,7 +478,14 @@ void Engine::updateLoadedRegion() {
     m_loadedCenter = center;
     m_hasLoadedCenter = true;
 
-    for (const ChunkPos pos : result.unloadedPositions) {
+    for (const std::unique_ptr<Chunk>& dropped : result.unloaded) {
+        const ChunkPos pos = dropped->position();
+
+        // **Before anything else touches it.** This is the last moment the column
+        // exists; it is destroyed when `result` goes out of scope at the end of this
+        // function.
+        saveColumn(*dropped);
+
         // Give back the GPU storage.
         for (i32 sectionY = kMinSectionY; sectionY < kMaxSectionY; ++sectionY) {
             m_meshStore->release(SectionPos{pos.x, sectionY, pos.z}, m_frame);
@@ -436,23 +506,123 @@ void Engine::updateLoadedRegion() {
         }
     }
 
-    if (result.created > 0 || result.unloaded > 0) {
+    if (result.created > 0 || !result.unloaded.empty()) {
         logDebug("Region {},{}: +{} -{} (retained {}), {} loaded",
-                 center.x, center.z, result.created, result.unloaded, result.retained,
-                 m_world->loadedChunkCount());
+                 center.x, center.z, result.created, result.unloaded.size(),
+                 result.retained, m_world->loadedChunkCount());
+    }
+}
+
+std::vector<SavedFurnace> Engine::furnacesIn(ChunkPos column) const {
+    std::vector<SavedFurnace> found;
+    for (const auto& [pos, furnace] : m_furnaces) {
+        if (toChunkPos(pos) == column) {
+            found.push_back(captureFurnace(pos, furnace));
+        }
+    }
+    return found;
+}
+
+void Engine::saveColumn(const Chunk& chunk) {
+    if (!m_store || !chunk.edited()) {
+        return;
+    }
+
+    const ChunkPos pos = chunk.position();
+    const std::vector<SavedFurnace> furnaces = furnacesIn(pos);
+
+    // The failure is logged inside the store, which also counts it. Nothing here
+    // can usefully recover -- the column is about to be destroyed either way -- so
+    // the counter in the stats line is what makes a save that stopped working
+    // visible, rather than it looking like a save with nothing to do.
+    (void)m_store->saveColumn(chunk, furnaces);
+
+    // Furnaces go with the column. Keeping them would leave the map growing with
+    // every furnace the player ever walked past, and a stale one would be found by
+    // a later right-click on a block that is no longer a furnace.
+    if (!furnaces.empty()) {
+        for (const SavedFurnace& saved : furnaces) {
+            m_furnaces.erase(saved.position);
+        }
+    }
+}
+
+void Engine::saveEverything() {
+    if (!m_store) {
+        return;
+    }
+
+    usize written = 0;
+    m_world->forEachChunk([&](Chunk& chunk) {
+        if (chunk.edited()) {
+            (void)m_store->saveColumn(chunk, furnacesIn(chunk.position()));
+            ++written;
+        }
+    });
+    m_store->flush();
+
+    const WorldStore::Stats stats = m_store->stats();
+    logInfo("Saved {} columns on exit ({} written and {} loaded this session, {} failures)",
+            written, stats.columnsSaved, stats.columnsLoaded, stats.failures);
+}
+
+void Engine::adoptLoadedFurnaces() {
+    std::vector<SavedFurnace> loaded;
+    {
+        const std::lock_guard<std::mutex> guard(m_loadedFurnaceMutex);
+        if (m_loadedFurnaces.empty()) {
+            return;
+        }
+        loaded.swap(m_loadedFurnaces);
+    }
+
+    for (const SavedFurnace& saved : loaded) {
+        applyFurnace(saved, m_furnaces[saved.position]);
     }
 }
 
 void Engine::generateColumnJob(void* context, u64 payload) {
     MC_PROFILE_SCOPE_N("generateColumnJob");
 
-    auto* generator = static_cast<Generator*>(context);
+    auto* engine = static_cast<Engine*>(context);
     auto* chunk = reinterpret_cast<Chunk*>(static_cast<std::uintptr_t>(payload));
 
-    // Sets the column Ready and marks every section dirty when it finishes. The
-    // Generating state it was put in before submission is what keeps the World from
-    // unloading it while this runs.
-    generator->generateColumn(*chunk);
+    // **Loading happens here rather than on the main thread, and the reason is the
+    // same one that puts generation here**: this is the one point where a single
+    // thread owns the column and nothing else can see it. The `Generating` state it
+    // was put in before submission is what keeps the World from unloading it, and
+    // what makes `World::blockAt` answer air for it in the meantime.
+    if (engine->m_store) {
+        std::vector<SavedFurnace> furnaces;
+        const Result<bool, WorldStore::Error> loaded =
+            engine->m_store->loadColumn(*chunk, &furnaces);
+
+        // A value of false means nobody edited this column, which is the ordinary
+        // case; an error means it is on disk and unreadable, and both regenerate.
+        // Regenerating over a half-decoded column is safe: every branch of
+        // `generateColumn` fills the section it is about to write.
+        if (loaded.hasValue() && loaded.value()) {
+            if (!furnaces.empty()) {
+                const std::lock_guard<std::mutex> guard(engine->m_loadedFurnaceMutex);
+                engine->m_loadedFurnaces.insert(engine->m_loadedFurnaces.end(),
+                                                furnaces.begin(), furnaces.end());
+            }
+
+            // A column off disk is written back when it unloads, because a furnace
+            // in it burns down while nobody is looking and nothing else would say
+            // its timers moved.
+            chunk->markEdited();
+
+            // The same tail `generateColumn` ends on, so a loaded column and a
+            // generated one arrive in exactly the same state.
+            chunk->markAllDirty();
+            chunk->setState(ChunkState::Ready);
+            return;
+        }
+    }
+
+    // Sets the column Ready and marks every section dirty when it finishes.
+    engine->m_generator->generateColumn(*chunk);
 }
 
 void Engine::meshSectionJob(void* context, u64 payload) {
@@ -501,7 +671,7 @@ usize Engine::submitGeneration() {
         // about to write into, and Generating is what tells it so.
         chunk.setState(ChunkState::Generating);
 
-        const Job job{&generateColumnJob, m_generator.get(),
+        const Job job{&generateColumnJob, this,
                       static_cast<u64>(reinterpret_cast<std::uintptr_t>(&chunk))};
 
         if (!m_jobs->submit(priorityFor(chunk.position()), job)) {
@@ -1168,7 +1338,15 @@ void Engine::tickFurnaces(u32 ticks) {
         return;
     }
     for (auto& [pos, furnace] : m_furnaces) {
-        furnace.tick(ticks);
+        // `tick` reports whether anything moved, which is exactly the question the
+        // save needs answered: a furnace burning down is a change to its column that
+        // no `setBlock` will ever mark. An idle one marks nothing, so standing next
+        // to an empty furnace does not make its column worth writing.
+        if (furnace.tick(ticks)) {
+            if (Chunk* chunk = m_world->find(toChunkPos(pos))) {
+                chunk->markEdited();
+            }
+        }
     }
 }
 
@@ -1225,6 +1403,17 @@ void Engine::updateInventoryScreen() {
         m_screen->click(*slot);
     } else {
         m_screen->split(*slot);
+    }
+
+    // A click that put ore into a furnace changed the world, and no `setBlock` and
+    // no tick will say so -- an unlit furnace with fresh fuel ticks to no effect
+    // until something starts it. Marked unconditionally rather than on a comparison:
+    // the click may have moved a stack the player's way instead, and writing a
+    // column that did not need it costs one 4 KiB record.
+    if (m_screenKind == ScreenKind::Furnace) {
+        if (Chunk* chunk = m_world->find(toChunkPos(m_openFurnace))) {
+            chunk->markEdited();
+        }
     }
 }
 
@@ -1694,13 +1883,25 @@ void Engine::reportStats(f64 fps, f64 frameMs) {
                  static_cast<i32>(std::floor(feet.y + 0.5f)),
                  static_cast<i32>(std::floor(feet.z))}));
 
+    // **The save's three counters are on this line for the reason all of these are.**
+    // Item pickup was broken through four sessions and a full test suite because
+    // nothing printed a figure that would have been zero. A save that has quietly
+    // stopped writing looks exactly like a save with nothing to write, and `failed`
+    // is the only thing that tells them apart while the game is running.
+    const WorldStore::Stats save =
+        m_store ? m_store->stats() : WorldStore::Stats{};
+
     logInfo("  broke {} | placed {} | collected {} | {} items, {} falling, "
-            "{} updates queued | flowed {}{} | at ({:.1f}, {:.1f}, {:.1f}){}",
+            "{} updates queued | flowed {}{} | saved {} / loaded {}{} | "
+            "at ({:.1f}, {:.1f}, {:.1f}){}",
             m_blocksBroken, m_blocksPlaced, m_itemsCollected,
             m_items.size(), m_falling.size(), m_blockUpdates.pending(),
             m_blocksFlowed,
             m_fluidSuspends > 0 ? std::format(" ({} suspended)", m_fluidSuspends)
                                 : std::string{},
+            save.columnsSaved, save.columnsLoaded,
+            save.failures > 0 ? std::format(", {} FAILED", save.failures)
+                              : std::string{},
             feet.x, feet.y, feet.z, buried ? " BURIED" : "");
 }
 
@@ -1709,6 +1910,10 @@ void Engine::stepFrame(f64 deltaTime) {
 
     // Return ranges retired long enough ago before allocating any new ones.
     m_meshStore->recycle(m_frame);
+
+    // Before the tick, so a furnace that came off disk this frame burns on this
+    // frame's tick rather than sitting cold until the next one.
+    adoptLoadedFurnaces();
 
     // Before submitting, so a block broken this frame is remeshed this frame rather
     // than sitting visibly intact until the next one.

@@ -25,13 +25,16 @@
 #include "world/PlayerBox.hpp"
 #include "world/WalkMove.hpp"
 #include "world/Raycast.hpp"
+#include "world/ChunkCodec.hpp"
 #include "world/Screen.hpp"
 #include "world/World.hpp"
+#include "world/WorldStore.hpp"
 #include "worldgen/Generator.hpp"
 
 #include <array>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <semaphore>
 #include <string>
@@ -136,6 +139,34 @@ public:
         /// -- and the result means nothing. Tying motion to real time costs
         /// reproducibility of the exact path and buys a number that describes a player.
         f64 benchSeconds = 0.0;
+
+        /// Where the world is saved. Empty means `saves/world` next to the
+        /// executable, resolved the same way assets are -- never relative to the
+        /// working directory, so running from a debugger reaches the same world.
+        std::string savePath;
+
+        /// Set one block, once, after the world has streamed in.
+        ///
+        /// **This exists because `--capture` cannot dig, and persistence is the one
+        /// feature whose whole claim is about what happens between two runs.** Same
+        /// argument as `--hold`, `--furnace` and `--at`: reach a state a still frame
+        /// cannot otherwise be taken of. Two runs with the same `--edit` are the
+        /// check -- the second reports the block as already being what the first set
+        /// it to, which nothing but a working save can produce.
+        ///
+        /// Empty means no edit. The block is named, not numbered.
+        std::optional<BlockPos> editPosition;
+        std::string editBlock;
+
+        /// Run without touching the disk at all.
+        ///
+        /// **For measurement, not for play.** A benchmark flight edits nothing, so
+        /// it would write nothing anyway; what this actually removes is the region
+        /// files being *opened* and the level file being created, which is what a
+        /// timing run wants and what a test fixture wants. Playing with this on
+        /// throws the session away on exit, which is the behaviour Phase 11 exists
+        /// to end.
+        bool noSave = false;
     };
 
     /// No default argument: a nested struct's default member initializers are
@@ -153,6 +184,9 @@ private:
     /// Meshes a test section with each strategy and logs the comparison. Only runs
     /// under Options::meshBenchmark.
     void runMeshBenchmark();
+
+    /// Applies `Options::editPosition`, once, after the world has streamed in.
+    void applyStartupEdit();
 
     /// Rebuilds the projection from the current framebuffer size. Called at
     /// startup and on every resize, so the two cannot drift apart.
@@ -555,14 +589,43 @@ private:
     /// when it turns out to be `idle()`, so right-clicking every furnace in a village
     /// does not cost anything permanent.
     ///
-    /// **This is not saved and does not survive unloading a column.** Persistence is
-    /// Phase 11 and this is the first thing that will genuinely need it -- a furnace
-    /// that forgets what it was smelting when the player walks away is a defect a
-    /// player will notice, and it is recorded rather than hidden.
+    /// **Saved with the column it stands in, since Phase 11.** It used not to be,
+    /// and a furnace that forgot what it was smelting when the player walked two
+    /// hundred blocks away was the defect that decided persistence came before mobs.
+    /// A furnace goes to disk when its column unloads and comes back with it.
     std::unordered_map<BlockPos, Furnace, BlockPosHash> m_furnaces;
 
     /// Advances every furnace by one simulation tick.
     void tickFurnaces(u32 ticks);
+
+    // -- persistence ------------------------------------------------------------
+
+    /// Where edited columns go. Null when `--no-save` was given, and every call
+    /// site tests for that rather than the flag.
+    std::unique_ptr<WorldStore> m_store;
+
+    /// Furnaces read off disk by a worker, waiting for the main thread to adopt them.
+    ///
+    /// **The handoff exists because loading happens on a worker and `m_furnaces`
+    /// belongs to the main thread.** A column is loaded inside its generation job --
+    /// the one point where exactly one thread owns it and nothing else can see it --
+    /// so the voxels can be written straight in, but the furnaces cannot: they go
+    /// into a map the simulation walks every tick.
+    std::mutex m_loadedFurnaceMutex;
+    std::vector<SavedFurnace> m_loadedFurnaces;
+
+    /// Moves anything the workers loaded into `m_furnaces`. Main thread, once a frame.
+    void adoptLoadedFurnaces();
+
+    /// Writes one column and the furnaces standing in it, if there is a store and
+    /// the column was edited.
+    void saveColumn(const Chunk& chunk);
+
+    /// Writes every loaded column that was edited. Called on the way out.
+    void saveEverything();
+
+    /// The furnaces standing in `column`, as save records.
+    std::vector<SavedFurnace> furnacesIn(ChunkPos column) const;
 
     /// Gives a broken furnace's contents back to the world, and forgets it.
     void spillFurnace(BlockPos pos);

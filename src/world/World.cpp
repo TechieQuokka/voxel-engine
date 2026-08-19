@@ -42,11 +42,15 @@ World::LoadResult World::updateLoadedRegion(ChunkPos center) {
         }
         dropping.push_back(pos);
     }
+    // Moved out of the map rather than erased, so the caller gets a chance to save
+    // them before they go. See LoadResult::unloaded.
+    result.unloaded.reserve(dropping.size());
     for (const ChunkPos pos : dropping) {
-        m_chunks.erase(pos);
+        const auto found = m_chunks.find(pos);
+        MC_ASSERT(found != m_chunks.end());
+        result.unloaded.push_back(std::move(found->second));
+        m_chunks.erase(found);
     }
-    result.unloaded = dropping.size();
-    result.unloadedPositions = std::move(dropping);
 
     // Create in order of increasing distance from the centre, so that when the
     // scheduler walks the map the nearest columns already exist. It does not
@@ -177,6 +181,11 @@ World::EditStatus World::setBlock(BlockPos pos, BlockId block) {
         return EditStatus::Unchanged;
     }
     section->set(lx, ly, lz, block);
+
+    // From here the column is no longer what the generator would produce, so it has
+    // to survive being unloaded. Set after the `Unchanged` return above: placing a
+    // block where that block already is must not make a column worth writing.
+    chunk->markEdited();
 
     // (1) and (2): the section, plus every section the block touches. An axis
     // contributes a neighbour only when the block sits against that section wall,

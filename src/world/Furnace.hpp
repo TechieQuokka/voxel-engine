@@ -55,6 +55,29 @@ public:
     /// rather than keeping one per block ever right-clicked.
     bool idle() const noexcept;
 
+    /// The two timers, for persistence.
+    ///
+    /// **A furnace that forgot what it was smelting when the player walked away was
+    /// the defect that made Phase 11 worth doing before Phase 19.** The slots go to
+    /// disk through `at()`, which already exists; the timers had nowhere to be read
+    /// from, and a furnace restored with full slots and a zeroed burn timer would
+    /// silently relight from its own fuel and lose a smelt.
+    struct Timers {
+        u32 burnRemaining = 0;
+        u32 burnTotal = 0;
+        u32 cookTicks = 0;
+    };
+
+    Timers timers() const noexcept { return {m_burnRemaining, m_burnTotal, m_cookTicks}; }
+
+    /// Puts the timers back. The slots are restored through `mutableAt()`.
+    ///
+    /// Clamps rather than trusting: `cookProgress` and `burnProgress` divide by
+    /// their totals to drive the two gauges, and a saved file could name a cook
+    /// count past `kSmeltTicks` or a remainder larger than the total, either of
+    /// which draws a bar past the end of its frame.
+    void restoreTimers(const Timers& timers) noexcept;
+
     // -- Container ------------------------------------------------------------
 
     usize slotCount() const override { return kSlots; }

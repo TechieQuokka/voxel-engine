@@ -34,7 +34,7 @@ TEST_CASE("the loaded region is a square of the render distance") {
     const auto result = world.updateLoadedRegion(ChunkPos{0, 0});
 
     CHECK(result.created == expectedColumns(2));
-    CHECK(result.unloaded == 0);
+    CHECK(result.unloaded.size() == 0);
     CHECK(world.loadedChunkCount() == expectedColumns(2));
 
     // The corner is inside a square region and would be outside a circular one.
@@ -49,7 +49,7 @@ TEST_CASE("a second call at the same centre creates nothing") {
 
     const auto again = world.updateLoadedRegion(ChunkPos{10, -4});
     CHECK(again.created == 0);
-    CHECK(again.unloaded == 0);
+    CHECK(again.unloaded.size() == 0);
     CHECK(world.loadedChunkCount() == expectedColumns(3));
 }
 
@@ -61,7 +61,7 @@ TEST_CASE("moving the centre loads and unloads only the difference") {
     const auto moved = world.updateLoadedRegion(ChunkPos{1, 0});
 
     CHECK(moved.created == 5);
-    CHECK(moved.unloaded == 5);
+    CHECK(moved.unloaded.size() == 5);
     CHECK(world.loadedChunkCount() == expectedColumns(2));
     CHECK(world.find(ChunkPos{-2, 0}) == nullptr); // Shed.
     CHECK(world.find(ChunkPos{3, 0}) != nullptr);  // Gained.
@@ -95,7 +95,7 @@ TEST_CASE("a column being generated is never unloaded from under a worker") {
     world.find(ChunkPos{-1, -1})->setState(ChunkState::Ready);
     const auto after = world.updateLoadedRegion(ChunkPos{50, 50});
     CHECK(after.retained == 0);
-    CHECK(after.unloaded == 1);
+    CHECK(after.unloaded.size() == 1);
     CHECK(world.find(ChunkPos{-1, -1}) == nullptr);
 }
 
@@ -314,6 +314,6 @@ TEST_CASE("shrinking the render distance unloads the outer rings") {
     const auto result = world.updateLoadedRegion(ChunkPos{0, 0});
 
     CHECK(result.created == 0);
-    CHECK(result.unloaded == expectedColumns(3) - expectedColumns(1));
+    CHECK(result.unloaded.size() == expectedColumns(3) - expectedColumns(1));
     CHECK(world.loadedChunkCount() == expectedColumns(1));
 }

@@ -67,6 +67,16 @@ int main(int argc, char** argv) {
         } else if (arg == "--bench-seconds" && i + 1 < args.size()) {
             options.benchSeconds = std::atof(args[++i]);
             options.warmUp = true; // Measure the steady state, not the fill.
+        } else if (arg == "--edit" && i + 4 < args.size()) {
+            const auto x = std::atoi(args[++i]);
+            const auto y = std::atoi(args[++i]);
+            const auto z = std::atoi(args[++i]);
+            options.editPosition = mc::BlockPos{x, y, z};
+            options.editBlock = args[++i];
+        } else if (arg == "--save-path" && i + 1 < args.size()) {
+            options.savePath = args[++i];
+        } else if (arg == "--no-save") {
+            options.noSave = true;
         } else if (arg == "--render-distance" && i + 1 < args.size()) {
             options.renderDistance = std::atoi(args[++i]);
             if (options.renderDistance < 0 || options.renderDistance > 64) {
@@ -79,7 +89,9 @@ int main(int argc, char** argv) {
                          " [--render-distance N] [--warm-up] [--bench-seconds S]"
                          " [--probe [--probe-columns N]] [--first-person] [--fly]"
                          " [--inventory] [--furnace] [--fullscreen]"
-                         " [--hold <item>] [--at X Y Z] [--look YAW PITCH]");
+                         " [--hold <item>] [--at X Y Z] [--look YAW PITCH]"
+                         " [--save-path <dir>] [--no-save]"
+                         " [--edit X Y Z <block>]");
             return EXIT_FAILURE;
         }
     }

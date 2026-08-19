@@ -72,6 +72,24 @@ public:
     /// when a neighbour appears and the boundary faces have to be reconsidered.
     void markAllDirty();
 
+    /// Whether this column differs from what the generator would produce for it.
+    ///
+    /// **This is what decides whether the column is written to disk**, and it is the
+    /// whole reason a save grows with what the player did rather than with where
+    /// they went. Generation is deterministic, so an untouched column is reproduced
+    /// exactly by generating it again; writing it out as well would put tens of
+    /// thousands of identical columns on disk after one long flight.
+    ///
+    /// Set by `World::setBlock`, and by loading: a column that came off disk is
+    /// written back on unload because a furnace standing in it may have burned down
+    /// in the meantime, and nothing else would notice that its timers moved.
+    ///
+    /// Plain rather than atomic, unlike the three above it. Those are written by
+    /// workers and read by the main thread; this one is only ever touched on the
+    /// main thread -- editing, loading and unloading all happen there.
+    bool edited() const noexcept { return m_edited; }
+    void markEdited() noexcept { m_edited = true; }
+
     /// Keeps the column alive while something outside holds pointers into it.
     ///
     /// A meshing job borrows `const Section*` from up to nine columns -- its own and
@@ -101,6 +119,7 @@ private:
     std::atomic<ChunkState> m_state{ChunkState::Empty};
     std::atomic<u16> m_dirty{0};
     std::atomic<u32> m_pins{0};
+    bool m_edited = false;
 };
 
 static_assert(Chunk::kSectionCount <= 16, "the dirty mask is 16 bits wide");

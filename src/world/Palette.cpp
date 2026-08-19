@@ -11,6 +11,40 @@ Palette::Palette(usize voxelCount, BlockId fill) : m_voxelCount(voxelCount) {
     m_palette.push_back(fill);
 }
 
+std::optional<Palette> Palette::fromParts(usize voxelCount,
+                                          std::span<const BlockId> entries,
+                                          u32 bits,
+                                          std::span<const u64> words) {
+    if (voxelCount == 0 || entries.empty() || !bitpack::isValidWidth(bits)) {
+        return std::nullopt;
+    }
+    // Narrower than the palette needs would make some entries unaddressable, which
+    // means the writer and the reader disagree about the layout. Wider is legal:
+    // `set` grows the width and only `compact` narrows it again, so a section that
+    // held sixteen block types and then lost fifteen of them is genuinely 4 bits.
+    if (bits < bitpack::bitsForPaletteSize(entries.size())) {
+        return std::nullopt;
+    }
+    if (words.size() != bitpack::wordsNeeded(voxelCount, bits)) {
+        return std::nullopt;
+    }
+    if (bits == 0 && entries.size() != 1) {
+        return std::nullopt; // No index array, so only entry 0 could ever be read.
+    }
+
+    for (usize i = 0; i < voxelCount && bits != 0; ++i) {
+        if (bitpack::get(words.data(), i, bits) >= entries.size()) {
+            return std::nullopt;
+        }
+    }
+
+    Palette result(voxelCount, entries[0]);
+    result.m_palette.assign(entries.begin(), entries.end());
+    result.m_words.assign(words.begin(), words.end());
+    result.m_bits = bits;
+    return result;
+}
+
 i32 Palette::findInPalette(BlockId block) const {
     for (usize i = 0; i < m_palette.size(); ++i) {
         if (m_palette[i] == block) {

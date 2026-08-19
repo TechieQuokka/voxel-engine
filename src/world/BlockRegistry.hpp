@@ -4,7 +4,9 @@
 #include "world/BlockTable.hpp"
 #include "world/Coords.hpp"
 
+#include <optional>
 #include <span>
+#include <string_view>
 
 namespace mc {
 
@@ -26,6 +28,21 @@ public:
 
     /// Texture array layer for one face of a block.
     u16 textureLayer(BlockId id, Face face) const;
+
+    /// Resolves a block's name to its id, or nullopt if no block has that name.
+    ///
+    /// The runtime counterpart of `blockIdOf`, which is consteval and therefore
+    /// unavailable to a name that arrives at runtime. Persistence is the only
+    /// caller and needs exactly this: a save file stores palette entries by name,
+    /// because a BlockId is a position in `kBlocks` and adding one block would
+    /// otherwise turn every saved stone into deepslate.
+    ///
+    /// **Nullopt is a real answer, not an error to assert on.** A save written by a
+    /// build that had a block this one does not is the case, and the loader turns
+    /// it into air with a warning rather than refusing the column.
+    ///
+    /// Linear over ~40 entries, called once per palette entry per column load.
+    std::optional<BlockId> findByName(std::string_view name) const;
 
     usize size() const { return m_blocks.size(); }
 

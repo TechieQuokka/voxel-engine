@@ -27,6 +27,16 @@ bool Furnace::idle() const noexcept {
         && m_slots[kOutputSlot].empty() && m_burnRemaining == 0 && m_cookTicks == 0;
 }
 
+void Furnace::restoreTimers(const Timers& timers) noexcept {
+    m_burnTotal = timers.burnTotal;
+    // A remainder larger than the total would draw the flame gauge past its frame,
+    // and a total of zero with fuel remaining would divide by zero in
+    // `burnProgress`. Neither can happen in a furnace this build wrote; both can
+    // arrive in a file.
+    m_burnRemaining = std::min(timers.burnRemaining, timers.burnTotal);
+    m_cookTicks = std::min(timers.cookTicks, kSmeltTicks);
+}
+
 bool Furnace::canSmelt() const {
     const ItemId result = smeltOutput(m_slots[kInputSlot].item);
     if (m_slots[kInputSlot].empty() || result == kNoItem) {

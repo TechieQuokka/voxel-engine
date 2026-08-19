@@ -94,8 +94,14 @@ struct Quad {
     /// The same eight bits, named for what they mean on a fluid quad.
     constexpr u8 fluidCorners() const { return ao(); }
     /// One corner's drop, 0..3, in the corner order AO and light already use.
+    ///
+    /// `ao()` is widened explicitly rather than left to integer promotion, which
+    /// would make it an `int` and turn the mask into a signed-to-unsigned
+    /// conversion. Harmless in value, and `-Wsign-conversion` is an error here --
+    /// it broke the asan preset's *build* while debug kept passing, because debug
+    /// had no reason to recompile this header.
     constexpr u8 fluidDrop(u32 corner) const {
-        return static_cast<u8>((ao() >> (2u * corner)) & 0x3u);
+        return static_cast<u8>((static_cast<u32>(ao()) >> (2u * corner)) & 0x3u);
     }
     constexpr u16 light() const { return static_cast<u16>((packed >> 41) & 0xFFFF); }
     constexpr u16 material() const { return static_cast<u16>((packed >> 57) & 0x7F); }

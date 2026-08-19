@@ -29,15 +29,21 @@ public:
 
     struct LoadResult {
         usize created = 0;
-        usize unloaded = 0;
         /// Columns that fell outside the region but were left alone because a job
         /// still owns them. They get dropped on a later call.
         usize retained = 0;
 
-        /// Which columns went away. The renderer needs these by name, not by count,
-        /// to release their GPU meshes -- and their surviving neighbours have to be
-        /// remeshed, because their boundary faces were culled against them.
-        std::vector<ChunkPos> unloadedPositions;
+        /// The columns that went away, still alive.
+        ///
+        /// **Handed over rather than destroyed, because unloading is when an edited
+        /// column has to be written to disk.** The World does not know about the
+        /// save -- it holds no store and no path -- so it drops ownership here and
+        /// lets the caller decide. They die when this result does.
+        ///
+        /// The renderer needs their positions too, to release their GPU meshes and
+        /// to remesh the survivors next door whose boundary faces were culled
+        /// against them. `Chunk::position()` answers that.
+        std::vector<std::unique_ptr<Chunk>> unloaded;
     };
 
     /// Brings the loaded set in line with a square around `center`: creates what is

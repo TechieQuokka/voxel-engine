@@ -27,6 +27,8 @@ add_executable(mc_tests
   test_coords.cpp
   test_palette.cpp
   test_chunk.cpp
+  test_chunk_codec.cpp
+  test_persistence.cpp
   test_world.cpp
   test_density_field.cpp
   test_generator.cpp
