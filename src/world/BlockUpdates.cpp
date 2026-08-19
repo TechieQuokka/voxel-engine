@@ -437,6 +437,34 @@ BlockUpdates::Outcome BlockUpdates::examineFluid(World& world, BlockPos pos,
             if (!ahead.replaceable) {
                 break; // Blocked; this direction reaches no hole within reach.
             }
+            // **A source is the body of water, not a hole in it, and skipping that
+            // distinction broke every shoreline in the world.**
+            //
+            // The test below asks whether the block *under* the candidate is
+            // replaceable, and in a lake or an ocean it always is -- what is under
+            // the water at the edge of a body of water is more water. So every
+            // direction pointing back into the sea came out `preferred`, the one
+            // direction pointing at the hole the player had just dug did not, and
+            // the spread loop below filtered that one out. The water then "flowed"
+            // into itself, which is a no-op, and a hole dug at the waterline stayed
+            // dry forever.
+            //
+            // Stopping the walk rather than merely not marking it: a full source
+            // cannot be flowed into and cannot be seen past, so there is no drop to
+            // find beyond it either.
+            //
+            // **This does not touch the rule the comment below is about.** That one
+            // is about a hole that has already *filled* -- flowing water, level 1 to
+            // 7 -- which must keep counting as a hole so the flow feeding it does not
+            // lose its direction the moment it succeeds. Flowing water is not a
+            // source, so it still counts.
+            //
+            // Found by playing. Eleven tests passed over this because every one of
+            // them was a single layer of water on stone, where no direction is ever
+            // preferred and the filter never fires.
+            if (isFluidSource(ahead.block)) {
+                break;
+            }
             const Probe under = probe(world, BlockPos{walk.x, walk.y - 1, walk.z});
             if (!under.ready) {
                 return Outcome::Suspend;

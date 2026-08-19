@@ -280,6 +280,56 @@ TEST_CASE("breaking a wall lets a pool through") {
     CHECK(isFluid(world->blockAt(BlockPos{2, 41, 0})));
 }
 
+TEST_CASE("digging the shore at water level lets the sea in") {
+    // **The shape every other test in this file leaves out: a shore.** A body of
+    // water that gets deeper away from the land, with dry ground at the waterline --
+    // which is what every ocean and lake edge in a generated world actually is.
+    //
+    // Found by playing, not by reasoning: digging into the side of a lake at the
+    // water's own level did nothing at all in the real game.
+    auto world = readyWorld();
+    BlockUpdates updates;
+    FallingBlocks falling;
+
+    const auto put = [&world](BlockPos pos, BlockId block) {
+        Chunk* chunk = world->find(toChunkPos(pos));
+        REQUIRE(chunk != nullptr);
+        Section* section = chunk->sectionAt(blockToSectionCoord(pos.y));
+        REQUIRE(section != nullptr);
+        section->set(blockToLocalCoord(pos.x), blockToLocalCoord(pos.y),
+                     blockToLocalCoord(pos.z), block);
+    };
+
+    for (i32 z = -5; z <= 5; ++z) {
+        for (i32 x = -10; x <= 5; ++x) {
+            put(BlockPos{x, 40, z}, kStoneBlock); // the deep bed
+        }
+        // Deep water, two blocks over the bed.
+        for (i32 x = -10; x <= -3; ++x) {
+            put(BlockPos{x, 41, z}, kWaterBlock);
+            put(BlockPos{x, 42, z}, kWaterBlock);
+        }
+        // The shallow shelf: one block of water standing on solid ground.
+        put(BlockPos{-2, 41, z}, kStoneBlock);
+        put(BlockPos{-2, 42, z}, kWaterBlock);
+        // The dry shore, level with the water surface.
+        for (i32 x = -1; x <= 5; ++x) {
+            put(BlockPos{x, 41, z}, kStoneBlock);
+            put(BlockPos{x, 42, z}, kStoneBlock);
+        }
+    }
+
+    REQUIRE(isFluid(world->blockAt(BlockPos{-2, 42, 0})));
+    REQUIRE(isDry(*world, BlockPos{-1, 42, 0}));
+
+    // Dig one block out of the shore, at the waterline and touching the water.
+    REQUIRE(world->setBlock(BlockPos{-1, 42, 0}, kAirBlock) != World::EditStatus::Busy);
+    updates.notify(BlockPos{-1, 42, 0});
+    settle(*world, updates, falling);
+
+    CHECK(isFluid(world->blockAt(BlockPos{-1, 42, 0})));
+}
+
 TEST_CASE("a flow never overwrites water that is closer to a source") {
     auto world = readyWorld();
     BlockUpdates updates;
