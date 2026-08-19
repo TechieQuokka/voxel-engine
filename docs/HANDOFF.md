@@ -103,14 +103,21 @@ project found by playing is longer than the list it found by reasoning.
    so what is left is the half a test cannot reach: aiming, mining, and finding the
    windows. That half is where both previous findings came from (nobody could find the
    grid; the fuel was off by one smelt), so this stays at the top of the list.
-2. **Play the water, and this is now the top of the list rather than a formality.**
-   Dig into the side of a lake **below the waterline** and watch it pour in. **That
-   case did nothing at all until 2026-08-19** (DESIGN.md 7.23), and the reason nobody
-   knew is that a benchmark flight never edits the world so it never notifies a fluid.
-   The stats line prints `flowed`, which is the number that should not be zero, and
-   `(N suspended)` beside it. **Breaking blocks above the waterline correctly leaves
-   it at zero** -- water does not flow upward -- which is what the ninth session's log
-   turned out to be saying.
+2. ~~**Play the water.**~~ **Done 2026-08-19: `flowed 32`**, over eighteen blocks
+   broken, settling to `updates queued 0` with no queue-full warning. Flowing water
+   had never been seen by anyone since it was built in 7.17. It also gives the only
+   evidence there has ever been about the per-flow cost, which a benchmark flight
+   structurally cannot produce because it never edits the world.
+   **Dig below the waterline** -- breaking blocks above it correctly leaves `flowed`
+   at zero, which is what two earlier sessions of this phase were reporting.
+   What is still unjudged, and needs eyes rather than a counter:
+   - **The ripple amplitude**, now 26. Four was invisible, sixteen was better,
+     twenty-six is where it sits; a still capture cannot show the scroll at all.
+   - **The surface steps in four levels where vanilla has nine.** Whether that reads
+     as a staircase is the open question from 7.23.
+   - **Ten seconds in the real game would settle a deliberate deviation**: empty a
+     bucket in mid-air and see whether vanilla makes a single column or a wide
+     curtain. RESEARCH.md 7.1 has why it matters.
    - **The per-flow cost has still never been measured.** Every flow is a `setBlock`
      and every `setBlock` relights a column, and blocks that used to return early now
      run a five-block slope search in four directions. Watch `updates queued`, and
@@ -218,6 +225,17 @@ git worktree remove --force /tmp/baseline
 
 # First person, if the character is in the way of what is being looked at.
 ./build/release/src/app/minecraft --first-person --capture /tmp/shot.ppm
+
+# **Stand somewhere else.** The eye position, and where it looks; yaw and pitch are
+# radians. Until this existed a capture could only ever photograph the spawn point,
+# which is why water shipped as an untextured blue pane -- the nearest lake is a few
+# hundred blocks away and every capture of it was blue pixels on the horizon.
+#
+# Finding somewhere worth standing is a generator question, not a rendering one: a
+# short scratch program that generates columns and looks for what you want beats
+# flying around. That is how (-42, 62, 14) below was found -- an 11x11 of open water.
+./build/release/src/app/minecraft --first-person --at -52 64.2 14 --look 0 -0.12 \
+    --capture /tmp/shot.ppm
 
 # Start fullscreen. `F11` toggles it at runtime; this is for starting there, and it
 # is also how a capture at the monitor's native resolution is taken.
@@ -744,6 +762,21 @@ Learned the hard way; all of them cost real time.
   block-buffered, so a probe killed by a timeout prints nothing at all and looks like a
   hang with no information. `setvbuf(stdout, nullptr, _IONBF, 0)` is the difference
   between "it hangs" and "it hangs at tick 25 with 176 pending".
+- **Isotropic noise reads as grit; structure reads as liquid.** Water was `Grain` at a
+  roughness of 4 because anything higher looked like gravel -- which is true, and is a
+  choice between two options when there are three. The same amplitude as a *wave* is a
+  water surface. A surface with no texture does not read as a surface at all, whatever
+  colour it is. DESIGN.md 7.23.
+- **Animating a texture with no pattern in it animates nothing, and nothing will tell
+  you.** The water scroll landed, did nothing visible, and looked like a working
+  feature for as long as the texture was flat. Its rate was also 0.037 blocks a second
+  -- one tile every half minute -- which is the kind of number only chosen by someone
+  who cannot see the result.
+- **`--capture` could only photograph the spawn point, and that shipped a visual bug
+  that had been there since Phase 4.** `--at X Y Z --look YAW PITCH` is the fix. If
+  something is being judged by argument rather than by looking at it, that is the
+  signal to add whatever flag makes it visible -- the same reason `--hold`,
+  `--furnace` and `--inventory` exist.
 - **A test over generated terrain is only a statement about the terrain it looked at,
   and the seed is part of the test.** The hole-in-a-lake test was first written against
   seed 1234, copied from the sea test above it, and **passed with and without the fix**

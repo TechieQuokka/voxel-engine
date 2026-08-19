@@ -43,6 +43,16 @@ int main(int argc, char** argv) {
             options.fullscreen = true;
         } else if (arg == "--fly") {
             options.flying = true;
+        } else if (arg == "--at" && i + 3 < args.size()) {
+            // Where the *eye* goes, not the feet -- this exists to aim a capture.
+            const auto x = static_cast<mc::f32>(std::atof(args[++i]));
+            const auto y = static_cast<mc::f32>(std::atof(args[++i]));
+            const auto z = static_cast<mc::f32>(std::atof(args[++i]));
+            options.cameraPosition = mc::vec3{x, y, z};
+        } else if (arg == "--look" && i + 2 < args.size()) {
+            const auto yaw = static_cast<mc::f32>(std::atof(args[++i]));
+            const auto pitch = static_cast<mc::f32>(std::atof(args[++i]));
+            options.cameraOrientation = mc::vec2{yaw, pitch};
         } else if (arg == "--hold" && i + 1 < args.size()) {
             options.heldItem = args[++i];
         } else if (arg == "--furnace") {
@@ -69,7 +79,7 @@ int main(int argc, char** argv) {
                          " [--render-distance N] [--warm-up] [--bench-seconds S]"
                          " [--probe [--probe-columns N]] [--first-person] [--fly]"
                          " [--inventory] [--furnace] [--fullscreen]"
-                         " [--hold <item>]");
+                         " [--hold <item>] [--at X Y Z] [--look YAW PITCH]");
             return EXIT_FAILURE;
         }
     }

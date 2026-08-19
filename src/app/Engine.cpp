@@ -238,6 +238,20 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
                           0.5f});
     m_camera.setOrientation(0.6f, -0.18f);
     m_onGround = true;
+
+    // `--at` overrides both, and is given as the *eye* rather than the feet: it
+    // exists so a capture can be aimed at something, and what a capture frames is
+    // where the eye is. The ground probe will settle the feet on the next walking
+    // step if the position is over solid terrain.
+    if (m_options.cameraPosition.has_value()) {
+        m_camera.setPosition(*m_options.cameraPosition);
+        m_onGround = false;
+    }
+    if (m_options.cameraOrientation.has_value()) {
+        m_camera.setOrientation(m_options.cameraOrientation->x,
+                                m_options.cameraOrientation->y);
+    }
+
     updateProjection();
 
     logInfo("Spawn: ground at y={}, standing with eye at y={:.2f}", groundY,

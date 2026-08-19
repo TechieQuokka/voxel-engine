@@ -46,7 +46,11 @@ void main() {
     // The flow term is the surface gradient the vertex shader worked out from the
     // corner drops. It costs nothing to compute and it is the only thing on screen
     // that says which way a stream is going.
-    vec2 drift = vec2(u_time * 0.037, u_time * 0.029);
+    // **Fast enough to see.** The first rate here was 0.037 blocks a second, which
+    // moves the pattern one tile in half a minute -- chosen when the texture had no
+    // pattern to move and nothing could have shown it was too slow. Vanilla cycles
+    // its water animation in a few seconds; this is the same order.
+    vec2 drift = vec2(u_time * 0.16, u_time * 0.125);
     vec2 flow = v_flow * u_time * 0.45;
     vec4 albedo = texture(u_blockTextures, vec3(v_uv + drift + flow, float(v_layer)));
 

@@ -3174,6 +3174,65 @@ the third entry in a row for "a test over generated terrain is only a statement 
 the terrain it looked at", after the sea test that passed vacuously and the probe that
 read a fixed Y band.
 
+#### "Why doesn't the water look like water"
+
+The same session, and the answer was that **nobody had ever looked at it**, including
+the two documents that describe it.
+
+`--capture` could only ever photograph the spawn point. The nearest lake is a few
+hundred blocks away, so every capture of water in this project's history is a handful
+of blue pixels on the horizon — which is exactly why the surface height, the shoreline
+and the animation of 7.23 were all judged by argument. `--at X Y Z` and `--look YAW
+PITCH` are the fix, and they are the same idea as `--hold`, `--furnace` and
+`--inventory`: those exist because a capture cannot craft or click, and this exists
+because it cannot walk. **It took one capture to see the problem and it had been there
+since Phase 4.**
+
+At eye level over a lake, the water was a *uniform blue pane*. Not badly textured —
+untextured. The sand wall above it reads as a material and the water reads as an
+acrylic sheet laid across the bottom of the screen, with nothing in it to say "this is
+a horizontal surface receding away from you", which is the one thing a water surface
+has to say.
+
+The cause was in the block table, and so was the reasoning that put it there:
+
+> *Very low roughness: water that looks like gravel is worse than water that looks
+> flat.*
+
+Both halves of that are true and it is a choice between two options when there are
+three. **Isotropic noise reads as grit at any amplitude that is visible at all;
+structure reads as liquid at the same amplitude.** `TextureRecipe::Water` is three
+crossed sine waves — crossed rather than parallel, because parallel bands read as
+corrugated iron and it is the interference that gives the dappled look — with every
+term at an integer number of periods across the tile so it stays seamless under
+`GL_REPEAT` and stays seamless while the shader scrolls it.
+
+**And that is when the animation from 7.23 started working.** Scrolling a texture with
+no pattern in it animates nothing, so the drift landed, did nothing visible, and
+nothing said so. Its rate was 0.037 blocks a second — one tile every half minute — a
+number that could only have been chosen without being able to see the result. It is
+0.16 now.
+
+Sixteen ripple units was visibly better than four; twenty-six was visibly better than
+sixteen, and that is where it sits. **The whole exchange took three captures**, which
+is the argument for the flag rather than for any particular number.
+
+#### The ninth session, and the counter that was finally not zero
+
+`flowed 32`, over eighteen blocks broken, settling to `updates queued 0` with no
+`Block update queue full` warning. **Flowing water had never been seen by anyone in
+the life of this project** — HANDOFF has carried that line since 7.17 — and the reason
+was never the fluid: a benchmark flight does not edit the world, and the two earlier
+sessions of this phase broke blocks above the waterline, where water correctly does
+not flow up to meet them.
+
+It also closes the cost question 7.23 left open, in the only way it could be closed.
+The concern was that blocks which used to return early now run a five-block slope
+search in four directions, and that a flow is many `setBlock` calls each relighting a
+column. Thirty-two flows settled to an empty queue with no warning. That is not a
+measurement of the worst case, but it is the first evidence of any kind, and it came
+from playing rather than from a benchmark that structurally cannot produce it.
+
 ---
 
 ## 8. Open Questions

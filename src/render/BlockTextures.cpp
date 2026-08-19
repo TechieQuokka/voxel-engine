@@ -70,6 +70,54 @@ void generateGrain(std::vector<u8>& out, u32 layer, u32 argb, f32 roughness, u32
     }
 }
 
+/// A water surface: crossed ripples rather than noise.
+///
+/// **Water was `Grain` at a roughness of 4, and the result had no visible texture at
+/// all.** The comment on that line reasoned that water which looks like gravel is
+/// worse than water which looks flat, which is true and skips the third option. What
+/// four units of noise produces is a uniform blue sheet, and seen at a grazing angle
+/// -- which is every angle a player swimming or standing on a shore has -- it reads
+/// as a pane of blue plastic laid over the bottom of the screen. There is nothing in
+/// it to say "this is a horizontal surface receding away from you", which is the one
+/// thing a water surface has to say.
+///
+/// Ripples rather than grain because the eye reads *structure* as liquid and
+/// *isotropic noise* as grit: the same amplitude that looks like wet gravel as noise
+/// looks like moving water as a wave. It is also what makes the scroll in water.frag
+/// visible at all -- animating a flat texture animates nothing, which is why that
+/// scroll appeared to do nothing when it landed.
+///
+/// Every term has an integer number of periods across the tile, so the pattern is
+/// seamless under `GL_REPEAT` and stays seamless when the shader scrolls it.
+void generateWaterSurface(std::vector<u8>& out, u32 layer, u32 argb, f32 roughness,
+                          u32 seed) {
+    const Rgba base = fromArgb(argb);
+    constexpr f32 kTau = 6.283185307f;
+    const auto size = static_cast<f32>(kSize);
+
+    for (u32 y = 0; y < kSize; ++y) {
+        for (u32 x = 0; x < kSize; ++x) {
+            const auto fx = static_cast<f32>(x);
+            const auto fy = static_cast<f32>(y);
+
+            // Three crossed waves at different angles and rates. Crossed rather than
+            // parallel: parallel bands read as corrugated iron, and it is the
+            // interference between them that gives the dappled look of light on
+            // water.
+            const f32 wave = 0.55f * std::sin(kTau * (fx + 2.0f * fy) / size)
+                           + 0.30f * std::sin(kTau * (2.0f * fx - fy) / size + 1.7f)
+                           + 0.15f * std::sin(kTau * (fx - fy) / size + 3.1f);
+
+            // A little noise on top, at a fraction of the wave, so the crests are not
+            // mathematically clean. This is the part that was the whole texture
+            // before.
+            const f32 grain = noise(x, y, seed) * roughness * 0.25f;
+
+            writePixel(out, layer, x, y, shade(base, wave * roughness + grain));
+        }
+    }
+}
+
 /// Host rock, with a scatter of ore blobs over it.
 ///
 /// Blob centres come from the layer's own seed, so every ore gets a different
@@ -433,6 +481,9 @@ BlockTextures::BlockTextures() {
             break;
         case TextureRecipe::GrassSide:
             generateGrassSide(pixels, index, layer.argb, layer.argbSecondary);
+            break;
+        case TextureRecipe::Water:
+            generateWaterSurface(pixels, index, layer.argb, layer.roughness, layer.seed);
             break;
         case TextureRecipe::Ore:
             generateOre(pixels, index, layer.argb, layer.argbSecondary,

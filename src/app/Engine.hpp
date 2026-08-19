@@ -74,6 +74,21 @@ public:
         /// anything inspecting the underground wants this.
         bool flying = false;
 
+        /// Stand somewhere other than the spawn column, and optionally look a chosen
+        /// way. Empty means the spawn point, which is what every session did before.
+        ///
+        /// **`--capture` could only ever photograph the spawn point, and that is why
+        /// water shipped looking wrong.** The nearest lake is a few hundred blocks
+        /// away, so every capture of it was a handful of blue pixels on the horizon;
+        /// the surface height, the shoreline and the animation were all judged by
+        /// argument rather than by looking, and play disagreed with the argument.
+        /// Same purpose as `--hold`, `--furnace` and `--inventory`: those exist
+        /// because a capture cannot craft or click, and this exists because it
+        /// cannot walk.
+        std::optional<vec3> cameraPosition;
+        /// Yaw and pitch in radians. Only read when `cameraPosition` is set.
+        std::optional<vec2> cameraOrientation;
+
         /// Put this item in the first hotbar slot and select it, so a capture can be
         /// taken of something being *held*.
         ///

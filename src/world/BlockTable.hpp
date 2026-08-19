@@ -38,6 +38,10 @@ enum class TextureRecipe : u8 {
     /// Grain in the host rock's colour, with a scatter of blobs in a second colour.
     /// Every ore is this, twice: once over stone and once over deepslate.
     Ore,
+    /// Crossed ripples, for a water surface. `Grain` at a roughness low enough not to
+    /// look like gravel produces no visible texture at all, and a surface with no
+    /// texture does not read as a surface -- see the note at `generateWaterSurface`.
+    Water,
     /// Concentric growth rings in a second colour, for the cut end of a log. The
     /// one thing that makes a log read as a log rather than as a brown cube.
     Rings,
@@ -167,9 +171,13 @@ inline constexpr std::array kLayers{
     // three-quarters opacity. The alpha channel has always been carried through
     // `fromArgb` -> `shade` -> `writePixel` and has always been opaque until now;
     // the texture array is SRGB8_ALPHA8, which encodes only RGB, so this value
-    // reaches the shader unchanged. Very low roughness: water that looks like
-    // gravel is worse than water that looks flat.
-    LayerInfo{"water",        TextureRecipe::Grain, 0xBF3F76E4u, 0u,           4.0f, 50u},
+    // reaches the shader unchanged.
+    //
+    // **`roughness` is a ripple amplitude here, not a grain amplitude**, and the
+    // number went from 4 to 15 with the recipe change. Four units of isotropic noise
+    // is invisible; fifteen units of crossed wave is a surface. The two are not the
+    // same quantity even though they share the field -- see `generateWaterSurface`.
+    LayerInfo{"water",        TextureRecipe::Water, 0xBF3F76E4u, 0u,          26.0f, 50u},
 
     // Planks. Lighter than the bark they come from, because a sawn face is the inside
     // of the trunk; the secondary colour is the seam between boards.

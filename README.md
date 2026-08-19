@@ -99,8 +99,11 @@ purpose instead of by accident.
 
 **The surface has a height, and it slopes.** A flow sits lower than the source feeding
 it, the walls of a stream come down to meet their own top, and the water moves — still
-water drifts, and a flow scrolls the way it is running. No flooded caves yet, though:
-those need vanilla's aquifer system, whose barrier noise is not published anywhere usable.
+water drifts, and a flow scrolls the way it is running. The surface is crossed ripples
+rather than noise, because noise at any visible amplitude reads as gravel and a
+surface with no texture does not read as a surface at all. No flooded caves yet,
+though: those need vanilla's aquifer system, whose barrier noise is not published
+anywhere usable.
 
 `F` switches to flying, `F5` to first person, `Escape` releases the cursor and again
 quits.
@@ -115,6 +118,7 @@ cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
 ./build/release/src/app/minecraft --furnace --capture /tmp/shot.ppm
 ./build/release/src/app/minecraft --hold wooden_pickaxe --first-person --capture /tmp/shot.ppm
+./build/release/src/app/minecraft --at -52 64.2 14 --look 0 -0.12 --capture /tmp/shot.ppm
 ```
 
 ## How it is built
