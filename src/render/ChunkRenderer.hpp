@@ -74,6 +74,14 @@ public:
     /// Must match the clear colour, and must be linear -- see DESIGN.md 6.9.
     void setFogColor(const vec3& linearColor) { m_fogColor = linearColor; }
 
+    /// Seconds since start, for the water surface.
+    ///
+    /// **The only animated thing the renderer draws, and it is wall-clock rather
+    /// than the 20 Hz tick on purpose.** A surface that advanced on the tick would
+    /// visibly step at 20 Hz next to a camera running at several hundred frames a
+    /// second; the simulation is what has to be deterministic, and this is not it.
+    void setTime(f32 seconds) { m_time = seconds; }
+
     Stats& stats() noexcept { return m_stats; }
     const Stats& stats() const noexcept { return m_stats; }
 
@@ -94,6 +102,12 @@ private:
     static constexpr usize kInitialVisibleCapacity = 4096;
 
     rhi::Shader m_shader;
+    /// **Water is a second program over the same arena, not a branch in the first.**
+    /// The translucent pass was already a separate multi-draw with its own
+    /// `u_drawIdBase`, so the plumbing cost nothing -- and the two shaders disagree
+    /// about what bits 33..40 of a quad mean, which is not something a uniform can
+    /// express. See Quad.hpp.
+    rhi::Shader m_waterShader;
     rhi::VertexArray m_vao;
     std::optional<BlockTextures> m_textures;
 
@@ -119,6 +133,7 @@ private:
     f32 m_aoStrength = 1.0f;
     f32 m_fadeDistance = kDefaultFadeDistance;
     vec3 m_fogColor{1.0f};
+    f32 m_time = 0.0f;
     Stats m_stats;
 };
 

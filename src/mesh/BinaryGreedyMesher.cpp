@@ -80,6 +80,12 @@ struct Scratch {
     /// Fluid occupancy, on the same padded grid. Separate from `opaque` because
     /// water is neither: it hides nothing behind it, and it hides its own faces
     /// from itself.
+    ///
+    /// **Zero is "not fluid"; anything else is `1 + fluidLevel`.** It was a plain
+    /// flag until the surface learned to slope, and storing the level costs nothing:
+    /// every existing reader asks `!= 0`, which means the same thing either way, and
+    /// the corner-drop pass needs the level of blocks in the shell as much as of
+    /// blocks in the centre -- a lake does not stop at a section boundary.
     std::array<u8, kPaddedVolume> fluid{};
     /// Whether the centre section holds any fluid at all. When it does not, the
     /// second pass is skipped whole -- which is almost every section in the world,
@@ -187,7 +193,8 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
                 s.blocks[local] = block;
                 s.opaque[paddedIndex(x, y, z)] = registry.isOpaque(block) ? u8{1} : u8{0};
                 if (registry.isFluid(block)) {
-                    s.fluid[paddedIndex(x, y, z)] = 1;
+                    s.fluid[paddedIndex(x, y, z)] =
+                        static_cast<u8>(1u + fluidLevelOf(block));
                     s.anyFluid = true;
                 }
                 s.light[paddedIndex(x, y, z)] =
@@ -253,9 +260,9 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
                             // the section next door, or every 32-block seam draws a
                             // wall of quads inside the sea.
                             s.fluid[paddedIndex(x, y, z)] =
-                                blocksUniform
-                                    ? (fluidFill ? u8{1} : u8{0})
-                                    : (registry.isFluid(neighbourBlock) ? u8{1} : u8{0});
+                                registry.isFluid(neighbourBlock)
+                                    ? static_cast<u8>(1u + fluidLevelOf(neighbourBlock))
+                                    : u8{0};
                             s.light[paddedIndex(x, y, z)] =
                                 lightUniform ? lightLevel : section->skyLight(lx, ly, lz);
                         }
@@ -463,6 +470,93 @@ u16 computeCornerLight(const Scratch& s, const FacePlan& plan, i32 x, i32 y, i32
     return packed;
 }
 
+/// Nearest of the four drops the water shader can draw, given one in ninths.
+///
+/// The shader's table is {0, 1, 4, 8} ninths: a full block, vanilla's source
+/// surface, and two steps down to the thin edge of a run. Bands rather than a
+/// divide because the ends are not evenly spaced -- almost all water in the world
+/// is either submerged or a source, so those two get an exact code each and the
+/// five flowing levels share the remaining two.
+u8 quantizeFluidDrop(u32 ninths) {
+    if (ninths == 0) {
+        return 0;
+    }
+    if (ninths <= 2) {
+        return 1;
+    }
+    if (ninths <= 6) {
+        return 2;
+    }
+    return 3;
+}
+
+/// Four corner drops for one fluid face, two bits each, in the corner order AO and
+/// light already use.
+///
+/// **Every vertex is asked the same question -- "how far down does the surface sit
+/// here" -- and a vertex that is not on the top of its block answers zero.** That is
+/// what lets one field serve all six faces with no per-face logic in the shader: a
+/// top face gets four real drops, a bottom face gets four zeroes, and a side face
+/// gets two and two, which lowers its upper edge to meet the surface exactly. Doing
+/// it any other way means the side of a stream stands a fraction of a block proud of
+/// its own top and the gap is lit from inside.
+///
+/// The drop of a lattice corner is the mean over the fluid blocks meeting there, the
+/// way vanilla averages its corner heights. A block with fluid directly above it is
+/// submerged and contributes a full block: the surface is not there, it is further
+/// up. Non-fluid neighbours are left out of the mean rather than counted as empty,
+/// so water against a wall keeps its height instead of being dragged to the floor.
+u8 computeFluidCorners(const Scratch& s, const FacePlan& plan, i32 x, i32 y, i32 z) {
+    // Where this face's own plane sits within the voxel, in {0,1}^3.
+    const i32 faceX = plan.nx > 0 ? 1 : 0;
+    const i32 faceY = plan.ny > 0 ? 1 : 0;
+    const i32 faceZ = plan.nz > 0 ? 1 : 0;
+
+    u8 packed = 0;
+    for (u32 corner = 0; corner < 4; ++corner) {
+        // Corner order matches computeAo and kCorners in chunk.vert.
+        const i32 cu = (corner == 1 || corner == 2) ? 1 : 0;
+        const i32 cv = (corner == 2 || corner == 3) ? 1 : 0;
+
+        const i32 ox = faceX + plan.ux * cu + plan.vx * cv;
+        const i32 oy = faceY + plan.uy * cu + plan.vy * cv;
+        const i32 oz = faceZ + plan.uz * cu + plan.vz * cv;
+
+        if (oy != 1) {
+            continue; // Not on the top of the block: no drop, and 0 is already there.
+        }
+
+        // The up-to-four blocks sharing the horizontal lattice corner this vertex
+        // stands on. The owning voxel is always one of them, whichever way ox and oz
+        // came out, so the mean never divides by zero on a face that exists.
+        u32 sum = 0;
+        u32 count = 0;
+        for (i32 dz = -1; dz <= 0; ++dz) {
+            for (i32 dx = -1; dx <= 0; ++dx) {
+                const i32 bx = x + ox + dx;
+                const i32 bz = z + oz + dz;
+                if (!fluidAt(s, bx, y, bz)) {
+                    continue;
+                }
+                ++count;
+                if (fluidAt(s, bx, y + 1, bz)) {
+                    continue; // Submerged: full block, drop 0.
+                }
+                // The stored byte is 1 + level, which is the drop in ninths: a
+                // source sits one ninth down and level 7 sits eight.
+                sum += s.fluid[paddedIndex(bx, y, bz)];
+            }
+        }
+        if (count == 0) {
+            continue;
+        }
+
+        const u32 mean = (sum + count / 2) / count;
+        packed |= static_cast<u8>(quantizeFluidDrop(mean) << (2u * corner));
+    }
+    return packed;
+}
+
 /// Maps (plane, u, v) back to the voxel that owns the face.
 void voxelFor(const FacePlan& plan, i32 p, i32 u, i32 v, i32& x, i32& y, i32& z) {
     x = plan.nx != 0 ? p : (plan.ux != 0 ? u : v);
@@ -494,18 +588,26 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
 
     const BlockRegistry& registry = BlockRegistry::instance();
 
-    // What two neighbouring faces must agree on to merge into one quad.
-    //
-    // A mask rather than a shift, because the optional field is no longer the
-    // lowest one: light has to stay in the key whatever AO does. Merging across a
-    // light boundary would take one corner's brightness and stretch it over both
-    // faces, which is a far more visible error than a lost merge -- it puts a hard
-    // edge of the wrong shade across the middle of a cave wall.
-    const u32 keyMask = options.aoAwareMerging ? 0xFFFFFFFFu : 0xFFFFFF00u;
-
     // Opaque first, then fluid, appended after it. The split is what lets the
     // renderer draw the two as separate passes over one contiguous arena range.
     for (const bool fluidPass : {false, true}) {
+        // What two neighbouring faces must agree on to merge into one quad.
+        //
+        // A mask rather than a shift, because the optional field is no longer the
+        // lowest one: light has to stay in the key whatever AO does. Merging across
+        // a light boundary would take one corner's brightness and stretch it over
+        // both faces, which is a far more visible error than a lost merge -- it puts
+        // a hard edge of the wrong shade across the middle of a cave wall.
+        //
+        // **`aoAwareMerging` may not reach the fluid pass, and this is the trap that
+        // field's reuse sets.** Those low eight bits are corner drops on a fluid
+        // quad, not AO, and dropping them from the key merges a sloping surface into
+        // a flat one -- turning the option that trades merge ratio against shading
+        // into one that silently flattens water. The fluid pass always keys on the
+        // whole word.
+        const u32 keyMask =
+            (fluidPass || options.aoAwareMerging) ? 0xFFFFFFFFu : 0xFFFFFF00u;
+
         if (fluidPass) {
             out.opaqueQuads = out.quads.size();
             if (!s.anyFluid) {
@@ -549,7 +651,13 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
 
                     const BlockId block = s.blocks[localIndex(x, y, z)];
                     const u16 layer = registry.textureLayer(block, plan.face);
-                    const u8 ao = options.ambientOcclusion ? computeAo(s, plan, x, y, z) : 0;
+                    // The same eight bits, and two different meanings. See Quad.hpp:
+                    // AO on water is meaningless, which is what freed the field for
+                    // the surface height that had nowhere else to go.
+                    const u8 ao =
+                        fluidPass ? computeFluidCorners(s, plan, x, y, z)
+                        : options.ambientOcclusion ? computeAo(s, plan, x, y, z)
+                                                   : 0;
                     const u16 light = computeCornerLight(s, plan, x, y, z);
 
                     s.planeRows[static_cast<usize>(p)][static_cast<usize>(v)] |=

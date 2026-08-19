@@ -1691,7 +1691,7 @@ void Engine::reportStats(f64 fps, f64 frameMs) {
 }
 
 void Engine::stepFrame(f64 deltaTime) {
-    (void)deltaTime;
+    m_renderTime += static_cast<f32>(deltaTime);
 
     // Return ranges retired long enough ago before allocating any new ones.
     m_meshStore->recycle(m_frame);
@@ -1932,6 +1932,7 @@ void Engine::renderFrame() {
     m_frameRing->beginFrame();
 
     buildVisibleSet();
+    m_chunkRenderer->setTime(m_renderTime);
     m_chunkRenderer->draw(*m_device, m_renderCamera, *m_meshStore, *m_frameRing);
 
     // After the terrain, so the character is depth-tested against a filled buffer

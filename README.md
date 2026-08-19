@@ -92,7 +92,14 @@ time, on a 20 Hz tick rather than at your frame rate.
 
 There are oceans. You swim in them rather than standing on them, and falling into one
 cancels the fall damage. **Water flows**: break into the side of a lake and it pours in,
-down first and then sideways, seven blocks before it runs out. No flooded caves yet —
+down first and then sideways, seven blocks before it runs out. Down is free and sideways
+is metered, which is what makes it run downhill rather than spread as a disc — and it
+looks five blocks ahead for somewhere to fall, so it finds the edge of a cliff on
+purpose instead of by accident.
+
+**The surface has a height, and it slopes.** A flow sits lower than the source feeding
+it, the walls of a stream come down to meet their own top, and the water moves — still
+water drifts, and a flow scrolls the way it is running. No flooded caves yet, though:
 those need vanilla's aquifer system, whose barrier noise is not published anywhere usable.
 
 `F` switches to flying, `F5` to first person, `Escape` releases the cursor and again
@@ -102,7 +109,7 @@ Dig down. The caves, ores and darkness are the point, and they are not visible f
 surface.
 
 ```bash
-ctest --preset debug                       # 314 test cases
+ctest --preset debug                       # 321 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm

@@ -327,6 +327,44 @@ it is off for lava by default.
 receiving updates and persist until something replaces them. Draining is driven by the
 neighbour-notification pass, not by the fluid re-evaluating itself.
 
+#### What "can be flowed into" means, and the one case still unsettled
+
+Added 2026-08-19, after the rule above was implemented with the wrong predicate and
+**no water in the world could flow sideways except along the floor of a lake**
+(DESIGN.md 7.23). Step 1 says "if it can be flowed into", and the trap is reading that
+as "if it is not solid": water is not solid either, and a block already holding
+full-strength water cannot accept any more. A water block resting on water is **not**
+falling, so it must fall through to step 2.
+
+Vanilla spells the whole decision as:
+
+```
+if (canSpreadTo(DOWN))            -> spread down; sides only if 3+ source neighbours
+else if (isSource() || !isWaterHole(below)) -> spread to sides
+```
+
+Two things in that are easy to get backwards, and both were:
+
+- `canSpreadTo(DOWN)` is **false when the block below already holds the same fluid**.
+  `FluidState.canBeReplacedWith` lets water be replaced only by a *different* fluid,
+  so water never spreads into water. That is what sends a lake to the second branch.
+- `isWaterHole` is a **different** predicate from the one above, and it counts a
+  position whose floor already holds water as still being a hole. The slope search
+  uses it, and it has to: the first water down a hole fills it, and a hole that
+  stopped counting once filled would make the flow feeding it lose its direction at
+  the moment it succeeded.
+
+**Still unsettled: whether a source resting on its own waterfall spreads sideways.**
+The rule as written says yes — `isSource()` is checked with no condition on what the
+source stands on — which means a bucket emptied in mid-air should produce a
+fifteen-wide curtain of falling water rather than a single column, because the source
+re-evaluates once the column below it is full and the down branch then fails. That is
+not what the game appears to do from memory, and nothing found so far settles it. This
+engine ships the narrow rule: **a source spreads sideways off water only when the
+water below it is also a source**, which is exactly "a stack of sources is a body of
+water and a stack of falling water is not". Checking this in the real game is a
+ten-second experiment and would either confirm the deviation or remove it.
+
 ### 7.2 Aquifers — why a cave is dry and a lake is not
 
 This is the part section 6 recorded as unfindable, and most of it is now findable.

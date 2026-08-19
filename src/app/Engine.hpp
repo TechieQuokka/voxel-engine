@@ -660,6 +660,13 @@ private:
 
     f64 m_lastFrameTime = 0.0;
     f64 m_fpsAccumulator = 0.0;
+
+    /// Wall-clock seconds the renderer has been drawing for, for the water surface.
+    ///
+    /// Accumulated from the *clamped* delta rather than read off the clock, which
+    /// makes it the one place a stall is a feature: coming back from an Alt-Tab, the
+    /// sea carries on from where it was instead of jumping half a second downstream.
+    f32 m_renderTime = 0.0f;
     u32 m_framesSinceReport = 0;
     bool m_reportedWarm = false;
 

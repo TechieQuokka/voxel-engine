@@ -308,6 +308,14 @@ there is, so the floor can go to zero and a cave can be genuinely dark. **That i
 a side effect, it is most of the point.** A torch is worth exactly as much as the dark
 it gets carried into.
 
+**Bits 33..40 now mean two different things, and anything re-cutting this word has to
+know which.** They are ambient occlusion on an opaque quad and four corner drops on a
+fluid one (7.23) — the water surface got its height by taking a field that was dead
+weight on water rather than by widening the word, so the budget above is unchanged and
+so is the argument for torches. What it does mean is that the fluid pass has a claim
+on those eight bits: a future scheme that spends them on block light has to leave the
+translucent pass out of it, or give the surface height somewhere else to go first.
+
 ### 3.8 Draw submission — GPU-driven
 
 All visible chunks are drawn with a **single `glMultiDrawElementsIndirect`
@@ -2993,6 +3001,133 @@ frame ring sized for thousands.
 **What is still a cube is the dropped item**, and it no longer has to be: the
 extrusion that draws a held pickaxe is exactly the model a dropped one wants, and
 `ItemRenderer` is the caller that has not been moved over yet.
+
+---
+
+### 7.23 Water that moves, and a surface that has a height
+
+Started from one sentence of play: *the water looks wrong.* It turned out to be two
+unrelated faults with one symptom, and separating them was most of the work.
+
+#### Only the bottom layer of a lake could flow
+
+`BlockUpdates::examineFluid` asked whether the block below was `isFluidReplaceable`,
+which is `!isSolidBlock` — and **water is not solid, so water counted as somewhere to
+fall into.** A water block resting on water therefore took the down-first branch,
+wrote nothing (the block below was already full), and returned *before reaching the
+sideways spread*.
+
+The consequence is the whole bug: **only the bottom layer of any body of water could
+move at all.** Break into a lake anywhere above its bed and nothing happened. Since
+every ocean is filled from sea level down to the terrain, that is every ocean and
+every lake in the world. The one case that did work is the one nobody had tried —
+digging *down* through the sea floor, where the bottom layer's `below` really does
+become air.
+
+RESEARCH.md 7.1 had the rule right from the start: the test is whether the block below
+can be **flowed into**, not whether it is soft. `acceptsFalling` is that test, and a
+block already holding full-strength water fails it.
+
+**Eight tests passed throughout.** All of them build one layer of water on a stone
+floor, so `below` is always solid and the branch is never asked the question. This is
+the same shape as the item-pickup bug in 7.14 — a well-covered unit with zero coverage
+of the only thing wrong — except that here the gap is not a seam between modules but a
+*shape of world the tests never built*. A test that constructs its own world tests the
+world it thought of. The fix comes with a `pool()` helper for exactly that reason.
+
+#### Two wrong turns, both worth keeping
+
+**The first fix did not settle.** "Water on water spreads sideways" is true of a lake
+and false of a waterfall: applied without a qualifier, every block of a fifteen-block
+fall spread seven blocks in four directions on the way past, and a column became a
+tower of discs. The test suite did not fail, it **stopped terminating** — which is
+what RESEARCH.md 7.1 predicted in general terms and is worth having seen in
+particular. What separates the two cases is that nothing in a falling column is a
+source.
+
+**The second fix broke the slope search**, by making it consistent when it should not
+have been. "Can I fall into this" and "is there a hole over there" are different
+questions and vanilla asks them with different predicates: its `isWaterHole` counts a
+hole that has *already filled with water* as still being a hole. It has to — the first
+water down a hole fills it, and if that stopped it counting, the flow feeding it would
+lose its preferred direction at the exact moment it succeeded and start spreading
+backwards. The "finds the hole rather than spreading as a disc" test caught it.
+
+**One case is deliberately narrower than vanilla.** The rule shipped is *a source
+standing on a source spreads sideways*; vanilla's reads `isSource() || !isWaterHole()`
+with no condition on what the source stands on, which would also spread from a source
+resting on its own waterfall — a bucket emptied in mid-air making a fifteen-wide
+curtain rather than a column. That could not be confirmed from the sources RESEARCH.md
+7.1 was built from and the existing test asserts otherwise, so it is left alone and
+written down rather than guessed at. RESEARCH.md 7.1 records what is unsettled.
+
+#### The level never reached the renderer
+
+The simulation had carried a fluid level per block since 7.17, as eight block types.
+**None of it was visible**, for three reasons that stacked:
+
+- All ten water blocks share one texture layer, and `Quad`'s `material` field is a
+  layer index. The level was not in the quad at all.
+- `material` is part of the greedy merge key, so level 0 and level 7 were *the same
+  cell* — the mesher actively merged a flowing edge into the ocean beside it.
+- Every water block drew as a full cube. Level 0 and level 7 were the same shape.
+
+The 64-bit quad has been exactly full since smooth lighting landed (3.7), which is the
+same wall torches are waiting behind — so the obvious answer, a level field, does not
+exist. **The way through is that ambient occlusion on water means nothing.** Vanilla
+does not shade water with it either, and those are eight bits sitting on precisely the
+quads that needed somewhere to put a height. Bits 33..40 are four corner drops on a
+fluid quad and AO everywhere else; nothing about the packing changed, and `material`
+stays a texture layer so a second fluid needs no new machinery.
+
+**Zero means a full block**, which is what made this safe to bolt on: every quad built
+without thinking about fluids — including every one `CulledMesher` emits — keeps
+drawing water exactly as it did before, with no edit to that file at all.
+
+Two bits per corner is four heights where vanilla has nine, and it is a floor rather
+than a target: a seven-block run shows three steps instead of seven. The next two bits
+would have to come from reinterpreting `material` on fluid quads as well, which is a
+real change to what that field means and is worth doing only if play says the steps
+read as steps.
+
+#### One question per vertex
+
+The corner drops are written per *vertex* rather than per face, and answer one
+question: **how far below the top of its block does the surface sit here.** A vertex
+that is not on the top of its block answers zero. That single convention makes a top
+face get four real drops, a bottom face four zeroes, and a side face two and two — so
+a side face's upper edge lands exactly on the surface the top face draws, and the
+shader needs no per-face branch at all. Getting this wrong means the wall of a stream
+stands a fraction of a block proud of its own top and the gap is lit from inside.
+
+The drop of a lattice corner is the mean over the fluid blocks meeting there, which is
+how vanilla averages its corner heights. Non-fluid neighbours are left out of the mean
+rather than counted as empty, so water against a wall keeps its height instead of
+being dragged down to the floor.
+
+#### What it cost
+
+Water became a second shader program rather than a branch in the first, which cost
+almost nothing: the translucent pass was already a separate multi-draw with its own
+`u_drawIdBase`. The two programs disagree about what bits 33..40 mean, and that is not
+something a uniform can express.
+
+**A uniform water section went from 6 quads to 10**, and the four extra are the
+feature: each wall splits into its submerged rows and the one surface row above them,
+whose upper edge is lower. It is bounded at one extra quad per wall however deep the
+water is. Against that, water quads stopped carrying AO — which *varies* with the
+terrain around them and broke merges that height does not — and a spawn capture came
+out at 4,346,678 quads against 4,350,084 before. The whole feature is slightly cheaper
+than what it replaced.
+
+Frame times at render distance 16 sit at p99 5.14 ms with the sanity lines healthy.
+That is a smoke check and not a comparison: 7.16 records why a table row from another
+session is not a baseline.
+
+**`aoAwareMerging` is the trap this sets.** It masks the low eight bits out of the
+merge key, which on a fluid quad are corner drops — so the option that trades merge
+ratio against shading would silently flatten every water surface in the world. The
+fluid pass always keys on the whole word.
 
 ---
 

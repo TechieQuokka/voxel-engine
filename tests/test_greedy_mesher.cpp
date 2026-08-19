@@ -105,6 +105,140 @@ SectionNeighbourhood enclosedBy(const Section& center, const Section& surroundin
 
 } // namespace
 
+TEST_CASE("a water surface carries a corner drop and the water under it does not") {
+    // **The eight bits that are AO on a stone quad are a surface height on a water
+    // one**, and the whole reason the fluid level can reach the shader at all. See
+    // Quad.hpp. Two blocks of source water: the lower one is submerged, the upper
+    // one is the surface.
+    Section section;
+    for (i32 x = 8; x < 12; ++x) {
+        for (i32 z = 8; z < 12; ++z) {
+            section.set(x, 10, z, kWaterBlock);
+            section.set(x, 11, z, kWaterBlock);
+        }
+    }
+
+    ChunkMesh mesh;
+    meshSectionGreedy(section, mesh, kNoAo);
+
+    // Everything a fluid emits lands in the translucent half.
+    REQUIRE(mesh.opaqueQuads == 0);
+    REQUIRE(mesh.quadCount() > 0);
+
+    bool sawTop = false;
+    for (const Quad& quad : mesh.quads) {
+        if (quad.face() != Face::PosY) {
+            continue;
+        }
+        // The only top face is the surface of the pool: the boundary between the
+        // two water layers is culled against its own kind.
+        sawTop = true;
+        CHECK(quad.y() == 12);
+        for (u32 corner = 0; corner < 4; ++corner) {
+            CAPTURE(corner);
+            // A source sits one ninth down, which is drop code 1.
+            CHECK(quad.fluidDrop(corner) == 1);
+        }
+    }
+    CHECK(sawTop);
+}
+
+TEST_CASE("a side face drops its upper edge and pins its lower one") {
+    // What lets the wall of a stream meet its own surface instead of standing proud
+    // of it: the corner value answers "how far down is the surface at this vertex",
+    // and a vertex that is not on the top of its block answers zero.
+    Section section;
+    section.set(10, 10, 10, kWaterBlock);
+
+    ChunkMesh mesh;
+    meshSectionGreedy(section, mesh, kNoAo);
+
+    usize sides = 0;
+    for (const Quad& quad : mesh.quads) {
+        if (quad.face() == Face::PosY) {
+            // Open sky above, so this is a surface: every corner drops.
+            for (u32 corner = 0; corner < 4; ++corner) {
+                CHECK(quad.fluidDrop(corner) == 1);
+            }
+            continue;
+        }
+        if (quad.face() == Face::NegY) {
+            // The underside of a block is never the surface.
+            CHECK(quad.fluidCorners() == 0);
+            continue;
+        }
+
+        ++sides;
+        // Exactly two of the four corners are on the top of the block, whichever
+        // way the face points, and only those two moved.
+        usize dropped = 0;
+        for (u32 corner = 0; corner < 4; ++corner) {
+            if (quad.fluidDrop(corner) != 0) {
+                CHECK(quad.fluidDrop(corner) == 1);
+                ++dropped;
+            }
+        }
+        CAPTURE(static_cast<u32>(quad.face()));
+        CHECK(dropped == 2);
+    }
+    CHECK(sides == 4);
+}
+
+TEST_CASE("a thinner flow sits lower than a source") {
+    // The gradient itself: a level-7 block is the far edge of a run and is drawn
+    // most of a block below the top of its cell, where a source is one ninth below.
+    Section thin;
+    Section source;
+    for (i32 x = 8; x < 12; ++x) {
+        for (i32 z = 8; z < 12; ++z) {
+            thin.set(x, 10, z, blockIdOf("water_7"));
+            source.set(x, 10, z, kWaterBlock);
+        }
+    }
+
+    ChunkMesh thinMesh;
+    ChunkMesh sourceMesh;
+    meshSectionGreedy(thin, thinMesh, kNoAo);
+    meshSectionGreedy(source, sourceMesh, kNoAo);
+
+    const auto topDrop = [](const ChunkMesh& mesh) {
+        for (const Quad& quad : mesh.quads) {
+            if (quad.face() == Face::PosY) {
+                return quad.fluidDrop(0);
+            }
+        }
+        return u8{255};
+    };
+
+    CHECK(topDrop(sourceMesh) == 1);
+    CHECK(topDrop(thinMesh) > topDrop(sourceMesh));
+}
+
+TEST_CASE("submerged water is a full cube and merges as one") {
+    // The ocean interior, which is almost all the water in the world: nothing is a
+    // surface, so nothing drops, so nothing breaks a merge. Water that is full has
+    // to stay free -- this is the case that pays for the whole feature.
+    Section section(kWaterBlock);
+
+    ChunkMesh mesh;
+    meshSectionGreedy(section, mesh, kNoAo);
+
+    // Ten, not six: each of the four walls splits into the 31 submerged rows and the
+    // one surface row above them, whose upper edge is lower. Everything submerged
+    // still merges to the maximum, which is the part that had to stay true.
+    REQUIRE(mesh.quadCount() == 10);
+
+    usize fullWalls = 0;
+    for (const Quad& quad : mesh.quads) {
+        if (quad.fluidCorners() == 0) {
+            ++fullWalls;
+        }
+    }
+    // The bottom face, the four submerged wall sections -- and nothing else, because
+    // every quad that touches the surface carries a drop.
+    CHECK(fullWalls == 5);
+}
+
 TEST_CASE("an empty section produces no quads") {
     Section section;
     ChunkMesh mesh;

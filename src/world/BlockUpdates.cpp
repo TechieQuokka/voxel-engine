@@ -231,6 +231,37 @@ Probe probe(const World& world, BlockPos pos) {
     return result;
 }
 
+/// Can water actually fall *into* this block?
+///
+/// **This is not the same question as `replaceable`, and answering it with that one
+/// stopped every lake in the world from flowing.** `isFluidReplaceable` is
+/// `!isSolidBlock`, so water is replaceable -- correctly, because a flow may
+/// overwrite a weaker one. But a block already holding full-strength water cannot
+/// accept any more, so water resting on water is *not* falling, and treating it as
+/// if it were returned from the down-first branch before ever reaching the sideways
+/// spread.
+///
+/// The consequence was that **only the bottom layer of a body of water could flow at
+/// all**: broken into anywhere above its bed, a lake did nothing, and that is every
+/// lake and the whole ocean. The one case that did work is the one nobody tried --
+/// digging *down* through the sea floor, where the bottom layer's `below` really is
+/// air. RESEARCH.md 7.1 had the rule right all along: the test is whether the block
+/// below can be *flowed into*, not whether it is soft.
+///
+/// Every test in `test_flowing_water.cpp` missed it because all of them are one
+/// layer of water on a stone floor, where `below` is always solid. A test that
+/// builds its own world tests the shape of world it thought of.
+bool acceptsFalling(const Probe& below) {
+    if (!below.replaceable) {
+        return false;
+    }
+    // Level 0 is a source or an already-falling column, and both are full. Levels
+    // 1-7 are not: vanilla's falling water overwrites a weaker flow rather than
+    // stopping on it, which is what lets a waterfall cut through the thin edge of
+    // the pool it is filling.
+    return !isFluid(below.block) || fluidLevelOf(below.block) > 0;
+}
+
 } // namespace
 
 BlockUpdates::Outcome BlockUpdates::examineFluid(World& world, BlockPos pos,
@@ -323,37 +354,67 @@ BlockUpdates::Outcome BlockUpdates::examineFluid(World& world, BlockPos pos,
 
     const u8 level = fluidLevelOf(wanted);
 
-    // **Down first, and down wins outright.** Water spreads downward with no level
-    // cost at all and does not spread sideways from a block it can fall out of. That
-    // asymmetry is the whole of "water runs downhill" -- falling is free and
-    // sideways is metered at seven blocks.
+    // **Down first, and down wins outright -- but only when there is a down to go
+    // to.** Water spreads downward with no level cost at all and does not spread
+    // sideways from a block it can fall out of. That asymmetry is the whole of
+    // "water runs downhill": falling is free and sideways is metered at seven
+    // blocks.
+    //
+    // "Can fall out of" is `acceptsFalling`, not `replaceable`, and the difference
+    // between those two is the whole of why nothing but the floor of a lake used to
+    // move. See the note on that function.
     const Probe below = probe(world, belowPos);
     if (!below.ready) {
         return outcome == Outcome::Done ? Outcome::Suspend : outcome;
     }
-    if (below.replaceable) {
+    if (acceptsFalling(below)) {
         // Falling water arrives at full strength, and the block under *it* will read
         // this one as "fed from above" and do the same again -- which is what makes a
         // waterfall of any height cost no level at all.
-        if (!isFluid(below.block)) {
-            switch (world.setBlock(belowPos, waterAtLevel(0))) {
-                case World::EditStatus::Applied:
-                case World::EditStatus::Unchanged:
-                    notifyFluid(belowPos);
-                    outcome = Outcome::Flowed;
-                    break;
-                case World::EditStatus::Busy:
-                    return Outcome::Retry;
-                case World::EditStatus::OutsideWorld:
-                case World::EditStatus::NotLoaded:
-                    break;
-            }
+        switch (world.setBlock(belowPos, waterAtLevel(0))) {
+            case World::EditStatus::Applied:
+            case World::EditStatus::Unchanged:
+                notifyFluid(belowPos);
+                outcome = Outcome::Flowed;
+                break;
+            case World::EditStatus::Busy:
+                return Outcome::Retry;
+            case World::EditStatus::OutsideWorld:
+            case World::EditStatus::NotLoaded:
+                break;
         }
         return outcome;
     }
 
-    // Standing on something solid. Spread sideways, one level weaker, if there is a
-    // level left to give.
+    // Nowhere to fall: either standing on something solid, or on water that is
+    // already full. **The second of those is the ordinary case and used to be
+    // unreachable** -- it is every block of every lake and ocean above the bed.
+    //
+    // **Off full water, only a source standing on a source spreads sideways -- and
+    // both halves of that are load-bearing.**
+    //
+    // A stack of sources is a body of water, and its sides are that body's edge:
+    // this is the case the fix exists for, because it is every lake and the whole
+    // ocean above the bed. A stack of *falling* water is a waterfall, which is a
+    // column and not a body, and nothing in it may spread. Dropping the first half
+    // makes every block of a fifteen-block fall spread seven blocks in four
+    // directions on the way past -- a column becomes a tower of discs, and the
+    // "water falls before it spreads" test stops terminating rather than merely
+    // failing.
+    //
+    // **This is deliberately narrower than vanilla and the difference is one case.**
+    // Vanilla's rule reads `isSource() || !isWaterHole(below)`, with no condition on
+    // what the source is standing on, which would also spread sideways from a source
+    // resting on its own waterfall -- a bucket emptied in mid-air would make a
+    // fifteen-wide curtain rather than a single column. Whether it really does that
+    // could not be confirmed from the sources RESEARCH.md 7.1 was built from, and the
+    // existing test asserts it does not. The narrow rule fixes the confirmed bug and
+    // leaves that case as it was; see RESEARCH.md 7.1 for what is still unsettled.
+    if (below.replaceable && !(isFluidSource(wanted) && isFluidSource(below.block))) {
+        return outcome;
+    }
+
+    // Spread sideways, one level weaker, if there is a level left to give.
     const auto nextLevel = static_cast<u8>(level + 1);
     if (nextLevel > kMaxFluidLevel) {
         return outcome;
@@ -380,6 +441,18 @@ BlockUpdates::Outcome BlockUpdates::examineFluid(World& world, BlockPos pos,
             if (!under.ready) {
                 return Outcome::Suspend;
             }
+            // **`replaceable`, and deliberately not `acceptsFalling`: these are two
+            // different questions and vanilla asks them with two different
+            // predicates.** The down-first branch asks "can I fall into this", which
+            // a block already full of water answers no to. The slope search asks "is
+            // there a drop over there", and vanilla's `isWaterHole` counts a hole
+            // that has already filled with water as still being a hole. It has to:
+            // the first water down the hole fills it, and if that stopped the hole
+            // counting, the flow feeding it would lose its preferred direction the
+            // moment it succeeded and start spreading backwards in every other
+            // direction instead. Making both calls `acceptsFalling` did exactly
+            // that, and the "finds the hole rather than spreading as a disc" test is
+            // what caught it.
             if (under.replaceable) {
                 preferred[i] = true;
                 anyPreferred = true;

@@ -13,8 +13,11 @@ namespace mc {
 ChunkRenderer::ChunkRenderer() {
     m_shader = rhi::Shader::fromFiles(assetPath("shaders/chunk.vert"),
                                       assetPath("shaders/chunk.frag"));
+    m_waterShader = rhi::Shader::fromFiles(assetPath("shaders/water.vert"),
+                                           assetPath("shaders/water.frag"));
     m_textures.emplace();
     m_shader.setUniform("u_blockTextures", static_cast<i32>(kTextureUnit));
+    m_waterShader.setUniform("u_blockTextures", static_cast<i32>(kTextureUnit));
 
     m_firsts.reserve(kInitialVisibleCapacity);
     m_counts.reserve(kInitialVisibleCapacity);
@@ -156,7 +159,16 @@ void ChunkRenderer::draw(rhi::Device& device, const Camera& camera,
     device.setDepthWrite(false);
     device.setAlphaBlending(true);
 
-    m_shader.setUniform("u_drawIdBase", static_cast<i32>(m_origins.size()));
+    // A second program over the same arena and the same origin slice. It reads bits
+    // 33..40 of a quad as four corner drops rather than as ambient occlusion, which
+    // is why it cannot be the first program with a uniform flipped. See Quad.hpp.
+    m_waterShader.bind();
+    m_waterShader.setUniform("u_viewProjection", camera.viewProjectionMatrix());
+    m_waterShader.setUniform("u_cameraPosition", camera.position());
+    m_waterShader.setUniform("u_fadeDistance", m_fadeDistance);
+    m_waterShader.setUniform("u_fogColor", m_fogColor);
+    m_waterShader.setUniform("u_time", m_time);
+    m_waterShader.setUniform("u_drawIdBase", static_cast<i32>(m_origins.size()));
     device.multiDrawTriangles(m_waterFirsts, m_waterCounts);
 
     device.setAlphaBlending(false);

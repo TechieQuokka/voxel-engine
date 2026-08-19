@@ -53,10 +53,14 @@ TEST_CASE("a slab of water meshes as a surface, not as a stack of cubes") {
     // left is the outside of the slab, and with no neighbouring sections supplied
     // that is the top, the bottom and the four sides.
     //
-    // Greedy merging then reduces each of those flat faces to one quad: top, bottom,
-    // and four walls of 32x8.
-    CHECK(waterQuads(mesh) == 6);
-    CHECK(mesh.quadCount() == 6);
+    // **Ten rather than six, and the extra four are the surface.** Each wall splits
+    // in two: the seven submerged rows are full-height and merge, and the top row
+    // cannot join them because its upper edge is drawn a ninth of a block lower --
+    // that is where the water surface is. The split is the feature rather than a
+    // lost merge, and it is bounded at one extra quad per wall however deep the
+    // water gets. See Quad.hpp for what carries the height.
+    CHECK(waterQuads(mesh) == 10);
+    CHECK(mesh.quadCount() == 10);
 }
 
 TEST_CASE("water and stone hide each other's faces") {

@@ -90,10 +90,8 @@ carrying as method rather than as history:
 
 ### Where to resume
 
-**Nothing is half-finished.** Working tree clean, 314 tests, asan passes. **tsan is
-clean** over both the test binary and twelve seconds of the running app, re-run on
-2026-08-18 after the frame ring landed -- which also closes the run this section had
-been asking for since the container layer.
+**Nothing is half-finished.** 321 tests, asan passes. **tsan is clean** over twelve
+seconds of the running app, re-run on 2026-08-19 after the water phase.
 
 Four of these need a person, and they are first on purpose — the list of things this
 project found by playing is longer than the list it found by reasoning.
@@ -105,10 +103,22 @@ project found by playing is longer than the list it found by reasoning.
    so what is left is the half a test cannot reach: aiming, mining, and finding the
    windows. That half is where both previous findings came from (nobody could find the
    grid; the fuel was off by one smelt), so this stays at the top of the list.
-2. **Play the water.** Dig into the side of a lake and watch it pour in; wall it off
-   and break the wall. **Flowing water has never been seen by anyone either** — a
-   benchmark flight never edits the world, so it never notifies a fluid. The stats
-   line prints `flowed`, which is the number that should not be zero.
+2. **Play the water, and this is now the top of the list rather than a formality.**
+   Dig into the side of a lake above its bed and watch it pour in. **That case did
+   nothing at all until 2026-08-19** (DESIGN.md 7.23), and the reason nobody knew is
+   that a benchmark flight never edits the world so it never notifies a fluid. The
+   stats line prints `flowed`, which is the number that should not be zero, and
+   `(N suspended)` beside it.
+   - **The per-flow cost has still never been measured.** Every flow is a `setBlock`
+     and every `setBlock` relights a column, and blocks that used to return early now
+     run a five-block slope search in four directions. Watch `updates queued`, and
+     report a `Block update queue full` warning if one appears -- that is a cascade
+     that does not terminate rather than a busy world.
+   - **The surface now has a height, in four steps where vanilla has nine.** Whether
+     the steps read as steps is the thing a capture cannot answer and this decides.
+   - **Ten seconds in the real game would settle a deliberate deviation**: empty a
+     bucket in mid-air and see whether vanilla makes a single column or a wide
+     curtain. RESEARCH.md 7.1 has why it matters.
 3. **Knock a sand pillar over.** Phase 12 has *still* never been seen by a person, for
    the same reason. Place a few sand blocks and dig out the bottom one. This is the
    oldest unverified thing in the project.
@@ -138,7 +148,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (314 cases, doctest)
+# Test  (321 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
@@ -382,7 +392,9 @@ src/render/
 src/app/
   main, Engine (streaming pipeline: submit-only frame loop, upload thread)
 
-assets/shaders/         chunk.vert, chunk.frag, character.*, triangle.*
+assets/shaders/         chunk.vert, chunk.frag, water.* (the translucent pass: it
+                        reads bits 33..40 as a surface height, not as AO),
+                        character.*, triangle.*
 tests/                  doctest; links module libraries individually
 tsan.supp               third-party race suppressions, with usage in its header
 docs/DESIGN.md          the design and the reasoning; measurements in 7.x
@@ -730,6 +742,42 @@ Learned the hard way; all of them cost real time.
   block-buffered, so a probe killed by a timeout prints nothing at all and looks like a
   hang with no information. `setvbuf(stdout, nullptr, _IONBF, 0)` is the difference
   between "it hangs" and "it hangs at tick 25 with 176 pending".
+- **"Not solid" is not the same question as "can be flowed into", and conflating them
+  froze every lake in the world.** `isFluidReplaceable` is `!isSolidBlock`, so water
+  counts as replaceable -- correctly, because a flow may overwrite a weaker one. But a
+  block already full of water cannot accept more, so water resting on water is not
+  falling. Asking the wrong one made the down-first branch return before the sideways
+  spread, and **only the bottom layer of any body of water could move**. `acceptsFalling`
+  is the right test. DESIGN.md 7.23.
+- **A test that builds its own world tests the world it thought of.** All eight
+  flowing-water tests put one layer of water on stone, so `below` was always solid and
+  the branch above was never asked the question -- through the entire life of the
+  feature. This is 7.14's lesson again with the gap in a different place: not a seam
+  between two modules, but a *shape of world* nothing constructed. `pool()` exists so
+  the next one starts from water on water.
+- **A fluid fix that is wrong does not settle, it diverges.** Letting water on water
+  spread sideways without asking whether it is a *source* made every block of a
+  fifteen-block waterfall spread seven blocks in four directions on the way down. The
+  test suite did not fail; it stopped terminating, and `timeout` was how it reported.
+  A lake is a stack of sources and a waterfall is a stack of falling water; nothing in
+  the column is a source, and that is what tells them apart.
+- **The slope search and the down-first branch must NOT use the same predicate.**
+  Making them consistent looks like a cleanup and breaks water finding a hole: vanilla
+  counts a hole that has already filled with water as still a hole, because the first
+  water down it fills it, and a flow that stopped preferring that direction the moment
+  it succeeded would start spreading backwards instead. RESEARCH.md 7.1.
+- **Bits 33..40 of a `Quad` are AO on an opaque face and four corner drops on a fluid
+  one.** The 64-bit word has been exactly full since smooth lighting, so the fluid
+  level got in by taking the field AO was wasting on water -- vanilla does not shade
+  water with AO either. Zero means a full block, which is why `CulledMesher` needed no
+  edit at all. **`aoAwareMerging` masks those eight bits out of the merge key**, which
+  on a fluid quad would silently flatten every water surface in the world, so the
+  fluid pass always keys on the whole word. DESIGN.md 7.23 and Quad.hpp.
+- **A corner drop is a question about a vertex, not about a face.** "How far below the
+  top of its block is the surface here", answered zero for any vertex not on top of
+  its block. That is what makes one field serve all six faces with no per-face branch
+  in the shader, and it is what makes a side face's upper edge land exactly on the
+  surface the top face draws rather than a fraction of a block proud of it.
 - **An empty return that means two different things is this project's recurring bug,
   and there are now three of it.** `blockAt` answers air for a column that is not
   loaded; `usedSlots()` is a count that was read as an index; and `Screen::releaseOne`
@@ -847,13 +895,19 @@ Do not relitigate these without a reason; the rationale is in `DESIGN.md`.
   not. Only the *barrier* noise is still undocumented anywhere found. Until this is
   built, caves under the sea are dry and a cliff overhang has a dry pocket at its
   foot — both documented at the code in `Generator`.
-- ~~**Flowing water.**~~ **Built 2026-08-13** (DESIGN.md 7.17). What is left of it:
-  flowing water draws as a full cube where vanilla slopes the surface by level, which
-  needs Phase 10's non-cube geometry; there is no lava, though `fluidLevel` and
-  `fluidSource` are per block type and lava is the same algorithm with a step of 2;
-  and **the per-flow cost is unmeasured**, because a benchmark flight never edits the
-  world so it never notifies a fluid. A flow is many `setBlock` calls and each relights
-  a column, so a player digging into an ocean is how that will be found.
+- ~~**Flowing water.**~~ **Built 2026-08-13** (DESIGN.md 7.17), **and it did not work
+  until 2026-08-19** (DESIGN.md 7.23): water resting on water never reached the
+  sideways spread, so nothing but the floor of a lake could move. What is left of it:
+  there is no lava, though `fluidLevel` and `fluidSource` are per block type and lava
+  is the same algorithm with a step of 2; **the surface slopes in four steps where
+  vanilla has nine**, and widening it means reinterpreting `material` on fluid quads
+  the way `ao` already is; and **the per-flow cost is still unmeasured**, because a
+  benchmark flight never edits the world so it never notifies a fluid. A flow is many
+  `setBlock` calls and each relights a column, so a player digging into an ocean is
+  how that will be found -- and the fix above is what makes that finally possible.
+  **One deviation from vanilla is deliberate and unconfirmed**: a source spreads
+  sideways off water only when the water below it is also a source. RESEARCH.md 7.1
+  has the experiment that would settle it.
 - **Phase 5 inherits the shader layout unchanged.** Indirect draw plus GPU culling:
   per-section data is already an array indexed by `gl_DrawID`, which means the same
   thing under `glMultiDrawElementsIndirect`, so only the command buffer's producer

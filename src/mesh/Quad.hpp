@@ -26,6 +26,28 @@ namespace mc {
 /// stays a separable field at 33..40, so `setAoStrength()` still works -- folding
 /// the two together would have fit as well and cost that.
 ///
+/// **On a quad in the fluid pass, bits 33..40 are not AO. They are four corner
+/// drops, two bits each.** The word is exactly full and has been since smooth
+/// lighting landed, so a fluid level had nowhere of its own to go -- but ambient
+/// occlusion on water is meaningless (vanilla does not shade water with it either),
+/// which makes that field eight bits of dead weight on precisely the quads that
+/// needed somewhere to put a surface height. Nothing about the packing changes; the
+/// water shader reads the same bits as a different thing, and `material` stays a
+/// texture layer so a second fluid needs no new machinery.
+///
+/// A drop is how far *below the top of its block* that corner of the surface sits,
+/// as an index into a table the water shader owns. **Zero is a full block**, which
+/// is what makes this safe to bolt on: every quad built without thinking about
+/// fluids -- including every one `CulledMesher` emits -- keeps drawing water exactly
+/// as it did before.
+///
+/// Two bits per corner is four heights where vanilla has nine, and it is a
+/// deliberate floor rather than the target: a seven-block run shows three steps
+/// instead of seven. The next two bits per corner would have to come from
+/// reinterpreting `material` on fluid quads as well (fluid type in the low bits,
+/// corner data in the high ones), which is a real change to what the field means
+/// and is worth doing only if play says the steps read as steps.
+///
 /// There is no vertex buffer. Quads live in an SSBO and the vertex shader
 /// expands each one into four corners from gl_VertexID.
 struct Quad {
@@ -34,6 +56,9 @@ struct Quad {
     static constexpr u32 kMaxExtent = 64;
     /// What seven bits of material holds.
     static constexpr u16 kMaxMaterial = 127;
+
+    /// Corner drops run 0..3, and 0 means the surface is level with the block top.
+    static constexpr u8 kMaxFluidDrop = 3;
 
     static constexpr Quad make(u32 x, u32 y, u32 z,
                                u32 width, u32 height,
@@ -66,6 +91,12 @@ struct Quad {
     constexpr u32 height() const { return static_cast<u32>((packed >> 24) & 0x3F) + 1; }
     constexpr Face face() const { return static_cast<Face>((packed >> 30) & 0x7); }
     constexpr u8 ao() const { return static_cast<u8>((packed >> 33) & 0xFF); }
+    /// The same eight bits, named for what they mean on a fluid quad.
+    constexpr u8 fluidCorners() const { return ao(); }
+    /// One corner's drop, 0..3, in the corner order AO and light already use.
+    constexpr u8 fluidDrop(u32 corner) const {
+        return static_cast<u8>((ao() >> (2u * corner)) & 0x3u);
+    }
     constexpr u16 light() const { return static_cast<u16>((packed >> 41) & 0xFFFF); }
     constexpr u16 material() const { return static_cast<u16>((packed >> 57) & 0x7F); }
 };

@@ -64,6 +64,42 @@ bool isDry(const World& world, BlockPos pos) {
     return !isFluid(world.blockAt(pos));
 }
 
+/// A body of water `depth` blocks deep, sitting on a floor, held in by a wall.
+///
+/// **This is the shape of world every other test in this file leaves out, and the
+/// omission hid a bug for the whole life of the feature.** All of them are a single
+/// layer of water on stone, so the block under the water is always solid -- and the
+/// down-first branch is therefore never asked about water resting on water, which is
+/// what every block of every lake and ocean above the bed actually is. Water sat
+/// inert in the real game while all eight of those tests passed.
+///
+/// Written into sections directly for the reason `floor` gives: `setBlock` relights
+/// the whole column, and a pool is hundreds of blocks.
+void pool(World& world, i32 bedY, i32 depth, i32 wallX, i32 halfExtent = 6) {
+    const auto put = [&world](BlockPos pos, BlockId block) {
+        Chunk* chunk = world.find(toChunkPos(pos));
+        REQUIRE(chunk != nullptr);
+        Section* section = chunk->sectionAt(blockToSectionCoord(pos.y));
+        REQUIRE(section != nullptr);
+        section->set(blockToLocalCoord(pos.x), blockToLocalCoord(pos.y),
+                     blockToLocalCoord(pos.z), block);
+    };
+
+    for (i32 x = -halfExtent; x <= halfExtent; ++x) {
+        for (i32 z = -halfExtent; z <= halfExtent; ++z) {
+            put(BlockPos{x, bedY, z}, kStoneBlock);
+        }
+    }
+    for (i32 y = bedY + 1; y <= bedY + depth; ++y) {
+        for (i32 z = -halfExtent; z <= halfExtent; ++z) {
+            put(BlockPos{wallX, y, z}, kStoneBlock);
+            for (i32 x = -halfExtent; x < wallX; ++x) {
+                put(BlockPos{x, y, z}, kWaterBlock);
+            }
+        }
+    }
+}
+
 } // namespace
 
 TEST_CASE("a source with solid ground under it spreads seven blocks and stops") {
@@ -313,4 +349,94 @@ TEST_CASE("water suspends at the edge of the loaded region rather than pouring o
 
     // The work is not lost -- it is still queued, waiting for the neighbour.
     CHECK(updates.pending() > 0);
+}
+
+TEST_CASE("a deep pool flows out of a hole above its bed") {
+    // **The case the other eight tests could not reach.** Breaking into a lake
+    // anywhere above the bed used to do nothing at all, because the water there rests
+    // on water: the down-first branch read "below is not solid" as "I can fall", did
+    // nothing because below was already full, and returned before the sideways spread
+    // it should have reached. Only the bottom layer of any body of water could move.
+    auto world = readyWorld();
+    BlockUpdates updates;
+    FallingBlocks falling;
+
+    // Bed at 40, water at 41, 42, 43, wall at x = 1.
+    pool(*world, 40, 3, 1);
+
+    SUBCASE("through the top layer") {
+        REQUIRE(world->setBlock(BlockPos{1, 43, 0}, kAirBlock) != World::EditStatus::Busy);
+        updates.notify(BlockPos{1, 43, 0});
+        settle(*world, updates, falling);
+
+        CHECK(isFluid(world->blockAt(BlockPos{1, 43, 0})));
+        // The rest of the wall is still standing under it, so the water that got out
+        // runs along the top of it rather than falling, one level weaker per block.
+        CHECK(levelAt(*world, BlockPos{1, 43, 0}) == 1);
+        CHECK(levelAt(*world, BlockPos{2, 43, 0}) == 2);
+    }
+
+    SUBCASE("through the middle layer") {
+        REQUIRE(world->setBlock(BlockPos{1, 42, 0}, kAirBlock) != World::EditStatus::Busy);
+        updates.notify(BlockPos{1, 42, 0});
+        settle(*world, updates, falling);
+
+        CHECK(isFluid(world->blockAt(BlockPos{1, 42, 0})));
+    }
+
+    SUBCASE("and the pool is not drained by flowing out of itself") {
+        REQUIRE(world->setBlock(BlockPos{1, 43, 0}, kAirBlock) != World::EditStatus::Busy);
+        updates.notify(BlockPos{1, 43, 0});
+        settle(*world, updates, falling);
+
+        // Water is not mass-conserving and this is the whole design: a source is
+        // never consumed by flowing out of it. RESEARCH.md 7.1.
+        CHECK(levelAt(*world, BlockPos{0, 43, 0}) == 0);
+        CHECK(levelAt(*world, BlockPos{-3, 42, 0}) == 0);
+    }
+}
+
+TEST_CASE("digging the bed out from under a pool drains it downward") {
+    // The one case that always worked, kept because it is the other side of the same
+    // branch: here `below` really does become air, so the bottom layer falls through.
+    auto world = readyWorld();
+    BlockUpdates updates;
+    FallingBlocks falling;
+
+    pool(*world, 40, 3, 1);
+    // A catch basin, for the reason the slope-search test gives: without one the
+    // water falls to the bottom of the world relighting a column per block.
+    floor(*world, 36);
+    REQUIRE(world->setBlock(BlockPos{0, 40, 0}, kAirBlock) != World::EditStatus::Busy);
+    updates.notify(BlockPos{0, 40, 0});
+    settle(*world, updates, falling);
+
+    CHECK(isFluid(world->blockAt(BlockPos{0, 40, 0})));
+    CHECK(isFluid(world->blockAt(BlockPos{0, 37, 0})));
+}
+
+TEST_CASE("a falling column does not spread sideways at any height") {
+    // **The guard on the fix, and it is what a first attempt got wrong.** "Water on
+    // water spreads sideways" is true of a lake and false of a waterfall, and without
+    // the distinction every block of a fall spreads seven blocks in four directions
+    // on the way past -- which does not merely look wrong, it stops settling.
+    auto world = readyWorld();
+    BlockUpdates updates;
+    FallingBlocks falling;
+
+    floor(*world, 30);
+    REQUIRE(world->setBlock(BlockPos{0, 45, 0}, kWaterBlock) == World::EditStatus::Applied);
+    updates.notify(BlockPos{0, 45, 0});
+    const u32 ticks = settle(*world, updates, falling);
+
+    // It settled at all, which is the assertion that matters most here.
+    CHECK(ticks < 4096);
+
+    // Nothing in the column is a source, and nothing in it spread.
+    for (i32 y = 32; y <= 44; ++y) {
+        CAPTURE(y);
+        CHECK(isFluid(world->blockAt(BlockPos{0, y, 0})));
+        CHECK_FALSE(isFluidSource(world->blockAt(BlockPos{0, y, 0})));
+        CHECK(isDry(*world, BlockPos{1, y, 0}));
+    }
 }
