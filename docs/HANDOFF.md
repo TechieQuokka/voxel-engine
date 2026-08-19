@@ -90,7 +90,7 @@ carrying as method rather than as history:
 
 ### Where to resume
 
-**Nothing is half-finished.** 321 tests, asan passes. **tsan is clean** over twelve
+**Nothing is half-finished.** 322 tests, asan passes. **tsan is clean** over twelve
 seconds of the running app, re-run on 2026-08-19 after the water phase.
 
 Four of these need a person, and they are first on purpose — the list of things this
@@ -104,11 +104,13 @@ project found by playing is longer than the list it found by reasoning.
    windows. That half is where both previous findings came from (nobody could find the
    grid; the fuel was off by one smelt), so this stays at the top of the list.
 2. **Play the water, and this is now the top of the list rather than a formality.**
-   Dig into the side of a lake above its bed and watch it pour in. **That case did
-   nothing at all until 2026-08-19** (DESIGN.md 7.23), and the reason nobody knew is
-   that a benchmark flight never edits the world so it never notifies a fluid. The
-   stats line prints `flowed`, which is the number that should not be zero, and
-   `(N suspended)` beside it.
+   Dig into the side of a lake **below the waterline** and watch it pour in. **That
+   case did nothing at all until 2026-08-19** (DESIGN.md 7.23), and the reason nobody
+   knew is that a benchmark flight never edits the world so it never notifies a fluid.
+   The stats line prints `flowed`, which is the number that should not be zero, and
+   `(N suspended)` beside it. **Breaking blocks above the waterline correctly leaves
+   it at zero** -- water does not flow upward -- which is what the ninth session's log
+   turned out to be saying.
    - **The per-flow cost has still never been measured.** Every flow is a `setBlock`
      and every `setBlock` relights a column, and blocks that used to return early now
      run a five-block slope search in four directions. Watch `updates queued`, and
@@ -148,7 +150,7 @@ cmake --preset release
 cmake --build --preset debug
 cmake --build --preset release
 
-# Test  (321 cases, doctest)
+# Test  (322 cases, doctest)
 ctest --preset debug
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything
@@ -742,6 +744,23 @@ Learned the hard way; all of them cost real time.
   block-buffered, so a probe killed by a timeout prints nothing at all and looks like a
   hang with no information. `setvbuf(stdout, nullptr, _IONBF, 0)` is the difference
   between "it hangs" and "it hangs at tick 25 with 176 pending".
+- **A test over generated terrain is only a statement about the terrain it looked at,
+  and the seed is part of the test.** The hole-in-a-lake test was first written against
+  seed 1234, copied from the sea test above it, and **passed with and without the fix**
+  -- that terrain has no cave breaking a sea bed near the origin. Against the default
+  seed it reports 16 and 0. Always run a new terrain test against the code it is
+  supposed to catch; this is the third of these, after the sea test that passed
+  vacuously and the probe that read a fixed Y band.
+- **A skipped column is more visible than the thing skipping it avoids.** The sea fill
+  used to abandon any column whose bed had been carved through, to avoid hanging a
+  1x1 pillar of water in a cavern -- and what that produces is a dry shaft up through
+  the lake to its surface, which is the first thing a player noticed. One voxel of
+  rock put back is the fix, and it is the cheapest stand-in for a vanilla aquifer
+  barrier. DESIGN.md 7.23.
+- **`flowed 0` in the stats line is not proof the fluid is broken.** Water does not
+  flow upward, so breaking blocks above the waterline correctly produces nothing. To
+  exercise a flow the edit has to be somewhere water can reach: below the waterline,
+  or a hole a lake can spill into.
 - **"Not solid" is not the same question as "can be flowed into", and conflating them
   froze every lake in the world.** `isFluidReplaceable` is `!isSolidBlock`, so water
   counts as replaceable -- correctly, because a flow may overwrite a weaker one. But a

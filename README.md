@@ -109,7 +109,7 @@ Dig down. The caves, ores and darkness are the point, and they are not visible f
 surface.
 
 ```bash
-ctest --preset debug                       # 321 test cases
+ctest --preset debug                       # 322 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm

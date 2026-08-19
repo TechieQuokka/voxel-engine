@@ -370,6 +370,9 @@ void Generator::generateColumn(Chunk& chunk) const {
     // Before features, so `surfaceOf` sees water rather than air and no tree plants
     // itself on the sea bed. Before light, which is stage 4.
     // ---------------------------------------------------------------------------
+    const i32 seaBaseX = chunk.position().x * kSectionSize;
+    const i32 seaBaseZ = chunk.position().z * kSectionSize;
+
     for (i32 z = 0; z < kSectionSize; ++z) {
         for (i32 x = 0; x < kSectionSize; ++x) {
             const i32 top = terrainTop[static_cast<usize>(z * kSectionSize + x)];
@@ -383,16 +386,31 @@ void Generator::generateColumn(Chunk& chunk) const {
             // a hole -- water hanging in mid-air over a cave mouth. A test found
             // thirteen of them in three columns.
             //
-            // The column is skipped rather than filled deeper. Following the hole
-            // down to the first real solid would drop a one-block-wide pillar of
-            // still water through a cavern, which is worse to look at than the dry
-            // patch this leaves, and is the flooded-cave behaviour that belongs to
-            // the aquifer system this deliberately does not implement.
+            // **The answer is to put the sea bed back, and play is what settled
+            // that.** This used to skip the whole column instead, on the argument
+            // that a one-block-wide pillar of still water hanging through a cavern
+            // is worse to look at than a dry patch. The argument was about the wrong
+            // picture: what a skipped column actually produces is a dry shaft
+            // punched all the way up through the lake to its surface, and the first
+            // person to play it found one and asked why there was a hole in the
+            // middle of the water. Twenty-two of them within twenty-five columns of
+            // the origin. A hole in a lake is far more visible than anything the
+            // skip was protecting against.
+            //
+            // One voxel of rock is enough to hold the water up, and it is the
+            // cheapest possible stand-in for what vanilla does here: an aquifer
+            // barrier is precisely a block placed to keep a fluid out of a cave
+            // (RESEARCH.md 7.2). The cave underneath stays dry and open, which is
+            // the behaviour this engine wants until aquifers exist.
             {
-                const Section* bedSection = chunk.sectionAt(blockToSectionCoord(top));
-                if (bedSection == nullptr
-                    || bedSection->get(x, blockToLocalCoord(top), z) == kAirBlock) {
+                Section* bedSection = chunk.sectionAt(blockToSectionCoord(top));
+                if (bedSection == nullptr) {
                     continue;
+                }
+                const i32 bedLocalY = blockToLocalCoord(top);
+                if (bedSection->get(x, bedLocalY, z) == kAirBlock) {
+                    bedSection->set(x, bedLocalY, z,
+                                    baseStone(seaBaseX + x, top, seaBaseZ + z, m_seed));
                 }
             }
 

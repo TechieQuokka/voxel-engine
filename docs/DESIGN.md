@@ -3129,6 +3129,51 @@ merge key, which on a fluid quad are corner drops — so the option that trades 
 ratio against shading would silently flatten every water surface in the world. The
 fluid pass always keys on the whole word.
 
+#### What the ninth session found, in one sentence
+
+*"There is a hole in the middle of the lake and it never fills."*
+
+**Neither half of that was the flow.** Measured on real generated terrain: break a
+solid block beside water below the waterline and water arrives immediately; notify the
+water beside a hole in a lake and the hole fills in eleven ticks. The rule shipped
+above works in the world a player is standing in.
+
+The session's log said `flowed 0` over thirteen blocks broken, and that turned out to
+be honest rather than damning — every one of them was above the waterline, where water
+correctly does not flow upward to meet them.
+
+**The hole was the generator, and the code had chosen it on purpose.** The sea fill
+skipped any column whose bed voxel had been carved away, on the argument that
+following the hole down would hang a one-block pillar of still water through a cavern.
+The argument was about the wrong picture. What a skipped column actually produces is a
+dry shaft running all the way up through the lake to its surface — twenty-two of them
+within twenty-five columns of the origin, one with water on all four sides. **A hole
+in a lake is far more visible than the thing the skip was avoiding**, and no amount of
+reasoning about it produced that; a play session did.
+
+It now puts one voxel of rock back where the carve broke through and fills the column
+normally. That is the cheapest possible stand-in for what vanilla does here — an
+aquifer barrier is precisely a block placed to keep a fluid out of a cave (RESEARCH.md
+7.2) — and the cave underneath stays dry, which is what this engine wants until
+aquifers exist. Holes with three or more water sides went from 22 to 6 near the
+origin, and the six remaining are a single overhang column, which is the *other* case
+the sea fill documents as deliberate.
+
+**A speculative fix was written and thrown away**, and the throwing away is the point.
+The first diagnosis was that the slope search suppressed the hole's direction, and it
+came with a rewrite — source directions excluded from candidacy, nearest-hole distance
+instead of a boolean. Run A/B against the committed code on the same terrain it gave
+*identical* output, down to `examined 39, flowed 6`. It fixed nothing observable, so
+it was reverted rather than shipped on the strength of the reasoning behind it.
+
+**And the test for it was worthless on the first attempt.** Written against seed 1234
+like the sea test above it, it passed with and without the fix: that terrain has no
+cave breaking a sea bed within reach of the origin. Against the default seed — the one
+a player actually gets — it reports 16 holes without the fix and 0 with it. That is
+the third entry in a row for "a test over generated terrain is only a statement about
+the terrain it looked at", after the sea test that passed vacuously and the probe that
+read a fixed Y band.
+
 ---
 
 ## 8. Open Questions

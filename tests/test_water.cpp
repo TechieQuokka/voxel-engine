@@ -259,3 +259,86 @@ TEST_CASE("the generated sea obeys all three of its rules at once") {
     // this deliberately does not go.
     CHECK(belowTheBed == 0);
 }
+
+TEST_CASE("a cave through the sea bed does not punch a hole in the lake above it") {
+    // **The first thing anyone playing this noticed, and no rule above catches it.**
+    // The three rules are all about where water *is*; this is about where it is
+    // missing. A thin cave that broke through the sea bed used to make the sea fill
+    // abandon the entire column, which leaves a dry shaft running all the way up
+    // through the water to its surface -- a hole in the middle of a lake. The rules
+    // above are perfectly happy with it, because nothing is hanging and nothing is
+    // too high; there is simply nothing there.
+    //
+    // Counted over a neighbourhood rather than a single column, because a hole is a
+    // relationship between a column and the ones beside it.
+    //
+    // **The default seed, deliberately, and the seed is load-bearing here.** Written
+    // first against 1234 like the test above it, where it passed with and without the
+    // fix -- that terrain simply has no cave breaking a sea bed within reach of the
+    // origin. A test over generated terrain is only ever a statement about the
+    // terrain it looked at, so this one looks at the terrain a player gets.
+    Generator generator;
+
+    World world{2};
+    world.updateLoadedRegion(ChunkPos{0, 0});
+    std::vector<ChunkPos> positions;
+    world.forEachChunk([&](Chunk& chunk) { positions.push_back(chunk.position()); });
+    for (const ChunkPos pos : positions) {
+        Chunk* chunk = world.find(pos);
+        REQUIRE(chunk != nullptr);
+        generator.generateColumn(*chunk);
+        chunk->setState(ChunkState::Ready);
+    }
+
+    // Only the interior, so every horizontal neighbour is a generated column.
+    const i32 lo = -kSectionSize;
+    const i32 hi = 2 * kSectionSize;
+
+    usize waterSeen = 0;
+    usize surrounded = 0; ///< air at sea level with water on three or more sides
+
+    for (i32 y = kSeaLevel; y > kSeaLevel - 12; --y) {
+        for (i32 z = lo; z < hi; ++z) {
+            for (i32 x = lo; x < hi; ++x) {
+                const BlockId here = world.blockAt(BlockPos{x, y, z});
+                if (isFluid(here)) {
+                    ++waterSeen;
+                    continue;
+                }
+                if (here != kAirBlock) {
+                    continue;
+                }
+                // A column whose terrain rises above sea level gets no water at all,
+                // deliberately -- a per-column scan cannot tell whether a pocket
+                // under an overhang opens sideways to the sea. That case is excluded
+                // here rather than fixed, and `Generator` says why.
+                bool landAbove = false;
+                for (i32 above = kSeaLevel + 1; above < kSeaLevel + 48; ++above) {
+                    if (isSolidBlock(world.blockAt(BlockPos{x, above, z}))) {
+                        landAbove = true;
+                        break;
+                    }
+                }
+                if (landAbove) {
+                    continue;
+                }
+
+                usize sides = 0;
+                for (const BlockPos d : {BlockPos{-1, 0, 0}, BlockPos{1, 0, 0},
+                                         BlockPos{0, 0, -1}, BlockPos{0, 0, 1}}) {
+                    if (isFluid(world.blockAt(BlockPos{x + d.x, y, z + d.z}))) {
+                        ++sides;
+                    }
+                }
+                if (sides >= 3) {
+                    ++surrounded;
+                }
+            }
+        }
+    }
+
+    // The guard every test over generated terrain needs: finding no water would
+    // satisfy the count below without proving anything at all.
+    REQUIRE(waterSeen > 0);
+    CHECK(surrounded == 0);
+}
