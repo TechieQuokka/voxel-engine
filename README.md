@@ -72,6 +72,9 @@ iron pickaxe, and an iron pickaxe is the only thing that will get a diamond out 
 ground. That chain is vanilla's and every step of it is here.
 
 Sneak while right clicking to build on top of the table rather than opening it.
+**Sneaking also stops you at an edge**, creeping up to the lip in twentieths of a block
+rather than refusing the step -- which is what lets you stand on the rim of your own
+roof and build outward from it.
 
 **What you are holding is in your hand, not just on the HUD.** A tool is its icon
 extruded a pixel thick -- vanilla's own trick -- held in the fist and swinging with
@@ -126,6 +129,13 @@ around corners and across chunk boundaries; walling it off casts a shadow and kn
 the wall down lets it back in. That recipe fits in your own 2x2, so a torch never
 waits on finding a crafting table.
 
+**Smelt sand and you get glass, and a wall with a window in it stops being a wall.**
+What you see of a pane is its frame: the middle is discarded rather than blended, so
+daylight comes through a window the same way it comes through a hole -- `opaque` is the
+only thing the sky-light fill reads, and glass is not opaque. It is drawn in a pass of
+its own, because a shader that can discard costs the whole draw its early-Z and the
+terrain should not pay that for a few tiles.
+
 **The torch is a cube for now, and that is the one place this deliberately parts with
 vanilla.** The mesher draws cubes and nothing else, so a proper cross-shaped torch has
 to wait for the geometry work — until then it blocks daylight it should not. The light
@@ -135,7 +145,7 @@ Dig down. The caves, ores and darkness are the point, and they are not visible f
 surface — and now you can take a light with you.
 
 ```bash
-ctest --preset debug                       # 379 test cases
+ctest --preset debug                       # 391 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm

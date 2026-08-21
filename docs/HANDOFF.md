@@ -1,12 +1,10 @@
 # Handoff
 
 **What is left to do, how to build and run it, where things live, and the traps.**
-Nothing that is already finished — that is DESIGN.md 7.x, and RESEARCH.md carries the
-vanilla numbers it was measured against. This file has been cut back to that three
-times now; each time it had refilled with descriptions of completed work, which is the
-one kind of content a handoff has no use for.
 
-Last cut 2026-08-21.
+**Nothing that is already finished goes in this file** — that is DESIGN.md 7.x, and
+RESEARCH.md carries the vanilla numbers it was measured against. Keep it compact: a
+handoff that reads as a progress report is one nobody can find the next task in.
 
 ---
 
@@ -16,22 +14,47 @@ Building, in the order a builder hits it:
 
 | | What | Why here | Size |
 |---|---|---|---|
-| **1** | **A door** | You cannot close a house without one. Today it is a hole, or a block broken and replaced every time you go in | medium |
-| **2** | **Glass** | Windows. Needs a **third mesher pass** — there are exactly two today, opaque and fluid, and a block that is neither emits no faces | medium |
-| **3** | **Sneak stops you at an edge** | You fall off your own roof. `kSneakSpeed` changes speed and nothing else; vanilla's edge-stop is missing | **small** |
-| **4** | **Phase 10 non-cube geometry** | Stairs, slabs, fences, panes — and the torch's real shape (18b: one field flips, `opaque` to false). **This is not a prerequisite, it is the building vocabulary** | large |
+| **1** | **A door** | You cannot close a house without one. Today it is a hole, or a block broken and replaced every time you go in. **Blocked on a decision, below** | medium |
+| **2** | **Phase 10 non-cube geometry** | Stairs, slabs, fences, panes — and the torch's real shape (18b: one field flips, `opaque` to false). **This is not a prerequisite, it is the building vocabulary** | large |
 
-**3 is small and pure profit** — worth doing out of order if a session is short.
+**The door is blocked on a decision, not on code.** A vanilla door is 3/16 of a block
+thick and two blocks tall; the mesher draws cubes only, and nothing in this engine has
+multi-block state — placing sets two blocks and breaking either must break both. So
+either a **cube door now** (a second deliberate deviation after the torch, and far more
+visible — a door is at eye height in a wall you built), or **Phase 10 first**, which
+delivers doors, panes, stairs, slabs, fences and the torch's real shape together
+because they are all the same missing thing. The second is the better trade if there is
+time for it.
 
-Two decisions to know before revisiting any of it:
+**Building is shelter, not expression.** If that flips, the geometry work moves to the
+top and the door stops being the question.
 
-- **Building is shelter, not expression.** That is what put light first. If it flips to
-  expression, item 4 moves to the top and 1-3 matter less.
-- **No day/night cycle.** The lighting design rests on sky light being static
-  (DESIGN.md 3.7): `max(sky, block)` is exactly right only because outdoors is always
-  15. A cycle makes sky light dynamic and means relighting continuously, which is the
-  one change that would make the current design expensive. Decide it before building
-  on top of the light, not after.
+### 1.1 A day/night cycle — in scope, and the cost is the bit budget
+
+**It does not need relighting.** A stored sky light value is *how much sky reaches
+here*, a static fact that changes only when a block does; time of day is one scalar
+applied at render time. Vanilla keeps a lightmap indexed by `(blockLight, skyLight)`
+and regenerates that small texture each tick, and the per-voxel values never move.
+`computeSkyLight` is not on this path.
+
+**The cost is the same wall Phase 18 hit.** Quads carry `max(sky, block)` already
+combined, at bits 41..56 — four corners of four bits (`mesh/Quad.hpp`). The shader
+needs `max(sky * daylight, block)`, so the two have to arrive **separately**: eight
+bits a corner where there are four, and the word is full.
+
+| Option | Cost |
+|---|---|
+| **A parallel light SSBO** — quad unchanged, per-corner sky and block in a second stream indexed the same way | 8 more bytes per quad in its own arena. **Uploaded only when light changes, never when the time does.** Probably the right answer |
+| **Widen the quad to 128 bits** | Doubles the mesh arena (187 MiB at distance 16) and the bandwidth. Against DESIGN.md 3.7's whole argument |
+| **Spend the AO field** — bits 33..40 | 24 light bits: three sky, three block per corner. Eight levels each, visibly banded, and AO goes |
+| **Drop per-corner block light** — one value per quad, three bits of sky per corner | Fits 16 bits exactly. Loses smooth lighting on exactly the light a torch casts |
+
+**Measure before choosing** — the arena figure decides between the first two, and
+`--bench-seconds` at full render distance produces it.
+
+Two things a cycle brings that are not lighting: **nothing to do at night** (vanilla's
+answer is mobs, Phase 19 — without them the world gets dark and stays safe, which makes
+shelter decorative), and **sleeping**, worth having only once night is worth skipping.
 
 Further out: **Phase 19 — mobs, combat, armour** is last and largest, because fall
 damage is the only thing in the world that can hurt the player and there is nothing to
@@ -45,33 +68,30 @@ reasoning. Every change of direction came out of a session, and two of the bigge
 (item pickup never working; nobody being able to find crafting) survived a full test
 suite because no test can answer these:
 
-1. **Has anyone played block light?** It is built, tested and measured, and whether a
-   lit room *reads* as lit — or whether a cube torch is legible enough to place on
-   purpose — is unanswered. Craft a torch (coal on a stick, in your own 2x2), dig in,
-   and see. This is the whole reason 18b exists as a separate item.
-2. **Walk the whole chain to a diamond.** `tests/test_progression.cpp` walks it in the
-   tables; what a test cannot reach is aiming, mining, and finding the windows. That
-   half is where both previous findings came from.
+1. **Does a lit room read as lit, and is a cube torch legible enough to place on
+   purpose?** Craft a torch (coal on a stick, in your own 2x2), dig in, and see. This
+   is the whole reason 18b exists as a separate item.
+2. **Walk the whole chain to a diamond.** `tests/test_progression.cpp` covers the
+   tables; what no test reaches is aiming, mining, and finding the windows — which is
+   where both previous findings came from.
 3. **Build something, quit, come back.** Walk far enough that the column unloads, then
    walk back — that is a different path from quitting, because the save happens at
    unload with workers running. Leave a furnace smelting and walk away. Watch `saved`
-   and `loaded` on the stats line. **The player is saved now too**, so check the
-   things a test cannot: that you come back standing where you left rather than near
-   it, that quitting mid-fall does not resume into the floor, and that quitting with
-   the inventory open and a stack on the cursor does not eat the stack — that last one
-   goes through `closeScreen` in `saveEverything` and is the sharpest edge in it.
+   and `loaded` on the stats line. For the player: come back standing where you left
+   rather than near it, quit mid-fall and check you do not resume inside the floor,
+   and quit with the inventory open holding a stack on the cursor — that last one goes
+   through `closeScreen` in `saveEverything` and is the sharpest edge in the save.
 4. **Knock a sand pillar over.** Phase 12 has still never been seen by a person. Place
    a few sand blocks and dig out the bottom one. The oldest unverified thing here.
-5. **Judge the water.** Four things a counter cannot answer: the ripple amplitude (now
-   26); whether a surface stepping in four levels where vanilla has nine reads as a
-   staircase; whether emptying a bucket in mid-air makes a column or a curtain in
-   vanilla (RESEARCH.md 7.1); and `updates queued` on a breach — a `Block update queue
-   full` warning is a cascade that does not terminate rather than a busy world.
+5. **Judge the water.** The ripple amplitude (now 26); whether a surface stepping in
+   four levels where vanilla has nine reads as a staircase; whether emptying a bucket
+   in mid-air makes a column or a curtain in vanilla (RESEARCH.md 7.1); and `updates
+   queued` on a breach — a `Block update queue full` warning is a cascade that does not
+   terminate rather than a busy world.
 6. **Look at water from underneath, and press `F11` back to windowed.** Back-face
-   culling is off for the translucent pass precisely so the surface reads from below,
-   and `--capture` cannot put a camera under the sea. Both fullscreen sessions started
-   from `--fullscreen`, so the path restoring the remembered windowed rectangle has
-   never run. Water is a short walk **west of spawn**.
+   culling is off for the translucent pass so the surface reads from below, and
+   `--capture` cannot put a camera under the sea. The path that restores the remembered
+   windowed rectangle has never run. Water is a short walk **west of spawn**.
 
 ---
 
@@ -80,7 +100,7 @@ suite because no test can answer these:
 ```bash
 cmake --preset debug            # configure; only after CMakeLists changes
 cmake --build --preset debug
-ctest --preset debug            # 368 cases, doctest
+ctest --preset debug            # 391 cases, doctest
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything on
 # the streaming path. If a documented command has not been run in a while, run it
@@ -222,12 +242,21 @@ Learned the hard way; all of them cost real time. The full accounts are in DESIG
 - **`packed` is a reserved keyword in GLSL**, and the error points at the `=`.
 - **`CharQuad`'s `origin.w` is a texture layer and 0 is valid** — write
   `ItemQuad::kFlatColour` or it draws as stone and says nothing.
+- **A fragment shader that *can* `discard` loses early-Z for its whole draw**, taken
+  or not. That is the only reason glass has a program and a draw of its own rather
+  than an alpha test folded into `chunk.frag`; folding it in would pay the cost on all
+  of the terrain in the world. A fourth render layer has the same choice to make.
+- **There are three render layers now, in this order: opaque, cutout, translucent.**
+  The order *is* the draw order -- opaque fills depth, cutout tests it and may
+  discard, translucent blends over both and writes none -- and `ChunkMesh`'s two split
+  points, `SectionMeshStore::Placement`'s two counts and `ChunkRenderer`'s three
+  origin lists all encode the same ordering. Adding a layer means all three.
 - **Light has to be part of the mesher's merge key.** Merging across a light boundary
   stretches one corner's brightness over both faces and draws a hard edge of the wrong
   shade across a cave wall — far more visible than the merge that was lost. The key is
   a mask rather than a shift, because the optional field (AO) is no longer the lowest.
 
-**Terrain generation** — the third mesher pass and anything touching `Generator`
+**Terrain generation** — anything touching `Generator`
 
 - **A value computed in one generation stage describes the world as of *that* stage.**
   The sea flood used `terrainTop` from the density field, and the thin-cave carver runs
@@ -378,7 +407,7 @@ Learned the hard way; all of them cost real time. The full accounts are in DESIG
 
 - **No CI.** The remote is public and nothing is verified on push. The asan and tsan
   presets and `tsan.supp` already exist; a workflow is assembly, not design.
-- **368 test cases run as one `ctest` entry**, so `ctest -j` does nothing and a failure
+- **391 test cases run as one `ctest` entry**, so `ctest -j` does nothing and a failure
   is not isolated. `doctest_discover_tests()` is the fix.
 - **`.clang-format` and `.clang-tidy` are listed in DESIGN.md 5.2 and do not exist.**
   Adding a formatter now reformats the whole tree in one commit — either take that
