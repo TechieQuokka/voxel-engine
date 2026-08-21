@@ -36,6 +36,16 @@ struct WalkMove {
     /// which is enough to find the top of any surface on the block lattice and cheap
     /// enough that it does not matter that it is a search rather than a solve.
     static constexpr f32 kStepProbe = 0.1f;
+
+    /// How much a sneaking move is shortened by at a time when it would leave the
+    /// ledge. Vanilla's 0.05.
+    ///
+    /// **Shortening rather than refusing is the whole feature.** A move that is simply
+    /// denied stops the player a whole step back from the edge, which is exactly where
+    /// you cannot stand to build outward -- and building outward from a ledge is what
+    /// sneaking is *for*. Creeping up in twentieths of a block puts the box's edge on
+    /// the block's edge, which is what makes the next block placeable.
+    static constexpr f32 kEdgeBackOff = 0.05f;
 };
 
 /// Moves `feet` by `dx` and `dz`, and returns where it ends up.
@@ -53,13 +63,60 @@ struct WalkMove {
 /// then would wedge them in place permanently. The escape is deliberately generous:
 /// any motion at all is better than none, because none is unrecoverable.
 template <typename BlockedFn>
-vec3 slideWithStepUp(vec3 feet, f32 dx, f32 dz, bool onGround, BlockedFn blocked) {
+vec3 slideWithStepUp(vec3 feet, f32 dx, f32 dz, bool onGround, BlockedFn blocked,
+                     bool sneaking = false) {
     // Asked once, before either axis, so that a move which begins wedged stays
     // permitted for its whole length rather than being re-judged half way through by
     // a position the first axis just created.
     const bool wedged = blocked(feet);
 
+    /// Whether a box at `at` has something under it to stand on.
+    ///
+    /// The test is the box dropped by a step height, and it is vanilla's. It reads
+    /// oddly until you notice that `PlayerBox::intersects` treats touching as not
+    /// overlapping: a box resting exactly on a surface overlaps nothing, so "is there
+    /// floor here" cannot be asked at the feet themselves. Dropping by `kStepHeight`
+    /// also gets the answer right at the top of a step, where there is ground but it
+    /// is not directly underfoot.
+    const auto supported = [&](vec3 at) {
+        at.y -= WalkMove::kStepHeight;
+        return blocked(at);
+    };
+
+    /// Shortens one axis of a sneaking move until it lands somewhere supported.
+    ///
+    /// Bounded by construction: every pass either zeroes the value or shrinks its
+    /// magnitude by a fixed increment.
+    const auto backOffFromEdge = [&](f32 delta, bool alongX) {
+        while (delta != 0.0f) {
+            vec3 probe = feet;
+            (alongX ? probe.x : probe.z) += delta;
+            if (supported(probe)) {
+                break;
+            }
+            if (delta > -WalkMove::kEdgeBackOff && delta < WalkMove::kEdgeBackOff) {
+                delta = 0.0f;
+            } else {
+                delta -= delta > 0.0f ? WalkMove::kEdgeBackOff : -WalkMove::kEdgeBackOff;
+            }
+        }
+        return delta;
+    };
+
     const auto tryAxis = [&](f32 x, f32 z) {
+        // **Only on the ground, and never while wedged.** Sneaking in mid-air is
+        // falling, and there is no ledge to be held back from; and a player with
+        // terrain already inside them has to be able to move at all, which is the
+        // same escape the wedge check below grants.
+        if (sneaking && onGround && !wedged) {
+            if (x != 0.0f) {
+                x = backOffFromEdge(x, true);
+            }
+            if (z != 0.0f) {
+                z = backOffFromEdge(z, false);
+            }
+        }
+
         if (x == 0.0f && z == 0.0f) {
             return;
         }

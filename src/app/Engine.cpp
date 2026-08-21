@@ -1798,10 +1798,16 @@ void Engine::updateWalk(f32 dt) {
         if (m_input->isDown(Key::A)) { wish -= right; }
     }
 
+    // Read once and used twice: it picks the speed and it turns on the edge-stop.
+    // **Sneaking was a speed and nothing else until now**, which meant the key that
+    // exists so you can work at the edge of a roof was the key that let you walk off
+    // it slowly.
+    const bool sneaking = m_input->isDown(Key::LeftShift) && !screenOpen();
+
     if (math::dot(wish, wish) > 0.0f) {
-        const f32 speed = m_input->isDown(Key::LeftControl)  ? kSprintSpeed
-                          : m_input->isDown(Key::LeftShift) ? kSneakSpeed
-                                                            : kWalkSpeed;
+        const f32 speed = m_input->isDown(Key::LeftControl) ? kSprintSpeed
+                          : sneaking                       ? kSneakSpeed
+                                                           : kWalkSpeed;
         const vec3 motion = math::normalize(wish) * speed * dt;
 
         // **This used to ask only how high the ground was at the destination**, which
@@ -1814,7 +1820,8 @@ void Engine::updateWalk(f32 dt) {
         // where a test can reach them. What stays here is the only part that needs
         // the engine: what counts as blocked.
         feet = slideWithStepUp(feet, motion.x, motion.z, m_player.onGround,
-                               [this](const vec3& box) { return boxBlocked(box); });
+                               [this](const vec3& box) { return boxBlocked(box); },
+                               sneaking);
     }
 
     // **Jump input is read once**, outside the substep loop below. Reading it per

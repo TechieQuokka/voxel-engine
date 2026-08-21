@@ -167,3 +167,90 @@ TEST_CASE("the step lands above the surface rather than exactly on it") {
     CHECK(end.y > 64.25f);
     CHECK(end.y == doctest::Approx(64.3f).epsilon(0.01));
 }
+
+// -- sneaking at an edge ------------------------------------------------------
+//
+// `kSneakSpeed` changed the speed and nothing else until this landed, so the key
+// whose purpose is to let you work at the edge of a roof was the key that let you
+// walk off it slowly.
+
+namespace {
+
+/// A floor that stops at `edgeX`: solid below y = 64 for x < edgeX, nothing beyond.
+///
+/// The blocking test is what a player box overlapping something answers, so "there
+/// is floor here" is `feet.y < 64` -- a box resting exactly at 64 touches the floor
+/// and does not overlap it, which is why `supported` drops the box before asking.
+auto floorEndingAtX(f32 edgeX) {
+    return [edgeX](const vec3& feet) { return feet.x < edgeX && feet.y < 64.0f; };
+}
+
+} // namespace
+
+TEST_CASE("sneaking stops at the edge instead of walking off it") {
+    const vec3 start{9.0f, 64.0f, 10.0f};
+
+    // Walking: straight off, because nothing about the destination is solid.
+    const vec3 walked = slideWithStepUp(start, 2.0f, 0.0f, true, floorEndingAtX(10.0f));
+    CHECK(walked.x == doctest::Approx(11.0f));
+
+    // Sneaking: held on the floor.
+    const vec3 sneaked =
+        slideWithStepUp(start, 2.0f, 0.0f, true, floorEndingAtX(10.0f), true);
+    CHECK(sneaked.x < 10.0f);
+}
+
+TEST_CASE("sneaking creeps up to the edge rather than stopping short of it") {
+    // **The reason this shortens the move rather than refusing it.** A refused move
+    // leaves the player a whole step back from the edge, which is exactly where you
+    // cannot stand to build outward -- and building outward from a ledge is what
+    // sneaking is for. Within one back-off increment of the edge is the requirement.
+    const vec3 start{9.9f, 64.0f, 10.0f};
+    const vec3 end = slideWithStepUp(start, 1.0f, 0.0f, true, floorEndingAtX(10.0f), true);
+
+    CHECK(end.x < 10.0f);
+    CHECK(end.x > 10.0f - WalkMove::kEdgeBackOff - kEps);
+}
+
+TEST_CASE("sneaking away from an edge is never held back") {
+    // Only the direction that leaves the ledge is restrained. Backing away from one
+    // that the player is already standing on the lip of has to stay free, or sneaking
+    // near an edge would be a trap rather than a safety.
+    const vec3 start{9.98f, 64.0f, 10.0f};
+    const vec3 end = slideWithStepUp(start, -1.0f, 0.0f, true, floorEndingAtX(10.0f), true);
+
+    CHECK(end.x == doctest::Approx(8.98f));
+}
+
+TEST_CASE("sneaking in mid-air is falling, and the edge rule does not apply") {
+    // There is no ledge to be held back from once the player has left it, and
+    // applying the rule would stop someone mid-jump in open air.
+    const vec3 start{9.0f, 70.0f, 10.0f};
+    const vec3 end = slideWithStepUp(start, 2.0f, 0.0f, false, floorEndingAtX(10.0f), true);
+
+    CHECK(end.x == doctest::Approx(11.0f));
+}
+
+TEST_CASE("a sneaking player who is already wedged may still move") {
+    // The same escape the wedge check grants a walking player. Terrain streams in
+    // around a standing player, and a sneak that refused motion then would leave
+    // them stuck with no way out but quitting -- worse than a fall, because a fall
+    // ends.
+    const vec3 start{10.0f, 64.0f, 10.0f};
+    const vec3 end = slideWithStepUp(start, 1.0f, 0.0f, true,
+                                     [](const vec3&) { return true; }, true);
+
+    CHECK(end.x == doctest::Approx(11.0f));
+}
+
+TEST_CASE("the edge rule holds each axis separately") {
+    // A player sneaking diagonally toward a corner should be stopped on the axis
+    // that leaves the floor and keep the one that does not -- the same separation
+    // walking already has, for the same reason.
+    const vec3 start{9.0f, 64.0f, 10.0f};
+    const vec3 end =
+        slideWithStepUp(start, 2.0f, 2.0f, true, floorEndingAtX(10.0f), true);
+
+    CHECK(end.x < 10.0f);
+    CHECK(end.z == doctest::Approx(12.0f));
+}
