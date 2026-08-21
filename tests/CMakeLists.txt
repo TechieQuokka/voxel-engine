@@ -47,6 +47,8 @@ add_executable(mc_tests
   test_water.cpp
   test_flowing_water.cpp
   test_player_box.cpp
+  test_player.cpp
+  test_player_codec.cpp
   test_walk_move.cpp
   test_item_model.cpp
   test_furnace.cpp

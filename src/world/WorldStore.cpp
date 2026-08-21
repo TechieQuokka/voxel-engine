@@ -17,6 +17,11 @@ constexpr u16 kLevelVersion = 1;
 
 constexpr const char* kLevelFileName = "level.bin";
 
+/// The player, and the temporary it is renamed from. Beside the level file rather
+/// than inside it -- `PlayerCodec`'s header has why.
+constexpr const char* kPlayerFileName = "player.bin";
+constexpr const char* kPlayerTempName = "player.bin.tmp";
+
 /// Header of the level file. Trivially copyable and written as bytes, like
 /// everything else here.
 struct LevelHeader {
@@ -254,6 +259,94 @@ void WorldStore::flush() {
             logError("Flushing region {},{} failed", pos.x, pos.z);
         }
     }
+}
+
+Result<void, WorldStore::Error> WorldStore::savePlayer(const Player& player) {
+    const std::vector<u8> bytes = PlayerCodec::encode(player);
+
+    const std::lock_guard<std::mutex> guard(m_mutex);
+
+    // **Written to a temporary and renamed, which the region files do not do.** A
+    // region write that is interrupted costs the columns in that region and they
+    // regenerate; there is exactly one player record, and a half-written one is the
+    // whole inventory. `rename` within a directory is atomic on Linux, so a reader
+    // sees either the old record or the new one and never a partial write.
+    const std::filesystem::path finalPath = m_directory / kPlayerFileName;
+    const std::filesystem::path tempPath = m_directory / kPlayerTempName;
+
+    {
+        std::ofstream out(tempPath, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            ++m_stats.failures;
+            logError("Cannot open {} to save the player", tempPath.string());
+            return makeError(Error::CannotOpen);
+        }
+        out.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+        out.close();
+        if (!out) {
+            ++m_stats.failures;
+            logError("Writing {} failed", tempPath.string());
+            std::error_code discard;
+            std::filesystem::remove(tempPath, discard);
+            return makeError(Error::Io);
+        }
+    }
+
+    std::error_code code;
+    std::filesystem::rename(tempPath, finalPath, code);
+    if (code) {
+        ++m_stats.failures;
+        logError("Renaming {} into place failed: {}", tempPath.string(), code.message());
+        std::error_code discard;
+        std::filesystem::remove(tempPath, discard);
+        return makeError(Error::Io);
+    }
+
+    ++m_stats.playerSaves;
+    return {};
+}
+
+Result<std::optional<Player>, WorldStore::Error> WorldStore::loadPlayer() {
+    const std::filesystem::path path = m_directory / kPlayerFileName;
+
+    const std::lock_guard<std::mutex> guard(m_mutex);
+
+    std::error_code code;
+    if (!std::filesystem::exists(path, code) || code) {
+        // Never quit, or a save written before the player was saved at all. Not an
+        // error and not a file to make.
+        return std::optional<Player>{};
+    }
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        ++m_stats.failures;
+        return makeError(Error::CannotOpen);
+    }
+
+    std::vector<u8> bytes((std::istreambuf_iterator<char>(in)),
+                          std::istreambuf_iterator<char>());
+    if (!in && !in.eof()) {
+        ++m_stats.failures;
+        return makeError(Error::Io);
+    }
+
+    const auto decoded = PlayerCodec::decode(bytes);
+    if (!decoded) {
+        // **Reported rather than swallowed.** Spawning fresh is what happens either
+        // way, and the difference between "there was nothing saved" and "what was
+        // saved would not load" is the difference between working and having lost an
+        // inventory -- which is exactly the kind of thing that goes unnoticed when
+        // nothing prints a number.
+        ++m_stats.failures;
+        logError("The player record in {} is unusable ({}); spawning fresh",
+                 path.string(), PlayerCodec::describe(decoded.error()));
+        return makeError(Error::Corrupt);
+    }
+
+    m_stats.playerLoaded = true;
+    return std::optional<Player>(decoded.value());
 }
 
 WorldStore::Stats WorldStore::stats() const {

@@ -83,7 +83,7 @@ void writePpm(const std::filesystem::path& path,
 
 Engine::Engine(Options options) : m_options(std::move(options)) {
     m_thirdPerson = m_options.thirdPerson;
-    m_flying = m_options.flying;
+    m_player.flying = m_options.flying;
 
     m_window = std::make_unique<Window>(Window::Config{
         .width = 1280,
@@ -100,98 +100,6 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
     m_device->setBackfaceCulling(true);
 
     m_input = std::make_unique<Input>(*m_window);
-
-    if (m_options.openFurnace) {
-        // A furnace part-way through a smelt, which is the only state worth a still
-        // frame: an empty one shows three slots and proves nothing about the gauges.
-        m_openFurnace = BlockPos{0, 0, 0};
-        Furnace& furnace = m_furnaces[m_openFurnace];
-        furnace.mutableAt(Furnace::kInputSlot) = ItemStack{itemIdOf("iron_ore"), 5};
-        furnace.mutableAt(Furnace::kFuelSlot) = ItemStack{itemIdOf("coal"), 3};
-        furnace.tick(kSmeltTicks + kSmeltTicks / 2); // One done, one half done.
-
-        openScreen(ScreenKind::Furnace);
-
-        m_inventory.add(itemIdOf("iron_ore"), 12);
-        m_inventory.add(itemIdOf("coal"), 9);
-        m_inventory.add(blockIdOf("furnace"), 2);
-        m_inventory.add(itemIdOf("iron_ingot"), 4);
-        m_inventory.add(itemIdOf("iron_pickaxe"), 1);
-        m_inventory.add(itemIdOf("diamond_pickaxe"), 1);
-        m_health = 13.0f;
-    } else if (m_options.openInventory) {
-        // **The crafting table's window, not the player's**, because the 3x3 is where
-        // a pickaxe is made and a 2x2 capture would show the smaller half of the
-        // feature. All of this lives after `m_input` exists rather than beside the
-        // other member setup, because opening a screen releases the cursor and
-        // `m_input` is what owns it.
-        openScreen(ScreenKind::CraftingTable);
-
-        // **The grid is seeded first, and the order is load-bearing.** Items reach it
-        // the way a player puts them there -- pick a stack up, right click into a
-        // cell -- which needs the storage slot they landed in, and the only
-        // predictable index is slot 0 of a pack that is still empty. Seeding this
-        // after the display items below once asked `usedSlots()` for an index, which
-        // is a count and not one, and quietly dragged the wrong items in.
-        const auto intoGrid = [this](ItemId item, u32 amount,
-                                     std::initializer_list<usize> cells) {
-            m_inventory.add(item, amount);
-            m_screen->click(m_screen->containerSlots()); // The pack's slot 0.
-            for (const usize cell : cells) {
-                m_screen->split(cell);
-            }
-        };
-        // A stone pickaxe, mid-recipe: cobblestone across the top, sticks down the
-        // middle. An empty grid proves the nine cells draw and nothing else, and the
-        // output preview is the part with a recipe match behind it.
-        intoGrid(itemIdOf("cobblestone"), 3, {0, 1, 2});
-        intoGrid(itemIdOf("stick"), 2, {4, 7});
-
-        // Something to look at. A capture of an empty pack proves the panel draws
-        // and nothing else -- not the icons, not the counts, not the two-digit
-        // layout, which are the parts with arithmetic in them.
-        m_inventory.add(blockIdOf("stone"), 64);
-        m_inventory.add(blockIdOf("dirt"), 7);
-        m_inventory.add(blockIdOf("grass"), 12);
-        m_inventory.add(blockIdOf("sand"), 3);
-        m_inventory.add(blockIdOf("oak_log"), 128);
-        m_inventory.add(blockIdOf("cobblestone"), 45);
-        m_inventory.add(blockIdOf("gravel"), 1);
-
-        // Phase 16's half: items that are not blocks, and one tool of each kind, so a
-        // capture shows every icon recipe rather than only the cubes. Phase 17 adds
-        // the table itself, which is a block whose icon is the thing you go and place.
-        m_inventory.add(itemIdOf("coal"), 9);
-        m_inventory.add(itemIdOf("stick"), 6);
-        m_inventory.add(itemIdOf("wooden_pickaxe"), 1);
-        m_inventory.add(itemIdOf("stone_axe"), 1);
-        m_inventory.add(itemIdOf("stone_sword"), 1);
-        m_inventory.add(itemIdOf("wooden_shovel"), 1);
-        m_inventory.add(blockIdOf("crafting_table"), 2);
-
-        m_health = 13.0f; // An odd number, so a half heart is in the frame too.
-    }
-
-    // Before the renderers, so a bad name fails immediately rather than after a
-    // window has been created and a region streamed in.
-    if (!m_options.heldItem.empty()) {
-        const ItemId item = itemIdOrNothing(m_options.heldItem);
-        MC_VERIFY_MSG(item != kNoItem, "--hold names an item that does not exist");
-
-        // Into the first hotbar slot, which is the one selected at startup. Placed
-        // rather than added, so it is held whatever else the seeding above put there.
-        m_inventory.mutableAt(0) = ItemStack{item, 1};
-        m_hotbarSlot = 0;
-        logInfo("Holding: {}", itemName(item));
-    }
-
-    m_chunkRenderer.emplace();
-    m_character.emplace();
-    m_selection.emplace();
-    m_itemRenderer.emplace();
-    m_hud.emplace();
-    m_meshStore.emplace(meshArenaBytesFor(m_options.renderDistance));
-    m_frameRing.emplace(frameRingBytesFor(m_options.renderDistance));
 
     m_world = std::make_unique<World>(m_options.renderDistance);
     m_generator = std::make_unique<Generator>();
@@ -217,6 +125,127 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
         m_store = std::move(store).value();
         logInfo("World save: {}", m_store->directory().string());
     }
+
+    // **The player is read here, above everything that seeds one.**
+    //
+    // The order is the whole of the rule: the save replaces the spawn, and the
+    // command line replaces the save. `--hold`, `--inventory`, `--furnace` and
+    // `--damaged` all write into the player below, and every one of them is somebody
+    // saying what this run should look like -- a `--hold wooden_pickaxe` that a saved
+    // inventory silently overrode would make the capture flags useless against any
+    // world that had been played once, which is every world worth capturing.
+    //
+    // A failed load is not fatal. The columns are still readable and the run is still
+    // worth having; what is lost is one session's inventory, and `loadPlayer` has
+    // already logged and counted it.
+    if (m_store) {
+        auto loaded = m_store->loadPlayer();
+        if (loaded && loaded.value().has_value()) {
+            m_player = std::move(loaded).value().value();
+            m_playerCameFromSave = true;
+            logInfo("Loaded the player: {:.1f} health, {} slots used, at "
+                    "({:.1f}, {:.1f}, {:.1f}){}",
+                    m_player.health, m_player.inventory.usedSlots(), m_player.position.x,
+                    m_player.position.y, m_player.position.z,
+                    m_player.flying ? ", flying" : "");
+        } else if (!loaded) {
+            // Said once, at the point it happened. The stats line's `FAILED` counter
+            // carries it for the rest of the session.
+            logWarn("Spawning fresh: the saved player could not be read");
+        }
+    }
+
+    if (m_options.openFurnace) {
+        // A furnace part-way through a smelt, which is the only state worth a still
+        // frame: an empty one shows three slots and proves nothing about the gauges.
+        m_openFurnace = BlockPos{0, 0, 0};
+        Furnace& furnace = m_furnaces[m_openFurnace];
+        furnace.mutableAt(Furnace::kInputSlot) = ItemStack{itemIdOf("iron_ore"), 5};
+        furnace.mutableAt(Furnace::kFuelSlot) = ItemStack{itemIdOf("coal"), 3};
+        furnace.tick(kSmeltTicks + kSmeltTicks / 2); // One done, one half done.
+
+        openScreen(ScreenKind::Furnace);
+
+        m_player.inventory.add(itemIdOf("iron_ore"), 12);
+        m_player.inventory.add(itemIdOf("coal"), 9);
+        m_player.inventory.add(blockIdOf("furnace"), 2);
+        m_player.inventory.add(itemIdOf("iron_ingot"), 4);
+        m_player.inventory.add(itemIdOf("iron_pickaxe"), 1);
+        m_player.inventory.add(itemIdOf("diamond_pickaxe"), 1);
+        m_player.health = 13.0f;
+    } else if (m_options.openInventory) {
+        // **The crafting table's window, not the player's**, because the 3x3 is where
+        // a pickaxe is made and a 2x2 capture would show the smaller half of the
+        // feature. All of this lives after `m_input` exists rather than beside the
+        // other member setup, because opening a screen releases the cursor and
+        // `m_input` is what owns it.
+        openScreen(ScreenKind::CraftingTable);
+
+        // **The grid is seeded first, and the order is load-bearing.** Items reach it
+        // the way a player puts them there -- pick a stack up, right click into a
+        // cell -- which needs the storage slot they landed in, and the only
+        // predictable index is slot 0 of a pack that is still empty. Seeding this
+        // after the display items below once asked `usedSlots()` for an index, which
+        // is a count and not one, and quietly dragged the wrong items in.
+        const auto intoGrid = [this](ItemId item, u32 amount,
+                                     std::initializer_list<usize> cells) {
+            m_player.inventory.add(item, amount);
+            m_screen->click(m_screen->containerSlots()); // The pack's slot 0.
+            for (const usize cell : cells) {
+                m_screen->split(cell);
+            }
+        };
+        // A stone pickaxe, mid-recipe: cobblestone across the top, sticks down the
+        // middle. An empty grid proves the nine cells draw and nothing else, and the
+        // output preview is the part with a recipe match behind it.
+        intoGrid(itemIdOf("cobblestone"), 3, {0, 1, 2});
+        intoGrid(itemIdOf("stick"), 2, {4, 7});
+
+        // Something to look at. A capture of an empty pack proves the panel draws
+        // and nothing else -- not the icons, not the counts, not the two-digit
+        // layout, which are the parts with arithmetic in them.
+        m_player.inventory.add(blockIdOf("stone"), 64);
+        m_player.inventory.add(blockIdOf("dirt"), 7);
+        m_player.inventory.add(blockIdOf("grass"), 12);
+        m_player.inventory.add(blockIdOf("sand"), 3);
+        m_player.inventory.add(blockIdOf("oak_log"), 128);
+        m_player.inventory.add(blockIdOf("cobblestone"), 45);
+        m_player.inventory.add(blockIdOf("gravel"), 1);
+
+        // Phase 16's half: items that are not blocks, and one tool of each kind, so a
+        // capture shows every icon recipe rather than only the cubes. Phase 17 adds
+        // the table itself, which is a block whose icon is the thing you go and place.
+        m_player.inventory.add(itemIdOf("coal"), 9);
+        m_player.inventory.add(itemIdOf("stick"), 6);
+        m_player.inventory.add(itemIdOf("wooden_pickaxe"), 1);
+        m_player.inventory.add(itemIdOf("stone_axe"), 1);
+        m_player.inventory.add(itemIdOf("stone_sword"), 1);
+        m_player.inventory.add(itemIdOf("wooden_shovel"), 1);
+        m_player.inventory.add(blockIdOf("crafting_table"), 2);
+
+        m_player.health = 13.0f; // An odd number, so a half heart is in the frame too.
+    }
+
+    // Before the renderers, so a bad name fails immediately rather than after a
+    // window has been created and a region streamed in.
+    if (!m_options.heldItem.empty()) {
+        const ItemId item = itemIdOrNothing(m_options.heldItem);
+        MC_VERIFY_MSG(item != kNoItem, "--hold names an item that does not exist");
+
+        // Into the first hotbar slot, which is the one selected at startup. Placed
+        // rather than added, so it is held whatever else the seeding above put there.
+        m_player.inventory.mutableAt(0) = ItemStack{item, 1};
+        m_player.hotbarSlot = 0;
+        logInfo("Holding: {}", itemName(item));
+    }
+
+    m_chunkRenderer.emplace();
+    m_character.emplace();
+    m_selection.emplace();
+    m_itemRenderer.emplace();
+    m_hud.emplace();
+    m_meshStore.emplace(meshArenaBytesFor(m_options.renderDistance));
+    m_frameRing.emplace(frameRingBytesFor(m_options.renderDistance));
 
     // Worth one line: FastNoise2 dispatches on the CPU at runtime, and the gap between
     // AVX2 and SSE2 is large enough that a generation timing is meaningless without
@@ -253,27 +282,38 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
     // engine underground, and what that looks like on screen is not obviously a
     // spawn bug.
     const i32 groundY = m_generator->surfaceHeight(0, 0);
-    // Feet on the block above the surface, eye at head height -- so the first frame
-    // is what standing there looks like, not what hovering above it does.
-    m_camera.setPosition({0.5f,
-                          static_cast<f32>(groundY + 1) + CharacterRenderer::kEyeHeight,
-                          0.5f});
-    m_camera.setOrientation(0.6f, -0.18f);
-    m_onGround = true;
+
+    // **Only when the save did not already say where to stand.** A player who quit
+    // in a cave and came back on the surface would have lost something that is not
+    // in any file -- where they were -- and it is the one part of a save that is
+    // noticed immediately.
+    if (!m_playerCameFromSave) {
+        // Feet on the block above the surface -- so the first frame is what standing
+        // there looks like, not what hovering above it does. The eye follows from
+        // `Player::eye()`; nothing here places it.
+        m_player.position = {0.5f, static_cast<f32>(groundY + 1), 0.5f};
+        m_player.yaw = 0.6f;
+        m_player.pitch = -0.18f;
+        m_player.onGround = true;
+    }
 
     // `--at` overrides both, and is given as the *eye* rather than the feet: it
     // exists so a capture can be aimed at something, and what a capture frames is
-    // where the eye is. The ground probe will settle the feet on the next walking
-    // step if the position is over solid terrain.
+    // where the eye is. Converted to feet on the way in, because the player is what
+    // holds a position now. The ground probe will settle the feet on the next
+    // walking step if the position is over solid terrain.
     if (m_options.cameraPosition.has_value()) {
-        m_camera.setPosition(*m_options.cameraPosition);
-        m_onGround = false;
+        const vec3& eye = *m_options.cameraPosition;
+        m_player.position = {eye.x, eye.y - PlayerBox::kEyeHeight, eye.z};
+        m_player.onGround = false;
     }
     if (m_options.cameraOrientation.has_value()) {
-        m_camera.setOrientation(m_options.cameraOrientation->x,
-                                m_options.cameraOrientation->y);
+        m_player.yaw = m_options.cameraOrientation->x;
+        m_player.pitch = math::clamp(m_options.cameraOrientation->y, -Player::kMaxPitch,
+                                     Player::kMaxPitch);
     }
 
+    syncCamera();
     updateProjection();
 
     logInfo("Spawn: ground at y={}, standing with eye at y={:.2f}", groundY,
@@ -447,6 +487,17 @@ void Engine::runMeshBenchmark() {
     logInfo("--------------------------------------------------------");
 }
 
+void Engine::syncCamera() {
+    // The one place the camera learns where it is. Everything that moves or turns the
+    // player writes `m_player` and calls this; nothing writes a position or an
+    // orientation into the camera itself. That direction is the whole point of the
+    // type -- with two writable copies of a position, the question "which one is
+    // right" has to be answered at every call site, and item pickup is the bug that
+    // gets when it is answered wrong.
+    m_camera.setPosition(m_player.eye());
+    m_camera.setOrientation(m_player.yaw, m_player.pitch);
+}
+
 void Engine::updateProjection() {
     const int width = m_window->framebufferWidth();
     const int height = m_window->framebufferHeight();
@@ -552,6 +603,20 @@ void Engine::saveEverything() {
         return;
     }
 
+    // **Close the window first, and this is not tidiness.** A stack on the cursor and
+    // the contents of a crafting grid are real items that live outside the thirty-six
+    // slots, and `PlayerCodec` writes only the slots. Quitting with the inventory open
+    // -- which the window's close button allows at any moment, `Escape` being only one
+    // way out -- would otherwise write a player who is not holding what they were
+    // holding. `closeScreen` is the routine that already knows how to give both back.
+    //
+    // What still will not fit gets dropped at the player's feet as an item entity and
+    // is lost, because entities are not saved. That is the same answer the world
+    // already gives for anything dropped on the ground, so it is consistent rather
+    // than a new hole -- but it is the reason this runs before the encode and not
+    // after.
+    closeScreen();
+
     usize written = 0;
     m_world->forEachChunk([&](Chunk& chunk) {
         if (chunk.edited()) {
@@ -561,8 +626,14 @@ void Engine::saveEverything() {
     });
     m_store->flush();
 
+    // After the columns, and after the `closeScreen` at the top of this function has
+    // put the cursor and any crafting cells back into the slots that are about to be
+    // written. The failure is logged and counted inside the store.
+    (void)m_store->savePlayer(m_player);
+
     const WorldStore::Stats stats = m_store->stats();
-    logInfo("Saved {} columns on exit ({} written and {} loaded this session, {} failures)",
+    logInfo("Saved {} columns and the player on exit "
+            "({} written and {} loaded this session, {} failures)",
             written, stats.columnsSaved, stats.columnsLoaded, stats.failures);
 }
 
@@ -1027,28 +1098,35 @@ void Engine::updateCamera(f64 deltaTime) {
     }
 
     if (m_input->cursorCaptured()) {
-        m_camera.rotate(static_cast<f32>(m_input->mouseDeltaX()) * kMouseSensitivity,
+        m_player.rotate(static_cast<f32>(m_input->mouseDeltaX()) * kMouseSensitivity,
                         static_cast<f32>(-m_input->mouseDeltaY()) * kMouseSensitivity);
     }
 
     if (m_input->wasPressed(Key::F)) {
-        m_flying = !m_flying;
-        m_verticalVelocity = 0.0f;
-        logInfo("Movement: {}", m_flying ? "flying" : "walking");
+        m_player.flying = !m_player.flying;
+        m_player.verticalVelocity = 0.0f;
+        logInfo("Movement: {}", m_player.flying ? "flying" : "walking");
     }
 
-    const vec3 startPosition = m_camera.position();
+    // **Before the move, not after.** Walking and flying both read `forward()` and
+    // `right()` off the camera to turn input into a direction, so the turn above has
+    // to have reached it by now or the player moves along last frame's heading.
+    syncCamera();
 
-    if (m_flying) {
+    const vec3 startPosition = m_player.position;
+
+    if (m_player.flying) {
         updateFly(dt);
     } else {
         updateWalk(dt);
     }
 
+    syncCamera();
+
     // Drive the walk cycle from how far the player actually went, so the limbs are
     // in step with the ground rather than with the clock -- which also means they
     // stop dead when the player does.
-    vec3 travelled = m_camera.position() - startPosition;
+    vec3 travelled = m_player.position - startPosition;
     travelled.y = 0.0f;
     const f32 distance = math::length(travelled);
 
@@ -1199,16 +1277,20 @@ void Engine::updateBreaking(f32 dt) {
 }
 
 vec3 Engine::playerFeet() const {
-    return m_camera.position() - Camera::up() * CharacterRenderer::kEyeHeight;
+    // **This used to be the subtraction that made the conversion possible to get
+    // wrong**, and the accessor existed because four call sites spelled it out and a
+    // fifth passed the eye instead -- the whole of the item-pickup bug. The player
+    // holds the feet now, so there is nothing left to convert and nothing left to
+    // convert backwards: `Player::eye()` is the only direction that exists.
+    return m_player.position;
 }
 
 ItemId Engine::heldItem() const {
-    // A named accessor rather than `m_inventory.at(m_hotbarSlot).item` at each call
-    // site, for the reason `playerFeet` exists: three callers now ask what is in the
-    // hand -- break time, the drop test and placement -- and the fourth one to be
-    // written is where they would start to disagree.
-    const ItemStack& held = m_inventory.at(m_hotbarSlot);
-    return held.empty() ? kNoItem : held.item;
+    // The rule it enforces -- an empty slot is `kNoItem`, not whatever the slot
+    // happens to hold -- moved onto `Player` with the inventory and the selection it
+    // reads, because that is where a test can reach it. This stays as the name the
+    // four call sites here already use.
+    return m_player.heldItem();
 }
 
 bool Engine::placeTargetBlock() {
@@ -1229,7 +1311,7 @@ bool Engine::placeTargetBlock() {
 
     // Whatever is in the selected slot, which is now a real slot rather than a fixed
     // block type. An empty slot places nothing, and the hotbar already shows it empty.
-    const ItemStack& held = m_inventory.at(m_hotbarSlot);
+    const ItemStack& held = m_player.inventory.at(m_player.hotbarSlot);
     if (held.empty()) {
         return false;
     }
@@ -1249,7 +1331,7 @@ bool Engine::placeTargetBlock() {
         return false;
     }
 
-    m_inventory.takeOne(m_hotbarSlot);
+    m_player.inventory.takeOne(m_player.hotbarSlot);
     ++m_blocksPlaced;
     return true;
 }
@@ -1318,13 +1400,13 @@ void Engine::openScreen(ScreenKind kind) {
         // A table's grid exists only while its window is open. Vanilla is the same:
         // walk away mid-recipe and the cells fall out at your feet.
         m_tableCraft.emplace(3);
-        m_screen.emplace(m_inventory, *m_tableCraft);
+        m_screen.emplace(m_player.inventory, *m_tableCraft);
     } else if (kind == ScreenKind::Furnace) {
         // The opposite: a furnace outlives its window, so the screen points at the
         // one that lives in the map rather than at a fresh one.
-        m_screen.emplace(m_inventory, m_furnaces[m_openFurnace]);
+        m_screen.emplace(m_player.inventory, m_furnaces[m_openFurnace]);
     } else {
-        m_screen.emplace(m_inventory, m_playerCraft);
+        m_screen.emplace(m_player.inventory, m_playerCraft);
     }
 
     m_input->setCursorCaptured(false);
@@ -1468,8 +1550,8 @@ void Engine::updateInventoryScreen() {
         // Clicking outside every slot. Vanilla throws the held stack into the world;
         // this drops it at the player's feet, which is the same idea without needing
         // a throw velocity nothing else would use.
-        if (left && !m_inventory.cursorEmpty()) {
-            const ItemStack thrown = m_inventory.releaseCursor();
+        if (left && !m_player.inventory.cursorEmpty()) {
+            const ItemStack thrown = m_player.inventory.releaseCursor();
             if (!thrown.empty()) {
                 m_items.spawn(m_camera.position(), thrown.item, thrown.count);
             }
@@ -1545,7 +1627,7 @@ void Engine::updateInteraction(f32 dt) {
                                                   CharacterRenderer::kHeight,
                                                   ItemEntities::kPickupRadius},
                         [this](ItemId item, u32 count) {
-                            const u32 leftover = m_inventory.add(item, count);
+                            const u32 leftover = m_player.inventory.add(item, count);
                             m_itemsCollected += count - leftover;
                             return leftover;
                         });
@@ -1586,8 +1668,8 @@ void Engine::updateInteraction(f32 dt) {
     for (usize slot = 0; slot < Inventory::kHotbarSlots; ++slot) {
         const auto key = static_cast<Key>(static_cast<u32>(Key::Num1) + slot);
         if (m_input->wasPressed(key)) {
-            m_hotbarSlot = slot;
-            const ItemStack& held = m_inventory.at(slot);
+            m_player.hotbarSlot = slot;
+            const ItemStack& held = m_player.inventory.at(slot);
             logInfo("Holding: {}",
                     held.empty() ? "nothing" : itemName(held.item));
         }
@@ -1731,7 +1813,7 @@ void Engine::updateWalk(f32 dt) {
         // The rules are `slideWithStepUp` now, in `world/WalkMove.hpp`, which is
         // where a test can reach them. What stays here is the only part that needs
         // the engine: what counts as blocked.
-        feet = slideWithStepUp(feet, motion.x, motion.z, m_onGround,
+        feet = slideWithStepUp(feet, motion.x, motion.z, m_player.onGround,
                                [this](const vec3& box) { return boxBlocked(box); });
     }
 
@@ -1739,10 +1821,10 @@ void Engine::updateWalk(f32 dt) {
     // substep would apply the same keypress several times over.
     if (!screenOpen() && m_input->isDown(Key::Space)) {
         if (inWater(feet)) {
-            m_verticalVelocity = kSwimSpeed;
-        } else if (m_onGround) {
-            m_verticalVelocity = kJumpVelocity;
-            m_onGround = false;
+            m_player.verticalVelocity = kSwimSpeed;
+        } else if (m_player.onGround) {
+            m_player.verticalVelocity = kJumpVelocity;
+            m_player.onGround = false;
         }
     }
 
@@ -1774,38 +1856,38 @@ void Engine::updateWalk(f32 dt) {
         // enters the water has to start floating on the next one, not at the next
         // frame.
         if (inWater(feet)) {
-            m_verticalVelocity = std::max(
-                m_verticalVelocity - kGravity * kSwimGravityScale * step, -kSinkSpeed);
+            m_player.verticalVelocity = std::max(
+                m_player.verticalVelocity - kGravity * kSwimGravityScale * step, -kSinkSpeed);
             // Entering water cancels a fall, which is vanilla's rule and the reason
             // jumping off a cliff into a lake is a thing people do.
             m_trackingFall = false;
         } else {
-            m_verticalVelocity =
-                std::max(m_verticalVelocity - kGravity * step, -kTerminalVelocity);
+            m_player.verticalVelocity =
+                std::max(m_player.verticalVelocity - kGravity * step, -kTerminalVelocity);
         }
 
         const f32 beforeY = feet.y;
-        feet.y += m_verticalVelocity * step;
+        feet.y += m_player.verticalVelocity * step;
 
         // **Heads hit ceilings.** Only on the way up: downward motion is the ground
         // probe's job, and asking the box on the way down would fight it -- the probe
         // deliberately snaps the feet *onto* a surface the box would call an overlap.
         // Without this a jump under an overhang put the player's head through it, and
         // then the ground probe found the floor again and nothing looked wrong.
-        if (m_verticalVelocity > 0.0f && boxBlocked(feet)) {
+        if (m_player.verticalVelocity > 0.0f && boxBlocked(feet)) {
             feet.y = beforeY;
-            m_verticalVelocity = 0.0f;
+            m_player.verticalVelocity = 0.0f;
         }
 
-        const bool wasOnGround = m_onGround;
+        const bool wasOnGround = m_player.onGround;
 
         const auto ground = groundBelow(feet.x, feet.z, feet.y + 0.01f);
         if (!ground.has_value()) {
             // Nothing under us -- almost always a column that has not streamed in
             // yet. Hold height rather than falling through the world while it
             // arrives, which is the same call followGround makes in the benchmark.
-            feet.y -= m_verticalVelocity * step;
-            m_verticalVelocity = 0.0f;
+            feet.y -= m_player.verticalVelocity * step;
+            m_player.verticalVelocity = 0.0f;
 
             // And do not let that count as a fall. A column arriving late is an
             // engine detail, and taking damage for it would be the game punishing
@@ -1813,15 +1895,15 @@ void Engine::updateWalk(f32 dt) {
             m_trackingFall = false;
         } else if (feet.y <= *ground) {
             feet.y = *ground;
-            m_verticalVelocity = 0.0f;
-            m_onGround = true;
+            m_player.verticalVelocity = 0.0f;
+            m_player.onGround = true;
 
             if (m_trackingFall) {
                 applyFallDamage(m_fallFromY, feet.y);
                 m_trackingFall = false;
             }
         } else {
-            m_onGround = false;
+            m_player.onGround = false;
 
             // Start measuring from the height we left the ground at, not from the
             // peak. A jump therefore costs its own arc, which is why the three-block
@@ -1836,7 +1918,7 @@ void Engine::updateWalk(f32 dt) {
         }
     }
 
-    m_camera.setPosition(feet + Camera::up() * CharacterRenderer::kEyeHeight);
+    m_player.position = feet;
 }
 
 void Engine::applyFallDamage(f32 fromY, f32 toY) {
@@ -1854,11 +1936,11 @@ void Engine::applyFallDamage(f32 fromY, f32 toY) {
         return;
     }
 
-    m_health = std::max(0.0f, m_health - damage);
+    m_player.health = std::max(0.0f, m_player.health - damage);
     logInfo("Fell {:.1f} blocks: -{:.0f} health, {:.0f} left",
-            distance, damage, m_health);
+            distance, damage, m_player.health);
 
-    if (m_health <= 0.0f) {
+    if (m_player.health <= 0.0f) {
         respawn();
     }
 }
@@ -1869,8 +1951,8 @@ void Engine::respawn() {
     // grow a second window, and dropping the inventory needs somewhere for it to go
     // that the player can get back to. Full health where you stand is the honest
     // placeholder, and it says so in the log rather than pretending nothing happened.
-    m_health = kMaxHealth;
-    m_verticalVelocity = 0.0f;
+    m_player.health = Player::kMaxHealth;
+    m_player.verticalVelocity = 0.0f;
     m_trackingFall = false;
     logWarn("You died. Respawning with full health where you stand.");
 }
@@ -1886,7 +1968,7 @@ void Engine::updateFly(f32 dt) {
 
     if (math::dot(delta, delta) > 0.0f) {
         const f32 speed = m_input->isDown(Key::LeftControl) ? m_moveSpeed * 4.0f : m_moveSpeed;
-        m_camera.move(math::normalize(delta) * speed * dt);
+        m_player.position += math::normalize(delta) * speed * dt;
     }
 }
 
@@ -2028,7 +2110,7 @@ void Engine::stepFrame(f64 deltaTime) {
 }
 
 void Engine::followGround() {
-    const vec3& position = m_camera.position();
+    const vec3 position = m_player.position;
     const i32 blockX = static_cast<i32>(std::floor(position.x));
     const i32 blockZ = static_cast<i32>(std::floor(position.z));
 
@@ -2037,9 +2119,15 @@ void Engine::followGround() {
     // frame would put terrain generation inside the thing being measured.
     for (i32 y = kWorldMaxY - 1; y >= kWorldMinY; --y) {
         if (m_world->blockAt(BlockPos{blockX, y, blockZ}) != kAirBlock) {
-            m_camera.setPosition({position.x,
-                                  static_cast<f32>(y) + kBenchEyeHeight,
-                                  position.z});
+            // `kBenchEyeHeight` is where the *eye* flies, and the player holds feet,
+            // so the conversion is spelled out rather than the constant being
+            // quietly reinterpreted. The camera ends up in exactly the place it was
+            // put before, which is what keeps old benchmark numbers comparable.
+            m_player.position = {position.x,
+                                 static_cast<f32>(y) + kBenchEyeHeight
+                                     - PlayerBox::kEyeHeight,
+                                 position.z};
+            syncCamera();
             return;
         }
     }
@@ -2085,7 +2173,7 @@ void Engine::runBenchmark() {
         vec3 forward = m_camera.forward();
         forward.y = 0.0f;
         if (math::dot(forward, forward) > 0.0f) {
-            m_camera.move(math::normalize(forward) * kFlySpeed * static_cast<f32>(step));
+            m_player.position += math::normalize(forward) * kFlySpeed * static_cast<f32>(step);
         }
         followGround();
 
@@ -2287,9 +2375,9 @@ void Engine::renderFrame() {
     const vec2 cursor = cursorNdc();
 
     HudRenderer::State hud;
-    hud.hotbarSlot = m_hotbarSlot;
-    hud.health = m_health;
-    hud.maxHealth = kMaxHealth;
+    hud.hotbarSlot = m_player.hotbarSlot;
+    hud.health = m_player.health;
+    hud.maxHealth = Player::kMaxHealth;
     hud.screen = m_screen.has_value() ? &*m_screen : nullptr;
     hud.screenKind = m_screenKind;
 
@@ -2310,7 +2398,7 @@ void Engine::renderFrame() {
         hud.targetName = kBlocks[m_world->blockAt(m_target->block)].name;
     }
 
-    m_hud->draw(*m_device, m_chunkRenderer->textures(), m_inventory, hud,
+    m_hud->draw(*m_device, m_chunkRenderer->textures(), m_player.inventory, hud,
                 width / std::max(1.0f, height), *m_frameRing);
 }
 

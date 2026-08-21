@@ -4,11 +4,13 @@
 #include "core/Types.hpp"
 #include "world/ChunkCodec.hpp"
 #include "world/Coords.hpp"
+#include "world/PlayerCodec.hpp"
 #include "world/RegionFile.hpp"
 
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -94,6 +96,26 @@ public:
     /// Flushes every open region. Called on shutdown.
     void flush();
 
+    // -- the player -----------------------------------------------------------
+    //
+    // In `player.bin`, beside the regions and beside `level.bin` rather than inside
+    // either. `PlayerCodec`'s header has the argument: the level file is written once
+    // and holds the seed, which is the one record whose loss loses the world, and a
+    // column is addressed by where it is while the player is not anywhere in
+    // particular.
+
+    /// Writes the player, replacing whatever was there.
+    Result<void, Error> savePlayer(const Player& player);
+
+    /// Reads the player back.
+    ///
+    /// **An absent file is not an error** -- it is a save made before the player was
+    /// saved at all, or a world that has never been quit -- and returns an empty
+    /// optional so the caller spawns fresh. A *corrupt* file is an error, because
+    /// silently spawning fresh on a readable-but-wrong record is how an inventory
+    /// disappears without anything saying so.
+    Result<std::optional<Player>, Error> loadPlayer();
+
     /// Counters for the stats line.
     ///
     /// **`failed` exists because of this project's oldest lesson**: item pickup was
@@ -104,6 +126,12 @@ public:
         usize columnsLoaded = 0;
         usize columnsSaved = 0;
         usize failures = 0;
+        /// Whether the player was read back at open. False for a save from before
+        /// the player was written at all, which is not a failure -- but it is the
+        /// difference between "spawned fresh because there was nothing" and "spawned
+        /// fresh because the record would not load", and only one of those is fine.
+        bool playerLoaded = false;
+        usize playerSaves = 0;
     };
     Stats stats() const;
 

@@ -22,6 +22,7 @@
 #include "world/CraftingGrid.hpp"
 #include "world/Furnace.hpp"
 #include "world/ItemEntities.hpp"
+#include "world/Player.hpp"
 #include "world/PlayerBox.hpp"
 #include "world/WalkMove.hpp"
 #include "world/Raycast.hpp"
@@ -368,20 +369,31 @@ private:
     std::unique_ptr<World> m_world;
     std::unique_ptr<Generator> m_generator;
 
+    /// **Everything that is the player, and therefore everything that is saved.**
+    /// `world/Player.hpp` has the rule and the list of what is deliberately not in
+    /// it. Position, health, the inventory and the hotbar selection used to be loose
+    /// members here, which is what left "what belongs in a save file" as a judgement
+    /// call rather than a type.
+    Player m_player;
+
+    /// Whether `m_player` came off disk rather than from the spawn rule. Read once,
+    /// by the spawn block, so that a loaded position is not overwritten by it.
+    bool m_playerCameFromSave = false;
+
+    /// **A view of `m_player`, never a second copy of it.** Synced by `syncCamera`
+    /// from the player's feet and orientation; nothing may write a position or an
+    /// orientation into it directly. The player holds the feet, the camera holds the
+    /// eye, and `PlayerBox`'s header records what it cost to have that backwards.
     Camera m_camera;
+
+    /// Rebuilds `m_camera` from `m_player`. Call after anything that moves or turns
+    /// the player and before anything that reads `forward()`, `right()` or
+    /// `position()` off the camera.
+    void syncCamera();
+
     /// Fly mode only. Walking speeds are fixed constants -- a player does not have
     /// a speed slider, and one that varies stops reading as walking.
     f32 m_moveSpeed = 24.0f;
-
-    // Walking. Deliberately a very small amount of physics: gravity, a ground
-    // height, and a maximum step. There is no collision volume and no horizontal
-    // sweep -- a move is accepted or refused whole, by comparing the ground height
-    // at the destination with the ground height here. That is enough to walk over
-    // terrain and be stopped by a cliff, and it is not enough to stand on the side
-    // of an overhang, which is a thing this engine cannot currently do.
-    bool m_flying = false;
-    bool m_onGround = false;
-    f32 m_verticalVelocity = 0.0f;
 
     /// Minecraft's own: 4.317 walking, 5.612 sprinting, and a jump that clears one
     /// block. Reproduced rather than picked, because "feels like walking" is
@@ -517,9 +529,8 @@ private:
     /// press or the next held frame places immediately.
     f32 m_placeCooldown = 0.0f;
 
-    /// Dropped blocks, and what the player is carrying.
+    /// Dropped blocks. What the player is carrying is `m_player.inventory`.
     ItemEntities m_items;
-    Inventory m_inventory;
 
     /// Blocks on their way down, and the queue that decides which ones start.
     FallingBlocks m_falling;
@@ -559,16 +570,19 @@ private:
     /// is a third of a second, which is far longer than a pin should ever be held.
     static constexpr u32 kMaxEditAge = 20;
 
-    /// Which of the inventory's first nine slots is selected.
-    ///
-    /// **The hotbar used to be a fixed array of nine block types here**, drawn
-    /// whether the player held any of them or not. That is what made the bottom of
-    /// the screen show nine blocks in an empty world, which is not what vanilla does
-    /// and was the first thing anyone said about the HUD. The hotbar is inventory
-    /// slots 0-8 now, and an empty slot is empty.
-    usize m_hotbarSlot = 0;
+    // Which of the inventory's first nine slots is selected is `m_player.hotbarSlot`.
+    //
+    // **The hotbar used to be a fixed array of nine block types here**, drawn whether
+    // the player held any of them or not. That is what made the bottom of the screen
+    // show nine blocks in an empty world, which is not what vanilla does and was the
+    // first thing anyone said about the HUD. The hotbar is inventory slots 0-8 now,
+    // and an empty slot is empty.
 
     /// The player's own 2x2 crafting grid.
+    ///
+    /// **Not part of `Player`, and therefore not saved**, which is vanilla's rule:
+    /// closing a crafting window drops what is in the grid. Keeping it would be a
+    /// deviation nobody could see.
     ///
     /// **Owned by the engine rather than by `Inventory`, and that is Phase 17's whole
     /// structural change.** It was inside the inventory because there was one window
@@ -701,12 +715,14 @@ private:
     // Health (Phase 15).
     // ---------------------------------------------------------------------------
 
-    /// In half-hearts, as vanilla counts: 20 is ten full hearts.
-    f32 m_health = 20.0f;
-    static constexpr f32 kMaxHealth = 20.0f;
+    // Health is `m_player.health`, in half-hearts as vanilla counts: 20 is ten full
+    // hearts. `Player::kMaxHealth` is the full value.
 
     /// Y the player was at when they last left the ground, and whether they are
     /// falling from it. Fall damage is the distance between that and where they land.
+    ///
+    /// **Not saved**: both are derived from a fall that is over by the time the game
+    /// closes, and restoring them would resume a descent the player is not in.
     f32 m_fallFromY = 0.0f;
     bool m_trackingFall = false;
 

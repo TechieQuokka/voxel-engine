@@ -16,6 +16,7 @@ add_library(mc_world STATIC
   ItemEntities.cpp
   FallingBlocks.cpp
   BlockUpdates.cpp
+  PlayerCodec.cpp
   World.cpp
 )
 
