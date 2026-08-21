@@ -112,7 +112,9 @@ deterministic and a save should grow with what you did rather than with where yo
 walked. The world lives in `saves/world` next to the executable; `--save-path` puts it
 elsewhere and `--no-save` throws the session away.
 
-**The player is not saved yet**, so position, inventory and health reset each run.
+**The player is saved too.** Position, orientation, health, the inventory and which
+hotbar slot is selected all come back; the swing, the walk cycle and a half-mined block
+do not, because restoring those restores the middle of an input nobody is giving.
 
 `F` switches to flying, `F5` to first person, `Escape` releases the cursor and again
 quits.
@@ -133,7 +135,7 @@ Dig down. The caves, ores and darkness are the point, and they are not visible f
 surface — and now you can take a light with you.
 
 ```bash
-ctest --preset debug                       # 365 test cases
+ctest --preset debug                       # 379 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
@@ -209,8 +211,8 @@ tracks remain, independent of each other:
   for the far field, occlusion culling. This is what the render-distance target needs.
 - **Interaction** — block placement and breaking, trees, item drops, a slot inventory
   with its window, a HUD, health, block updates, oceans, flowing water and
-  **persistence** are all **done**. Still open: saving the *player*, aquifers, and the
-  rest of vegetation.
+  **persistence of both the world and the player** are all **done**. Still open:
+  aquifers and the rest of vegetation.
 - **Crafting** — Phases 16 to 19. **16 and 17 are built**: items stopped being block
   types, there is a container-window layer, a crafting table gates the 3x3 recipes, and
   a furnace smelts — so iron and diamond are reachable and the whole ore table means

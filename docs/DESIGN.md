@@ -1498,6 +1498,11 @@ vertical fill that depends on a heightmap one block can move by any amount. An
 incremental relight is the optimisation to reach for if it ever shows up in a
 profile, and not before.
 
+> **Both numbers here are wrong, and 7.27 has the correction.** The recompute is
+> 1.035 ms rather than 0.5, and — the part that mattered — it was running on edits
+> that could not change its answer at all. It is now conditional on the edit changing
+> a block's opacity, which is the only input the pass has.
+
 #### Measurements
 
 Warm-up at distance 16 went from 3.58 s to **3.40 s**, which was not the goal and is
@@ -1830,6 +1835,11 @@ open desert, where sand is at the surface and light genuinely moves, that is rou
 1 ms on one frame in three during a collapse. Acceptable, and the incremental relight
 that World.hpp already names as the escape hatch is still the thing to reach for if it
 appears in a profile.
+
+> **The figure is 1.035 ms, not 0.5 — so double every number in this paragraph.**
+> 7.27's guard does not help here and was not meant to: sand collapsing to air is an
+> opacity change, and the relight is genuinely owed. This is now the *most* expensive
+> thing that reaches `computeSkyLight`, rather than one case among many.
 
 #### Measurements
 
@@ -2539,6 +2549,10 @@ per floor in an optimised build, minutes in the debug one, and timed the file ou
 Tests build terrain by writing into sections now, which is what a generator does. The
 per-flow cost in play is unmeasured, and a player digging into an ocean is how it will
 be found.
+
+> **The premise of this paragraph did not survive.** A flow *is* many `setBlock`
+> calls, but none of them ever owed the relight: water and air agree on `opaque`, and
+> that is the whole input to the sky-light pass. 7.27 has the guard and the numbers.
 
 A stats line carries `flowed` and `suspended` counters for that reason. 7.14's lesson
 is that a feature nobody can observe in a log is a feature that ships broken.
@@ -3303,8 +3317,9 @@ The departures:
 - **Little-endian integers**, where vanilla's are big. One architecture, by
   constraint (section 1); a byte-swapping reader would be untestable code guarding
   against a port that is ruled out.
-- **Sky light is not stored.** It is derived from the voxels, costs about 0.5 ms per
-  column, and would otherwise be the largest thing in the file — a nibble per voxel is
+- **Sky light is not stored.** It is derived from the voxels, costs about 1 ms per
+  column (7.27; this was recorded as 0.5 before it was measured directly), and would
+  otherwise be the largest thing in the file — a nibble per voxel is
   16 KiB per non-uniform section, against the 16 KiB the blocks themselves take at 4
   bits. Decoding recomputes it, which also means a save written before a lighting fix
   picks the fix up rather than preserving the bug.
@@ -3386,6 +3401,10 @@ and a separate decision about what belongs in it, and it is the obvious next ste
 rather than a hole in this one. Dropped items and falling blocks are also not saved,
 which vanilla does save; they are the shortest-lived things in the world and both are
 recreated by the blocks around them.
+
+> **The player is saved as of 7.28**, and "a separate decision about what belongs in
+> it" turned out to be the entire job rather than a footnote to it. Dropped items and
+> falling blocks are still not saved, for the reason given above.
 
 ---
 
@@ -3577,6 +3596,215 @@ tests alone do not prove it.
 
 **What no test here can tell you is whether a lit room reads as lit.** That is the
 one thing this project has never learned by reasoning.
+
+---
+
+### 7.27 The relight that was never owed
+
+7.5 sized the sky-light recompute at about 0.5 ms and concluded that an incremental
+relight was "the optimisation to reach for if it ever shows up in a profile, and not
+before". Both halves of that turned out to be wrong, and in opposite directions.
+
+The measurement first. On this machine `computeSkyLight` takes **1.035 ms** on a
+column solid to y=64, not 0.5. That is not the interesting error.
+
+The interesting one is that **it was being run on edits that could not possibly
+change the answer.** `computeSkyLight` reads exactly one property of the world: a
+block's `opaque` flag. It builds the heightmap from it, stops the vertical fill on
+it, and bounds the spread with it — nothing else in `BlockInfo` is touched. So an
+edit that leaves every cell's opacity where it was walks all 393,216 cells, zeroes
+two 384 KiB buffers, runs the bucket flood, and returns the mask it started with.
+
+**Flowing water is that edit.** Air is non-opaque and so is every water block, which
+means a fluid tick paid a full-column relight per cell it spread into, to arrive at
+the answer it already had. 7.17 recorded that "flow is expensive per block, and the
+mechanism is already documented: `World::setBlock` relights the whole column"; 7.23
+closed the cost question with thirty-two flows settling without a warning, and called
+that "not a measurement of the worst case, but the first evidence of any kind". The
+worst case was a lake breach spreading into fifty cells in one tick, which is **51.8
+ms against a 50 ms budget** — a tick that cannot finish, spent entirely on arithmetic
+whose result was known before it started.
+
+The fix is a condition, not an algorithm:
+
+```cpp
+if (isOpaque(previous) == isOpaque(block)) {
+    return EditStatus::Applied;
+}
+```
+
+| | before | after |
+|---|---|---|
+| `setBlock`, air ↔ water | 1.035 ms | **0.043 µs** |
+| 50-cell fluid tick | ~51.8 ms | **0.002 ms** |
+| Full test suite | 53.9 s | **36.1 s** |
+
+The suite getting a third faster is the part worth pausing on. Nothing in it was
+written to measure this; it simply calls `setBlock` a great many times, and the cost
+had been sitting in the wall-clock of every run since sky light existed.
+
+Sand and gravel are deliberately **not** helped. They collapse to air, opacity does
+change, and 7.11's note about a collapse paying the recompute twice per block still
+stands in full.
+
+#### Where the guard is, and why that matters
+
+Above it: the section dirty marks, the eight neighbours a block face touches, and the
+block-light flood. Below it: only the sky-light recompute and the neighbour dirtying
+that follows a light change. Placing water still remeshes — **the most likely bug this
+change could have caused is water that is lit correctly and invisible**, and a test
+pins exactly that.
+
+#### The invariant, asserted rather than commented
+
+The guard is sound only while opacity is the whole of `computeSkyLight`'s input, and
+there is a specific, plausible change that would break it: **vanilla attenuates
+daylight one level per block of water.** Implementing that here without giving
+`setBlock` a matching condition would leave every flowing block lit by whatever the
+column held before the water arrived, and nothing would report it — the light would
+simply be wrong in a place nobody thought to look.
+
+So the precondition is a test rather than a comment on the branch. One case fills a
+sunlit pool with water and requires the column's light to come back bit-identical,
+then turns the same cells to stone and requires that something *did* move, so it
+cannot pass by the pass having stopped working altogether. A second walks the block
+table and requires every fluid to be non-opaque, which is what makes **lava** — the
+next fluid on the list, and the same algorithm with a step of 2 — fail loudly here
+instead of quietly reintroducing the cost this removed.
+
+3 lines of optimisation, 151 of test and reasoning around it. That ratio is the point:
+the measurement is easy to reproduce and the invariant is not obvious, and it is the
+invariant that will be standing between a future change and a silent regression.
+
+#### Measured
+
+368 tests, all passing, asan clean. Frame times are untouched — this path never ran
+in the frame loop, which is exactly why it survived three phases of profiling without
+being noticed.
+
+**Whether a breach into an ocean now keeps up is still a thing to be played, not
+read.** The benchmark flight edits nothing, so it cannot produce a flow; that blind
+spot is the same one 7.17 and 7.23 recorded and this change does not close it.
+
+---
+
+### 7.28 The player is saved, and a type is what decided what that means
+
+HANDOFF called this "small -- one file, and a decision about what belongs in it". The
+file was small. **The decision was the whole of the work, and it had no owner.**
+
+Player state was fourteen loose members on `Engine`: `m_health`, `m_inventory`,
+`m_hotbarSlot`, `m_flying`, `m_onGround`, `m_verticalVelocity`, `m_thirdPerson`,
+`m_playerCraft`, `m_fallFromY`, `m_trackingFall`, `m_walkPhase`, `m_swingPhase`,
+`m_breakProgress`, and the position, which lived in the camera. Writing a save meant
+reading that list and judging each one — and a judgement made by reading a member list
+is one that goes wrong once and then stays wrong, because the next member added is not
+a decision about persistence to whoever adds it.
+
+So `world/Player.hpp` came first, and the rule is the type: **if it is in the struct it
+is saved, and if it is not it is rebuilt.** Adding a field is now a decision about
+persistence whether the author wants it to be or not.
+
+What that rule excluded, and why each one:
+
+| Left out | Because |
+|---|---|
+| The swing and walk cycle | Animation. Restoring a half-swung arm restores the middle of an input nobody is giving. |
+| `m_breakProgress` | An action in flight; the same argument. |
+| Third person | A camera preference, not a fact about the player. |
+| The 2x2 craft grid | Vanilla drops a crafting grid's contents when the window closes. Keeping it would be an invisible deviation. |
+| `m_fallFromY`, `m_trackingFall` | Derived from a fall that is over. |
+| The inventory **cursor** | Below — this is the one that could have been saved twice. |
+
+#### The camera stopped holding the position
+
+`m_camera` held the eye and `playerFeet()` subtracted from it. The player holds the
+feet now and the camera is *synced* from it by one function; nothing writes a position
+or an orientation into the camera any more. That direction is not cosmetic — 7.14's
+item-pickup bug was a caller passing the eye where the feet were wanted, and
+`playerFeet()` existed to stop the subtraction being written out five times. **The
+subtraction is gone entirely**: `Player::eye()` is the only conversion and it only goes
+one way.
+
+The cost was ordering. Walking and flying turn input into a direction by reading
+`forward()` and `right()` off the camera, so the sync has to happen *between* the mouse
+look and the move, not after both. That is one comment and one call, and it is the kind
+of thing that is obvious while writing it and invisible six months later.
+
+#### Two bugs the type surfaced, both about the command line
+
+Neither would have been found by testing the codec.
+
+**The save was beating `--hold`.** The capture flags (`--hold`, `--inventory`,
+`--furnace`, `--damaged`) seed the player during construction, and the load was placed
+after them — so any world that had been played once silently overrode them, which is
+every world worth capturing. The rule has to be **the save replaces the spawn, and the
+command line replaces the save**, and getting it required moving the store open above
+the seeding rather than adding a condition.
+
+**The spawn was beating the save.** The spawn block wrote the surface position
+unconditionally, so a player who quit in a cave came back on the roof of it. Losing
+where you were is the part of a save that is noticed immediately.
+
+#### The cursor, which is the sharpest edge in this
+
+`Inventory` holds a cursor: the stack being dragged with a window open. It is not
+written, because `Engine::saveEverything` closes the screen first and closing returns
+it to the slots — writing it as well would save one stack in two places.
+
+**That ordering did not exist and had to be added.** `saveEverything` runs from
+`~Engine`, and nothing called `closeScreen` before it; `Escape` closes a window, but
+the window's own close button does not. Quitting with the inventory open and something
+in hand would have written a player who was not holding what they were holding. What
+still does not fit gets dropped at the feet as an item entity and is lost — which is
+the same answer the world already gives for anything on the ground, so it is consistent
+rather than a new hole.
+
+#### The format, and why it is its own file
+
+`player.bin`, beside `level.bin` and the regions rather than inside either.
+
+- **Not in `level.bin`**, which is written once at creation and holds the seed. The
+  player is rewritten on every quit, and the seed is the one record whose loss does not
+  lose the player but loses the *world* — every unedited column is regenerated from it.
+  A write-once file and a write-often file are different files.
+- **Not in a region**, because a column is addressed by where it is and the player is
+  not anywhere in particular. Theirs would live or die with whichever column they
+  happened to quit inside.
+
+**It is written to a temporary and renamed, which the region files do not do.** An
+interrupted region write costs the columns in that region and they regenerate; there is
+exactly one player record and a half-written one is the whole inventory. `rename` within
+a directory is atomic on Linux, so a reader sees the old record or the new one.
+
+Decoding refuses rather than repairs, with one exception. An unknown version is refused
+outright — reading a shorter record as a longer one puts the tail of the inventory
+wherever the buffer ended, and *that* failure looks like items vanishing rather than
+like a format change. A NaN position is refused because NaN compares false against
+everything: `feet.y < 0` never fires, so the ground probe never lands and the player
+falls forever with nothing in the log to say why. The exception is a stack past its
+limit, which is **clamped**: that is what lowering a stack limit between builds looks
+like, and refusing the record would cost the whole inventory to save the player from an
+excess of pickaxes.
+
+An absent file is not an error — that is a world that has never been quit. A *corrupt*
+one is, and it is logged and counted, because spawning fresh looks identical either way
+and only one of them is fine. This project's oldest lesson, applied ahead of the bug
+rather than after it.
+
+#### Measured
+
+**379 tests, up from 368**, eleven of them here: a field-for-field round trip, the
+cursor exclusion, four refusals, the clamp, and `Player`'s own invariants. asan clean.
+
+Verified the only way persistence can be — by running it three times against one save.
+Position, health and a fifteen-slot inventory came back; `--at` and `--hold` beat the
+save on the run that used them; a `player.bin` filled with garbage produced the error,
+the warning and `1 failures` on the stats line rather than a quiet fresh spawn.
+
+**What no test here can tell you is whether coming back feels like coming back.** That
+is a session: quit in a cave and see where you are, quit mid-fall and see whether you
+land.
 
 ---
 
