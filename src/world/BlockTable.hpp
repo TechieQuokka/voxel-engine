@@ -669,6 +669,18 @@ constexpr bool isFalling(BlockId id) {
     return id < kBlocks.size() && kBlocks[id].falls;
 }
 
+/// True for a block that hides the face behind it. See BlockInfo::opaque.
+///
+/// **The out-of-range answer is `true` here and `false` in every other predicate
+/// above**, because it follows the field's own default rather than the shape of the
+/// expression: an unknown block hiding what is behind it is the harmless direction,
+/// and it is the same answer `BlockLight` already gives for a column that has not
+/// loaded. `BlockRegistry::isOpaque` is the runtime form of this; the mesher holds a
+/// registry and uses that one.
+constexpr bool isOpaque(BlockId id) {
+    return id >= kBlocks.size() || kBlocks[id].opaque;
+}
+
 /// True for liquids. See BlockInfo::fluid.
 constexpr bool isFluid(BlockId id) {
     return id < kBlocks.size() && kBlocks[id].fluid;

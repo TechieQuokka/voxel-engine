@@ -5,6 +5,8 @@
 
 #include <doctest/doctest.h>
 
+#include <vector>
+
 using namespace mc;
 
 namespace {
@@ -167,4 +169,78 @@ TEST_CASE("only the section holding the surface stores a light array") {
         }
     }
     CHECK(allocating == 1);
+}
+
+TEST_CASE("sky light is a function of opacity and nothing else") {
+    // **This is the precondition `World::setBlock` skips the relight on.** It asks
+    // `isOpaque(previous) == isOpaque(block)` and returns without recomputing,
+    // which is only sound while opacity is the whole of this pass's input.
+    //
+    // The case that would break it is vanilla's: water attenuating daylight a level
+    // per block. Adding that here without giving `setBlock` a matching condition
+    // would leave flowing water lit by whatever the column held before it arrived,
+    // and nothing else in the suite would notice -- which is why the invariant is
+    // asserted rather than left as a comment on the guard.
+    Chunk chunk({0, 0});
+    constexpr i32 kTop = 40;
+    fillGround(chunk, kTop);
+
+    // A pool sunk into the surface, so water sits where daylight actually reaches
+    // it. Sealed rock would prove nothing: it is uniform 0 either way.
+    for (i32 z = 4; z < 12; ++z) {
+        for (i32 x = 4; x < 12; ++x) {
+            setBlock(chunk, x, kTop, z, kAirBlock);
+        }
+    }
+    computeSkyLight(chunk);
+
+    std::vector<u8> before;
+    before.reserve(static_cast<usize>(kSectionSize * kSectionSize));
+    for (i32 z = 0; z < kSectionSize; ++z) {
+        for (i32 x = 0; x < kSectionSize; ++x) {
+            before.push_back(lightAt(chunk, x, kTop, z));
+        }
+    }
+
+    // Fill the pool. Water is non-opaque and so is the air it replaces, so every
+    // level above has to come back identical.
+    REQUIRE(isOpaque(kWaterBlock) == isOpaque(kAirBlock));
+    for (i32 z = 4; z < 12; ++z) {
+        for (i32 x = 4; x < 12; ++x) {
+            setBlock(chunk, x, kTop, z, kWaterBlock);
+        }
+    }
+    computeSkyLight(chunk);
+
+    usize index = 0;
+    for (i32 z = 0; z < kSectionSize; ++z) {
+        for (i32 x = 0; x < kSectionSize; ++x) {
+            CHECK(lightAt(chunk, x, kTop, z) == before[index++]);
+        }
+    }
+
+    // And the other direction, so the test cannot pass by the pass having stopped
+    // working altogether: an opacity change *must* move something.
+    for (i32 z = 4; z < 12; ++z) {
+        for (i32 x = 4; x < 12; ++x) {
+            setBlock(chunk, x, kTop, z, kStoneBlock);
+        }
+    }
+    CHECK(computeSkyLight(chunk) != 0);
+}
+
+TEST_CASE("every fluid is non-opaque, so a flow never owes a sky-light relight") {
+    // The guard in `World::setBlock` turns a fluid tick from ~1 ms per edited cell
+    // into nothing, and it does that only because air and every water block agree
+    // on `opaque`. A fluid added later that did not -- lava is the one on the list
+    // -- would silently reintroduce the cost this removed.
+    CHECK_FALSE(isOpaque(kAirBlock));
+    for (usize i = 0; i < kBlocks.size(); ++i) {
+        const auto id = static_cast<BlockId>(i);
+        if (!isFluid(id)) {
+            continue;
+        }
+        CAPTURE(kBlocks[i].name);
+        CHECK_FALSE(isOpaque(id));
+    }
 }

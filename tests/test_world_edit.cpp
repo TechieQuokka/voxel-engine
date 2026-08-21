@@ -240,3 +240,45 @@ TEST_CASE("computeSkyLight reports nothing changed when it recomputes the same a
     CHECK(computeSkyLight(*chunk) != 0);
     CHECK(computeSkyLight(*chunk) == 0);
 }
+
+TEST_CASE("an edit that does not change opacity keeps its sky light and still meshes") {
+    // The relight guard, from the edit path rather than from `computeSkyLight`.
+    // The test above proves the recompute *reports* nothing changed; this one proves
+    // the recompute is not run at all -- and, more importantly, that skipping it
+    // costs none of the other work `setBlock` owes.
+    auto world = readyWorld();
+    Chunk* chunk = world->find(ChunkPos{0, 0});
+    REQUIRE(chunk != nullptr);
+
+    // Open sky, so there is real light at the edit and a broken guard would show.
+    const BlockPos pos{5, 40, 5};
+    computeSkyLight(*chunk);
+    const Section* section = chunk->sectionAt(blockToSectionCoord(pos.y));
+    REQUIRE(section != nullptr);
+    const u8 lightBefore = section->skyLight(blockToLocalCoord(pos.x),
+                                             blockToLocalCoord(pos.y),
+                                             blockToLocalCoord(pos.z));
+    clearDirty(*world);
+
+    // Air to water: both non-opaque, so the column's sky light cannot move.
+    CHECK(world->setBlock(pos, kWaterBlock) == World::EditStatus::Applied);
+
+    CHECK(section->skyLight(blockToLocalCoord(pos.x), blockToLocalCoord(pos.y),
+                            blockToLocalCoord(pos.z))
+          == lightBefore);
+
+    // Skipping the relight must not skip the remesh: the block is visibly different
+    // even though it is lit identically. Getting this wrong makes placed water
+    // invisible until something else dirties the section, which is the failure the
+    // guard is most likely to cause.
+    CHECK(chunk->isSectionDirty(
+        static_cast<usize>(sectionIndexInColumn(blockToSectionCoord(pos.y)))));
+
+    // And an opacity change on the same cell still relights, so the guard is a
+    // condition rather than a removal.
+    clearDirty(*world);
+    CHECK(world->setBlock(pos, kStoneBlock) == World::EditStatus::Applied);
+    CHECK(section->skyLight(blockToLocalCoord(pos.x), blockToLocalCoord(pos.y),
+                            blockToLocalCoord(pos.z))
+          == 0);
+}

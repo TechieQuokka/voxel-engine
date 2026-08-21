@@ -290,9 +290,30 @@ World::EditStatus World::setBlock(BlockPos pos, BlockId block) {
 
     // (4) Sky light. Recomputed for the whole column rather than incrementally: the
     // vertical fill depends on the column's heightmap, which one block can move by
-    // any amount, and a full recompute measures about 0.5 ms -- per click, on a
-    // path that is not the frame loop. An incremental relight is the optimisation
-    // to reach for if that ever shows up in a profile, not before.
+    // any amount, and a full recompute measures about 1 ms -- per click, on a path
+    // that is not the frame loop. An incremental relight is the optimisation to
+    // reach for if that ever shows up in a profile, not before.
+    //
+    // **Asked only when the edit changed a block's opacity**, because that is the
+    // only input `computeSkyLight` has. It reads `opaque` and nothing else -- to
+    // build the heightmap, to stop the vertical fill, and to bound the spread -- so
+    // an edit that leaves every cell's opacity where it was cannot move a single
+    // level, and the recompute would return the identical mask after a full walk of
+    // the column.
+    //
+    // This is not a micro-optimisation. **Flowing water is exactly this case**: air
+    // and every water block are all non-opaque, so before this guard a fluid tick
+    // paid a 1 ms whole-column relight per `setBlock` to arrive at the answer it
+    // started with. A breach spreading into fifty cells in one tick spent the entire
+    // 50 ms tick budget on it. Stone to cobblestone underground is the same story at
+    // a smaller scale.
+    //
+    // Sand and gravel are deliberately *not* helped by this: they collapse to air,
+    // opacity does change, and the relight is genuinely owed.
+    if (isOpaque(previous) == isOpaque(block)) {
+        return EditStatus::Applied;
+    }
+
     const u16 lightChanged = computeSkyLight(*chunk);
     if (lightChanged == 0) {
         return EditStatus::Applied;
