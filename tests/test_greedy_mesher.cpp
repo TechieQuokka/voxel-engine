@@ -663,3 +663,121 @@ TEST_CASE("texture layers follow the face, not just the block") {
     CHECK(registry.textureLayer(kGrassBlock, Face::NegY)
           != registry.textureLayer(kGrassBlock, Face::PosY));
 }
+
+// -- the cutout pass ----------------------------------------------------------
+//
+// Glass. The third category, and the reason `Pass` stopped being a bool: a block
+// that is neither opaque nor a fluid fell through both branches and emitted no
+// faces at all, so glass was not a missing texture but a block that could not be
+// drawn.
+
+TEST_CASE("a glass block emits faces, in the cutout range") {
+    Section section;
+    section.set(10, 10, 10, blockIdOf("glass"));
+
+    ChunkMesh mesh;
+    meshSectionGreedy(section, mesh, kNoAo);
+
+    REQUIRE(mesh.quadCount() == 6);
+    // None of it is opaque and none of it is water: it is all in the middle range,
+    // which is the one the renderer alpha-tests.
+    CHECK(mesh.opaqueQuads == 0);
+    CHECK(mesh.cutoutQuads == 6);
+    CHECK(mesh.translucentQuads() == 0);
+}
+
+TEST_CASE("glass does not hide the rock behind it") {
+    // The asymmetry that makes a window a window. Glass is culled by opaque blocks,
+    // but does not cull them -- so the stone behind a pane still draws its face and
+    // there is something to look at through the discarded middle.
+    Section stoneOnly;
+    stoneOnly.set(10, 10, 10, kStoneBlock);
+    ChunkMesh alone;
+    meshSectionGreedy(stoneOnly, alone, kNoAo);
+    REQUIRE(alone.opaqueQuads == 6);
+
+    Section glazed;
+    glazed.set(10, 10, 10, kStoneBlock);
+    glazed.set(11, 10, 10, blockIdOf("glass"));
+    ChunkMesh withGlass;
+    meshSectionGreedy(glazed, withGlass, kNoAo);
+
+    // The stone keeps all six faces: the glass beside it hides nothing.
+    CHECK(withGlass.opaqueQuads == 6);
+    // The glass loses the one face pointing into the stone, which does hide it.
+    CHECK(withGlass.cutoutQuads == 5);
+}
+
+TEST_CASE("glass culls against its own kind, so a window is a surface") {
+    // Two panes side by side cover ten unit faces, not twelve. Without this the
+    // shared boundary draws twice and reads as a seam down the middle of a window --
+    // and vanilla culls the same join for the same reason.
+    //
+    // **Area, not quad count.** Merging then takes those ten faces down to six
+    // quads, which is a different question and the one the case below asks.
+    Section section;
+    const BlockId glass = blockIdOf("glass");
+    section.set(10, 10, 10, glass);
+    section.set(11, 10, 10, glass);
+
+    ChunkMesh mesh;
+    meshSectionGreedy(section, mesh, kNoAo);
+
+    const auto area = areaPerFace(mesh);
+    usize total = 0;
+    for (const usize face : area) {
+        total += face;
+    }
+    CHECK(total == 10);
+}
+
+TEST_CASE("a pane of glass merges like anything else") {
+    // Greedy merging is not special-cased per pass, and this pins that: a 4x4 wall
+    // of glass is one quad a side, not sixteen.
+    Section section;
+    const BlockId glass = blockIdOf("glass");
+    for (i32 y = 0; y < 4; ++y) {
+        for (i32 z = 0; z < 4; ++z) {
+            section.set(10, y + 8, z + 8, glass);
+        }
+    }
+
+    ChunkMesh mesh;
+    meshSectionGreedy(section, mesh, kNoAo);
+
+    // The two big faces are one merged quad each; the rim is four 4x1 strips.
+    CHECK(mesh.cutoutQuads == 6);
+    CHECK(mesh.opaqueQuads == 0);
+}
+
+TEST_CASE("the three ranges stay in order and account for every quad") {
+    // The layout *is* the draw order -- opaque fills depth, cutout tests against it,
+    // translucent blends over both -- so the counts have to partition the list and
+    // the renderer's three draws depend on it exactly.
+    Section section;
+    section.set(4, 4, 4, kStoneBlock);
+    section.set(8, 8, 8, blockIdOf("glass"));
+    section.set(12, 12, 12, kWaterBlock);
+
+    ChunkMesh mesh;
+    meshSectionGreedy(section, mesh, kNoAo);
+
+    CHECK(mesh.opaqueQuads == 6);
+    CHECK(mesh.cutoutQuads == 6);
+    CHECK(mesh.translucentQuads() == 6);
+    CHECK(mesh.opaqueQuads + mesh.cutoutQuads + mesh.translucentQuads()
+          == mesh.quadCount());
+}
+
+TEST_CASE("a section with no glass pays nothing and reports no cutout range") {
+    // The `anyCutout` short circuit. Glass is player-placed, so almost every section
+    // in a world has none -- and the pass has to cost one boolean for them, the same
+    // way the fluid pass already does.
+    Section section(kStoneBlock);
+
+    ChunkMesh mesh;
+    meshSectionGreedy(section, mesh, kNoAo);
+
+    CHECK(mesh.cutoutQuads == 0);
+    CHECK(mesh.opaqueQuads == mesh.quadCount());
+}

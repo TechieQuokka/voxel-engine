@@ -35,6 +35,10 @@ public:
         /// Of `quadsDrawn`, how many were water. Separate because the translucent
         /// pass has different costs and different failure modes from the opaque one.
         usize waterQuadsDrawn = 0;
+        /// Of `quadsDrawn`, how many were glass. Separate for the same reason and
+        /// one more: the cutout pass is the only one that discards, so it is the one
+        /// whose cost does not follow from its quad count alone.
+        usize cutoutQuadsDrawn = 0;
         usize sectionsConsidered = 0;
         usize columnsCulled = 0;
         usize sectionsCulled = 0;
@@ -108,6 +112,12 @@ private:
     /// about what bits 33..40 of a quad mean, which is not something a uniform can
     /// express. See Quad.hpp.
     rhi::Shader m_waterShader;
+    /// **Glass is a third program, and the reason is early-Z.** A fragment shader
+    /// that can `discard` gives up the depth optimisation for the whole draw it is
+    /// in, so an alpha test folded into `m_shader` would be paid on every block of
+    /// terrain in the world to draw the handful of tiles that need it. It shares
+    /// `chunk.vert` -- the geometry is identical; only the fragment rule differs.
+    rhi::Shader m_cutoutShader;
     rhi::VertexArray m_vao;
     std::optional<BlockTextures> m_textures;
 
@@ -124,8 +134,15 @@ private:
     std::vector<i32> m_counts;
     std::vector<vec4> m_origins;
 
-    /// The translucent pass. A section with both opaque geometry and water appears
-    /// in both lists, because the two halves of its arena range are two draws.
+    /// The cutout pass -- glass. Between opaque and translucent, because it writes
+    /// depth like the first and must not be occluded by the second.
+    std::vector<i32> m_cutoutFirsts;
+    std::vector<i32> m_cutoutCounts;
+    std::vector<vec4> m_cutoutOrigins;
+
+    /// The translucent pass. A section with opaque geometry, glass and water appears
+    /// in all three lists, because the three parts of its arena range are three
+    /// draws.
     std::vector<i32> m_waterFirsts;
     std::vector<i32> m_waterCounts;
     std::vector<vec4> m_waterOrigins;

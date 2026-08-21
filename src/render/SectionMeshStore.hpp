@@ -51,16 +51,23 @@ public:
 
     /// Where one section's quads live in the arena.
     ///
-    /// One contiguous range holding the opaque quads followed by the translucent
-    /// ones, with `opaqueCount` marking the join. Two ranges would mean two
-    /// allocations, two retirements and two lifetimes to keep in step for what is
-    /// arithmetic on a single offset.
+    /// One contiguous range holding the opaque quads, then the cutout ones, then the
+    /// translucent ones, with the two counts marking the joins. Three ranges would
+    /// mean three allocations, three retirements and three lifetimes to keep in step
+    /// for what is arithmetic on a single offset.
+    ///
+    /// The order matches `ChunkMesh`, and it matches the order the three passes have
+    /// to be drawn in: opaque fills depth, cutout tests against it and may discard,
+    /// translucent blends over both and writes no depth.
     struct Placement {
         usize byteOffset = 0;
         u32 quadCount = 0;
         u32 opaqueCount = 0;
+        u32 cutoutCount = 0;
 
-        u32 translucentCount() const noexcept { return quadCount - opaqueCount; }
+        u32 translucentCount() const noexcept {
+            return quadCount - opaqueCount - cutoutCount;
+        }
     };
 
     /// `capacityBytes` is fixed for the store's lifetime, because the arena is

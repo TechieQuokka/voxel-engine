@@ -94,6 +94,16 @@ struct Scratch {
     /// and everything under the sea bed.
     bool anyFluid = false;
 
+    /// Cutout occupancy -- glass -- on the same padded grid, and for the same reason
+    /// `fluid` is separate: it is neither opaque nor a fluid, and a block that is
+    /// none of the three emits nothing at all.
+    std::array<u8, kPaddedVolume> cutout{};
+    /// Whether the centre section holds any cutout block. Skips the pass whole for
+    /// every section nobody has glazed, which is all of them until somebody does --
+    /// the same argument `anyFluid` makes, and it matters more here because glass is
+    /// player-placed and therefore rare where water is generated and common.
+    bool anyCutout = false;
+
     /// Sky light, on the same padded grid and for the same reason: a face on a
     /// section boundary has to be lit by the light in the neighbour it faces, or
     /// every chunk seam becomes a visible band.
@@ -141,14 +151,55 @@ bool fluidAt(const Scratch& s, i32 x, i32 y, i32 z) {
     return s.fluid[paddedIndex(x, y, z)] != 0;
 }
 
+bool cutoutAt(const Scratch& s, i32 x, i32 y, i32 z) {
+    return s.cutout[paddedIndex(x, y, z)] != 0;
+}
+
+/// Which of the three kinds of geometry a pass is producing.
+///
+/// **This was a `bool fluidPass` and the third category is why it is not.** Opaque,
+/// cutout and fluid differ in exactly two rules -- what emits a face and what hides
+/// one -- and a bool could carry two of the three. Glass was not a texture that was
+/// missing, it was a block that fell through both branches and emitted nothing.
+enum class Pass : u8 {
+    /// Rock, dirt, everything solid. Hidden by anything opaque.
+    Opaque,
+    /// Glass. Emits faces, hides nothing behind it, and is hidden by its own kind so
+    /// a wall of glass is a surface rather than a stack of boxes.
+    Cutout,
+    /// Water. Hidden by rock and by water, and by nothing else.
+    Fluid,
+};
+
 /// Does a voxel emit a face on this pass?
-bool emitsAt(const Scratch& s, bool fluidPass, i32 x, i32 y, i32 z) {
-    return fluidPass ? fluidAt(s, x, y, z) : opaqueAt(s, x, y, z);
+bool emitsAt(const Scratch& s, Pass pass, i32 x, i32 y, i32 z) {
+    switch (pass) {
+    case Pass::Opaque: return opaqueAt(s, x, y, z);
+    case Pass::Cutout: return cutoutAt(s, x, y, z);
+    case Pass::Fluid:  return fluidAt(s, x, y, z);
+    }
+    return false;
 }
 
 /// Does a voxel hide the face of its neighbour on this pass?
-bool hidesAt(const Scratch& s, bool fluidPass, i32 x, i32 y, i32 z) {
-    return opaqueAt(s, x, y, z) || (fluidPass && fluidAt(s, x, y, z));
+///
+/// **Opaque hides everything, and each pass additionally hides its own kind.** That
+/// second half is what stops the shared boundary between two glass blocks drawing two
+/// faces, which reads as a seam through a window and is what vanilla culls too.
+///
+/// **Cutout does not hide the opaque pass**, which is the asymmetry that makes glass
+/// see-through: the stone behind a pane still emits its face, and the pane's own
+/// discarded pixels are what let you look at it.
+bool hidesAt(const Scratch& s, Pass pass, i32 x, i32 y, i32 z) {
+    if (opaqueAt(s, x, y, z)) {
+        return true;
+    }
+    switch (pass) {
+    case Pass::Opaque: return false;
+    case Pass::Cutout: return cutoutAt(s, x, y, z);
+    case Pass::Fluid:  return fluidAt(s, x, y, z);
+    }
+    return false;
 }
 
 u8 lightAt(const Scratch& s, i32 x, i32 y, i32 z) {
@@ -180,8 +231,10 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
     // memset -- which is the common case, since most of a column is sky.
     std::memset(s.opaque.data(), 0, s.opaque.size());
     std::memset(s.fluid.data(), 0, s.fluid.size());
+    std::memset(s.cutout.data(), 0, s.cutout.size());
     std::memset(s.light.data(), 0, s.light.size());
     s.anyFluid = false;
+    s.anyCutout = false;
 
     // **Sky and block light collapse to one number here and nowhere else.**
     // DESIGN.md 3.7: the quad's sixteen light bits are full, so a torch does not
@@ -207,6 +260,10 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
                     s.fluid[paddedIndex(x, y, z)] =
                         static_cast<u8>(1u + fluidLevelOf(block));
                     s.anyFluid = true;
+                }
+                if (isCutout(block)) {
+                    s.cutout[paddedIndex(x, y, z)] = 1;
+                    s.anyCutout = true;
                 }
                 s.light[paddedIndex(x, y, z)] =
                     centerLightUniform ? centerLightLevel : center->light(x, y, z);
@@ -242,14 +299,16 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
                     blocksUniform && registry.isOpaque(section->uniformBlock());
                 const bool fluidFill =
                     blocksUniform && registry.isFluid(section->uniformBlock());
+                const bool cutoutFill =
+                    blocksUniform && isCutout(section->uniformBlock());
                 const bool lightUniform = section->skyLightArray().isUniform()
                                           && section->blockLightArray().isUniform();
                 const u8 lightLevel = std::max(section->skyLightArray().uniformLevel(),
                                                section->blockLightArray().uniformLevel());
 
-                if (blocksUniform && !opaqueFill && !fluidFill && lightUniform
-                    && lightLevel == 0) {
-                    continue; // All three already zero.
+                if (blocksUniform && !opaqueFill && !fluidFill && !cutoutFill
+                    && lightUniform && lightLevel == 0) {
+                    continue; // All four already zero.
                 }
 
                 for (i32 y = yBegin; y < yEnd; ++y) {
@@ -276,6 +335,12 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
                                 registry.isFluid(neighbourBlock)
                                     ? static_cast<u8>(1u + fluidLevelOf(neighbourBlock))
                                     : u8{0};
+                            // The shell's cutout occupancy, for the same reason the
+                            // fluid one is here: two glass blocks either side of a
+                            // section boundary have to cull against each other, or
+                            // every 32-block seam draws a pane inside the window.
+                            s.cutout[paddedIndex(x, y, z)] =
+                                isCutout(neighbourBlock) ? u8{1} : u8{0};
                             s.light[paddedIndex(x, y, z)] =
                                 lightUniform ? lightLevel : section->light(lx, ly, lz);
                         }
@@ -290,8 +355,10 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
 ///
 /// On the opaque pass the two are identical and this is exactly what it always was.
 /// On the fluid pass the emit set is water and the cull set is water plus rock,
-/// which is what stops the inside of an ocean being meshed.
-void buildOccupancy(Scratch& s, bool fluidPass) {
+/// which is what stops the inside of an ocean being meshed. On the cutout pass the
+/// emit set is glass and the cull set is glass plus rock, by the same argument: a
+/// wall of panes is a window, not a stack of boxes.
+void buildOccupancy(Scratch& s, Pass pass) {
     MC_PROFILE_SCOPE_N("buildOccupancy");
 
     for (auto& row : s.colX) { row.fill(0); }
@@ -304,8 +371,8 @@ void buildOccupancy(Scratch& s, bool fluidPass) {
     for (i32 y = 0; y < kN; ++y) {
         for (i32 z = 0; z < kN; ++z) {
             for (i32 x = 0; x < kN; ++x) {
-                const bool emits = emitsAt(s, fluidPass, x, y, z);
-                const bool hides = hidesAt(s, fluidPass, x, y, z);
+                const bool emits = emitsAt(s, pass, x, y, z);
+                const bool hides = hidesAt(s, pass, x, y, z);
                 if (!emits && !hides) {
                     continue;
                 }
@@ -339,14 +406,14 @@ void buildOccupancy(Scratch& s, bool fluidPass) {
             const auto ua = static_cast<usize>(a);
             const auto ub = static_cast<usize>(b);
 
-            s.lowX[ua][ub] = hidesAt(s, fluidPass, -1, a, b) ? u8{1} : u8{0};
-            s.highX[ua][ub] = hidesAt(s, fluidPass, kN, a, b) ? u8{1} : u8{0};
+            s.lowX[ua][ub] = hidesAt(s, pass, -1, a, b) ? u8{1} : u8{0};
+            s.highX[ua][ub] = hidesAt(s, pass, kN, a, b) ? u8{1} : u8{0};
 
-            s.lowY[ua][ub] = hidesAt(s, fluidPass, a, -1, b) ? u8{1} : u8{0};
-            s.highY[ua][ub] = hidesAt(s, fluidPass, a, kN, b) ? u8{1} : u8{0};
+            s.lowY[ua][ub] = hidesAt(s, pass, a, -1, b) ? u8{1} : u8{0};
+            s.highY[ua][ub] = hidesAt(s, pass, a, kN, b) ? u8{1} : u8{0};
 
-            s.lowZ[ua][ub] = hidesAt(s, fluidPass, a, b, -1) ? u8{1} : u8{0};
-            s.highZ[ua][ub] = hidesAt(s, fluidPass, a, b, kN) ? u8{1} : u8{0};
+            s.lowZ[ua][ub] = hidesAt(s, pass, a, b, -1) ? u8{1} : u8{0};
+            s.highZ[ua][ub] = hidesAt(s, pass, a, b, kN) ? u8{1} : u8{0};
         }
     }
 }
@@ -601,9 +668,11 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
 
     const BlockRegistry& registry = BlockRegistry::instance();
 
-    // Opaque first, then fluid, appended after it. The split is what lets the
-    // renderer draw the two as separate passes over one contiguous arena range.
-    for (const bool fluidPass : {false, true}) {
+    // Opaque, then cutout, then fluid, each appended after the last. The two split
+    // points are what let the renderer draw three passes over one contiguous arena
+    // range -- the order here *is* the layout, and `ChunkMesh` records where the
+    // joins fell.
+    for (const Pass pass : {Pass::Opaque, Pass::Cutout, Pass::Fluid}) {
         // What two neighbouring faces must agree on to merge into one quad.
         //
         // A mask rather than a shift, because the optional field is no longer the
@@ -619,19 +688,32 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
         // into one that silently flattens water. The fluid pass always keys on the
         // whole word.
         const u32 keyMask =
-            (fluidPass || options.aoAwareMerging) ? 0xFFFFFFFFu : 0xFFFFFF00u;
+            (pass != Pass::Opaque || options.aoAwareMerging) ? 0xFFFFFFFFu : 0xFFFFFF00u;
 
-        if (fluidPass) {
+        if (pass == Pass::Cutout) {
             out.opaqueQuads = out.quads.size();
+            if (!s.anyCutout) {
+                // Every section nobody has glazed, which is all of them until
+                // somebody does. Costs one boolean.
+                out.cutoutQuads = 0;
+                if (!s.anyFluid) {
+                    break; // Nothing left for the fluid pass either.
+                }
+                continue;
+            }
+        }
+
+        if (pass == Pass::Fluid) {
+            out.cutoutQuads = out.quads.size() - out.opaqueQuads;
             if (!s.anyFluid) {
                 // Almost every section in the world: everything above sea level and
-                // everything below the sea bed. The whole second pass costs one
+                // everything below the sea bed. The whole third pass costs one
                 // boolean for them.
                 break;
             }
         }
 
-        buildOccupancy(s, fluidPass);
+        buildOccupancy(s, pass);
         buildFaceMasks(s);
 
     for (usize faceIndex = 0; faceIndex < kFaceCount; ++faceIndex) {
@@ -668,7 +750,7 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
                     // AO on water is meaningless, which is what freed the field for
                     // the surface height that had nowhere else to go.
                     const u8 ao =
-                        fluidPass ? computeFluidCorners(s, plan, x, y, z)
+                        pass == Pass::Fluid ? computeFluidCorners(s, plan, x, y, z)
                         : options.ambientOcclusion ? computeAo(s, plan, x, y, z)
                                                    : 0;
                     const u16 light = computeCornerLight(s, plan, x, y, z);
@@ -753,7 +835,7 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
             }
         }
     }
-    } // fluidPass
+    } // pass
 }
 
 void meshSectionGreedy(const Section& section,

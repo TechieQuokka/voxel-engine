@@ -37,8 +37,7 @@ consteval SmeltRecipe smelts(std::string_view from, std::string_view to) {
 ///
 /// **The three ores that need it are the point of the phase.** Iron, copper and gold
 /// are mineable already and were worth nothing, because the ore block is not the metal.
-/// Cobblestone back to stone and sand to glass are vanilla's other early ones; glass is
-/// not a block here yet, so sand is left out rather than smelted into nothing.
+/// Cobblestone back to stone and sand to glass are vanilla's other early ones.
 inline constexpr std::array kSmeltRecipes{
     smelts("iron_ore", "iron_ingot"),
     smelts("deepslate_iron_ore", "iron_ingot"),
@@ -51,6 +50,14 @@ inline constexpr std::array kSmeltRecipes{
     // reach on their first furnace without finding an ore at all -- which makes it the
     // cheapest way to see that the thing works.
     smelts("cobblestone", "stone"),
+
+    // **Sand into glass, which is the window in a house.** Left out until now with a
+    // note saying why -- glass was not a block, so this would have smelted into
+    // nothing -- and the note is what made it one line to add once it was.
+    //
+    // It also gives sand a second reason to exist. Until this, the only thing sand
+    // did was fall on you.
+    smelts("sand", "glass"),
 };
 
 /// One fuel: an item, and how many **ticks** it burns for.

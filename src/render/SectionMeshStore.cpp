@@ -50,7 +50,8 @@ bool SectionMeshStore::store(SectionPos pos, const ChunkMesh& mesh, u64 frame) {
         }
 
         m_placements[pos] = Placement{offset, static_cast<u32>(mesh.quadCount()),
-                                      static_cast<u32>(mesh.opaqueQuads)};
+                                      static_cast<u32>(mesh.opaqueQuads),
+                                      static_cast<u32>(mesh.cutoutQuads)};
     }
 
     // Outside the lock. This is the expensive part and it touches only the range

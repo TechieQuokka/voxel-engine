@@ -450,6 +450,44 @@ void generateTorch(std::vector<u8>& out, u32 layer, u32 flameArgb, u32 woodArgb,
     drawMask(out, layer, kTorchFlameArt, flameArgb, roughness * 0.4f, seed + 2u);
 }
 
+/// A pane: an opaque frame around the tile, a highlight across one corner, and
+/// nothing at all in between.
+///
+/// **The middle is written with alpha 0 rather than left alone**, because the layer's
+/// bytes are whatever the previous tile's generator put there otherwise. The cutout
+/// shader discards on alpha, so an uninitialised pixel is not merely wrong, it is
+/// wrong in a way that draws.
+///
+/// The highlight is two diagonal runs in the frame colour at partial alpha -- which
+/// the cutout keeps, since the test is a threshold and not a comparison against
+/// full. It is the one thing that stops a pane reading as an empty square hole when
+/// seen straight on, and vanilla's glass has the same streak for the same reason.
+void generateGlass(std::vector<u8>& out, u32 layer, u32 frameArgb, u32 paneArgb) {
+    const Rgba frame = fromArgb(frameArgb);
+    const Rgba pane = fromArgb(paneArgb);
+
+    for (u32 y = 0; y < kSize; ++y) {
+        for (u32 x = 0; x < kSize; ++x) {
+            const bool border = x == 0 || y == 0 || x == kSize - 1 || y == kSize - 1;
+
+            // Two short diagonals in the upper left, offset from each other. Drawn
+            // over the pane and under nothing.
+            const bool streak = (x + y == kSize / 2 && x < kSize / 2)
+                                || (x + y == kSize / 2 + 3 && x < kSize / 2);
+
+            if (border) {
+                writePixel(out, layer, x, y, frame);
+            } else if (streak) {
+                Rgba glint = frame;
+                glint.a = 0x66;
+                writePixel(out, layer, x, y, glint);
+            } else {
+                writePixel(out, layer, x, y, pane);
+            }
+        }
+    }
+}
+
 /// A tool: the shared shaft in the handle colour, then the head over it in the tier
 /// colour. Head second so an overlapping pixel belongs to the head, which is what
 /// makes the joint read as the head being mounted rather than the shaft passing
@@ -556,6 +594,9 @@ BlockTextures::BlockTextures() {
         case TextureRecipe::Torch:
             generateTorch(pixels, index, layer.argb, layer.argbSecondary,
                           layer.roughness, layer.seed);
+            break;
+        case TextureRecipe::Glass:
+            generateGlass(pixels, index, layer.argb, layer.argbSecondary);
             break;
         case TextureRecipe::Stick:
             drawMask(pixels, index, kStickArt, layer.argb, layer.roughness, layer.seed);

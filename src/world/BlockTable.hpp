@@ -81,6 +81,21 @@ enum class TextureRecipe : u8 {
     /// on alpha, exactly as the item icons below already are. See DESIGN.md 7.26.
     Torch,
 
+    /// A pane: transparent through the middle, with an opaque frame around the tile
+    /// and a highlight across one corner.
+    ///
+    /// **The frame is not decoration, it is the whole of how glass reads.** A tile
+    /// that is uniformly transparent draws nothing and a window becomes a hole -- and
+    /// a hole in a wall is what glass exists to *not* be. Vanilla's own glass is
+    /// drawn the same way and for the same reason: the edges are what tell you there
+    /// is something there.
+    ///
+    /// **The first meshed layer with transparent pixels.** Item icons already have
+    /// them and are discarded by `hud.frag` and `item.frag`; this is the first tile
+    /// that a terrain shader has to discard, which is why glass needed a pass of its
+    /// own rather than a texture of its own.
+    Glass,
+
     // -- item icons ------------------------------------------------------------
     //
     // **These layers are never meshed.** They live in the same texture array only
@@ -211,6 +226,20 @@ inline constexpr std::array kLayers{
     // first. Vanilla's torch flame is a warm near-white; this is that, kept bright
     // enough to read against the backdrop at cube scale.
     LayerInfo{"torch",        TextureRecipe::Torch,   0xFFFFD98Au, 0xFF6B5230u,  9.0f, 65u},
+
+    // Glass: an opaque frame around a pane that is discarded entirely.
+    //
+    // **The alpha here is binary because a cutout has no other kind.** The pass
+    // discards on alpha and does not blend, so a half-transparent pane would either
+    // be drawn solid or vanish -- there is no "faint" available. Vanilla's glass is
+    // the same shape of thing: what you see of a window is its edges, and the middle
+    // is a hole that happens to be in a wall.
+    //
+    // Blending it instead would mean the translucent pass, which sorts nothing and
+    // already has a note in section 8 saying a second translucent block is where that
+    // stops being survivable. A cutout needs no sorting, which is most of why glass
+    // is one.
+    LayerInfo{"glass",        TextureRecipe::Glass,   0xFFD6EBF2u, 0x00FFFFFFu,  0.0f, 71u},
 
     // -- item icons, transparent outside the shape ------------------------------
     // `argb` is the body and `argbSecondary` the shading or the handle. Roughness is
@@ -417,11 +446,31 @@ struct BlockInfo {
     ///
     /// Read by `BlockLight`, which spreads it, and by nothing else.
     ///
-    /// **Last field, and the rule that puts it here has now caught two bugs** -- see
-    /// the notes on `falls` and `fluidLevel`. Every `BlockInfo{...}` below is
-    /// positional, so a field inserted rather than appended silently reinterprets
-    /// every entry after it.
+    /// **The rule that puts new fields at the end has now caught three bugs** -- see
+    /// the notes on `falls` and `fluidLevel`, and this one. Every `BlockInfo{...}`
+    /// below is positional, so a field inserted rather than appended silently
+    /// reinterprets every entry after it.
     u8 luminance = 0;
+
+    /// Drawn in its own pass, with the tile's transparent pixels discarded.
+    ///
+    /// **The third thing a block can be, after opaque and fluid.** Until this existed
+    /// the mesher had exactly two passes and a block that was neither emitted no
+    /// faces at all -- so glass was not a texture problem, it was a block that could
+    /// not be drawn.
+    ///
+    /// It is a separate flag from `!opaque` rather than being derived from it,
+    /// because the two answer different questions and water needs them to differ:
+    /// water is not opaque and is not cutout, and glass is not opaque and is.
+    ///
+    /// **Why its own draw and not the opaque one**: an alpha test means `discard`,
+    /// and a fragment shader that can discard gives up early-Z for the whole draw it
+    /// is in. Putting glass in the opaque pass would pay that on every block of
+    /// terrain in the world to draw the handful of tiles that need it. Vanilla splits
+    /// the same way and calls the layer `cutout`.
+    ///
+    /// **Last field. Append, do not insert.**
+    bool cutout = false;
 };
 
 /// A block that draws the same layer on all six faces, which is most of them.
@@ -578,6 +627,22 @@ inline constexpr std::array kBlocks{
                              'T', false, 0.0f, {}, false, false, ToolKind::None,
                              ToolTier::None, 0, false, 14},
 
+    // -- glass ----------------------------------------------------------------
+    //
+    // **Not opaque and not a fluid, which is the combination that had nowhere to go
+    // until the cutout pass existed.** `opaque` false is what lets daylight through a
+    // window -- the sky-light fill reads that flag and nothing else (DESIGN.md 7.27),
+    // so a glazed room is a lit room with no extra machinery at all.
+    //
+    // **Drops nothing**, which is vanilla's: breaking glass without silk touch gives
+    // you nothing back, and silk touch does not exist here. Hardness 0.3, also
+    // vanilla's, and no tool tier -- a hand breaks it as fast as anything else does.
+    //
+    // The trailing `false, 0, true` is `fluidSource`, `luminance`, then `cutout`.
+    BlockInfo{"glass", false, layerOf("glass"), layerOf("glass"), layerOf("glass"),
+              'o', false, 0.3f, "air", false, false, ToolKind::None, ToolTier::None,
+              0, false, 0, true},
+
     // -- water ----------------------------------------------------------------
     // Not opaque, so it hides nothing behind it; a fluid, so it holds nothing up.
     // Unbreakable because a bucket is the only thing that removes water in vanilla
@@ -667,6 +732,14 @@ constexpr bool isStoneLike(BlockId id) {
 /// True for the blocks that fall when unsupported. See BlockInfo::falls.
 constexpr bool isFalling(BlockId id) {
     return id < kBlocks.size() && kBlocks[id].falls;
+}
+
+/// True for a block drawn in the cutout pass. See BlockInfo::cutout.
+///
+/// **Three categories, and they do not overlap**: opaque, fluid, cutout. A block
+/// that is none of them emits no faces, which is what glass was before this existed.
+constexpr bool isCutout(BlockId id) {
+    return id < kBlocks.size() && kBlocks[id].cutout;
 }
 
 /// True for a block that hides the face behind it. See BlockInfo::opaque.
