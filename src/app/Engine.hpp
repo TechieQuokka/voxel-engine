@@ -617,6 +617,31 @@ private:
     /// Moves anything the workers loaded into `m_furnaces`. Main thread, once a frame.
     void adoptLoadedFurnaces();
 
+    /// Columns that have just become Ready and have not been relit yet.
+    ///
+    /// **The same handoff as the furnaces above, for the same reason and one more.**
+    /// Block light is derived and therefore not saved, so a column arrives with its
+    /// torches and no light around them -- but relighting it writes into its
+    /// neighbours, which a worker owning one column has no right to touch. So the
+    /// worker records the position and the main thread does the flood.
+    ///
+    /// **Every column that arrives, not only the ones off disk.** A freshly generated
+    /// column next to a saved one has to receive that column's torch light, and
+    /// neither of the two can know which of them loaded first. `seedBlockLight` seeds
+    /// from the neighbours as well, so doing this on arrival covers both directions;
+    /// it is cheap because it asks each section's palette whether a torch is named in
+    /// it rather than reading the voxels.
+    std::mutex m_relightMutex;
+    std::vector<ChunkPos> m_relightQueue;
+
+    /// Floods block light through everything the workers just handed over, and marks
+    /// what moved for remeshing. Main thread, once a frame.
+    void relightArrivedColumns();
+
+    /// Records a column as needing block light. Called from a worker, after the
+    /// release store that makes the column Ready.
+    void queueRelight(ChunkPos column);
+
     /// Writes one column and the furnaces standing in it, if there is a store and
     /// the column was edited.
     void saveColumn(const Chunk& chunk);

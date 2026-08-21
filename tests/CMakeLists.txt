@@ -34,6 +34,7 @@ add_executable(mc_tests
   test_generator.cpp
   test_mesher.cpp
   test_skylight.cpp
+  test_block_light.cpp
   test_greedy_mesher.cpp
   test_raycast.cpp
   test_world_edit.cpp

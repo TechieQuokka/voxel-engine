@@ -71,6 +71,16 @@ enum class TextureRecipe : u8 {
     /// block cost a whole play session.
     Furnace,
 
+    /// A shaft with a flame on top, drawn up the middle of a dark tile.
+    ///
+    /// **The dark tile is the temporary part; the art on it is not.** A torch is not
+    /// a cube, and until Phase 10 gives the block real geometry this one is drawn on
+    /// six cube faces -- so the tile has to be filled rather than transparent, or the
+    /// cube would have holes in it. The shaft and flame sit where vanilla puts them,
+    /// so when the geometry lands the only change is that the backdrop is discarded
+    /// on alpha, exactly as the item icons below already are. See DESIGN.md 7.26.
+    Torch,
+
     // -- item icons ------------------------------------------------------------
     //
     // **These layers are never meshed.** They live in the same texture array only
@@ -195,6 +205,12 @@ inline constexpr std::array kLayers{
     // lit state would be a lie in four of them.
     LayerInfo{"furnace_top",  TextureRecipe::Grain,   0xFF7A7A7Au, 0u,          22.0f, 63u},
     LayerInfo{"furnace_side", TextureRecipe::Furnace, 0xFF7A7A7Au, 0xFF2B2B2Du, 22.0f, 64u},
+
+    // The flame is the primary colour and the shaft the secondary, which is the same
+    // order every two-colour recipe here uses: the thing that identifies the block
+    // first. Vanilla's torch flame is a warm near-white; this is that, kept bright
+    // enough to read against the backdrop at cube scale.
+    LayerInfo{"torch",        TextureRecipe::Torch,   0xFFFFD98Au, 0xFF6B5230u,  9.0f, 65u},
 
     // -- item icons, transparent outside the shape ------------------------------
     // `argb` is the body and `argbSecondary` the shading or the handle. Roughness is
@@ -390,6 +406,22 @@ struct BlockInfo {
     /// water is affordable: a conservative fluid would need per-body global state,
     /// which a chunk-streaming world cannot cheaply keep. RESEARCH.md 7.1.
     bool fluidSource = false;
+
+    /// How much block light this emits, 0 to 15. Vanilla's own numbers: a torch is
+    /// 14, and every block in this table that is not a torch is 0.
+    ///
+    /// **Zero for everything generated, and that is what makes the channel free.**
+    /// No ore, no stone and no tree emits, so an untouched world's block light is a
+    /// uniform zero `LightArray` in every section, holding no storage. The channel
+    /// only starts costing memory where a player has put a torch.
+    ///
+    /// Read by `BlockLight`, which spreads it, and by nothing else.
+    ///
+    /// **Last field, and the rule that puts it here has now caught two bugs** -- see
+    /// the notes on `falls` and `fluidLevel`. Every `BlockInfo{...}` below is
+    /// positional, so a field inserted rather than appended silently reinterprets
+    /// every entry after it.
+    u8 luminance = 0;
 };
 
 /// A block that draws the same layer on all six faces, which is most of them.
@@ -527,6 +559,25 @@ inline constexpr std::array kBlocks{
                                layerOf("furnace_top"), 'F', false, 3.5f, {}, false,
                                false, ToolKind::Pickaxe, ToolTier::Wood},
 
+    // **The first block that gives rather than takes.** Everything above this either
+    // holds the player up or is carried; a torch changes what can be seen, and it is
+    // the reason a room with a roof on it is somewhere you can be. The trailing 14 is
+    // `luminance`, vanilla's own number for a torch.
+    //
+    // Hardness 0: vanilla breaks a torch instantly and with any tool, including none.
+    //
+    // **Opaque, and that is the deviation.** A vanilla torch is a thin cross that
+    // hides nothing; this one is a full cube, because the mesher draws cubes and
+    // nothing else -- a non-opaque block emits no faces at all and the light would
+    // come from something invisible. So it blocks sky light and casts a shadow it has
+    // no business casting, and that is the price of having light at all before the
+    // geometry it wants. **Phase 10 flips this one field to `false` and gives it a
+    // shape; nothing else about the block, the recipe or the light changes.** The
+    // choice and its cost are written up in DESIGN.md 7.26.
+    BlockInfo{"torch", true, layerOf("torch"), layerOf("torch"), layerOf("torch"),
+                             'T', false, 0.0f, {}, false, false, ToolKind::None,
+                             ToolTier::None, 0, false, 14},
+
     // -- water ----------------------------------------------------------------
     // Not opaque, so it hides nothing behind it; a fluid, so it holds nothing up.
     // Unbreakable because a bucket is the only thing that removes water in vanilla
@@ -600,6 +651,7 @@ inline constexpr BlockId kOakPlanksBlock = blockIdOf("oak_planks");
 /// against this to decide whether a right click opens a window or places a block.
 inline constexpr BlockId kCraftingTableBlock = blockIdOf("crafting_table");
 inline constexpr BlockId kFurnaceBlock = blockIdOf("furnace");
+inline constexpr BlockId kTorchBlock     = blockIdOf("torch");
 inline constexpr BlockId kWaterBlock     = blockIdOf("water");
 
 /// Sea level. Vanilla's 63 is the first block *above* the water surface, so the
@@ -636,6 +688,17 @@ inline constexpr u8 kMaxFluidLevel = 7;
 constexpr bool isFluidSource(BlockId id) {
     return id < kBlocks.size() && kBlocks[id].fluidSource;
 }
+
+/// How much block light this emits, 0 to 15. See BlockInfo::luminance.
+constexpr u8 luminanceOf(BlockId id) {
+    return id < kBlocks.size() ? kBlocks[id].luminance : u8{0};
+}
+
+/// True for a block that lights its surroundings.
+constexpr bool isEmitter(BlockId id) { return luminanceOf(id) != 0; }
+
+/// The brightest any block light can be, and the level a source cell holds.
+inline constexpr u8 kMaxLight = 15;
 
 /// The *flowing* water block at `level`, or `kAirBlock` past `kMaxFluidLevel`.
 ///

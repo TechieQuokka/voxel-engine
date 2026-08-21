@@ -126,6 +126,17 @@ inline constexpr std::array kRecipes{
            "cobblestone", "", "",
            "stick",       "", ""),
 
+    // **Coal on a stick makes four torches**, which is vanilla's recipe and fits in
+    // the player's own 2x2 -- so light does not wait on finding a crafting table.
+    // That placement is deliberate: a player who has dug far enough to want a torch
+    // has coal and has a stick, and sending them back to a bench for it would put the
+    // one thing that makes a cave enterable behind the one thing that is hard to
+    // find. See the seventh session in HANDOFF.md for what that costs.
+    shaped(itemIdOf("torch"), 4,
+           "coal",  "", "",
+           "stick", "", "",
+           "",      "", ""),
+
     // **The furnace: eight cobblestone in a ring.** Vanilla's, and the shape matters
     // -- a full 3x3 of cobblestone is not a furnace, and the empty middle is what a
     // player has to notice.

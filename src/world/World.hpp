@@ -1,5 +1,6 @@
 #pragma once
 
+#include "world/BlockLight.hpp"
 #include "world/Chunk.hpp"
 #include "world/Neighbourhood.hpp"
 
@@ -169,6 +170,13 @@ public:
             fn(*chunk);
         }
     }
+
+    /// Marks every section that has to be remeshed because block light moved in one
+    /// of `touched`, which is each of them plus the twenty-six around it.
+    ///
+    /// Public because relighting a column that has just loaded happens outside an
+    /// edit -- `Engine` seeds it and then has to say what changed.
+    void dirtyAround(const LightTouch& touched);
 
 private:
     using ChunkMap = std::unordered_map<ChunkPos, std::unique_ptr<Chunk>, ChunkPosHash>;

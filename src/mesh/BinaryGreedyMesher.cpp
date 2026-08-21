@@ -3,6 +3,7 @@
 #include "core/Profile.hpp"
 #include "world/BlockRegistry.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstring>
@@ -182,8 +183,18 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
     std::memset(s.light.data(), 0, s.light.size());
     s.anyFluid = false;
 
-    const bool centerLightUniform = center->skyLightArray().isUniform();
-    const u8 centerLightLevel = center->skyLightArray().uniformLevel();
+    // **Sky and block light collapse to one number here and nowhere else.**
+    // DESIGN.md 3.7: the quad's sixteen light bits are full, so a torch does not
+    // widen the word -- the two channels are combined at mesh time with `max` and the
+    // shader is handed exactly what it always was. What that costs is the tint, and
+    // only the tint: a torch-lit wall comes out bright but not warm.
+    //
+    // Uniform only when *both* channels are, since the max of a uniform array and a
+    // varying one still varies. `Section::light` does the max per voxel for the rest.
+    const bool centerLightUniform =
+        center->skyLightArray().isUniform() && center->blockLightArray().isUniform();
+    const u8 centerLightLevel = std::max(center->skyLightArray().uniformLevel(),
+                                         center->blockLightArray().uniformLevel());
 
     for (i32 y = 0; y < kN; ++y) {
         for (i32 z = 0; z < kN; ++z) {
@@ -198,7 +209,7 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
                     s.anyFluid = true;
                 }
                 s.light[paddedIndex(x, y, z)] =
-                    centerLightUniform ? centerLightLevel : center->skyLight(x, y, z);
+                    centerLightUniform ? centerLightLevel : center->light(x, y, z);
             }
         }
     }
@@ -231,8 +242,10 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
                     blocksUniform && registry.isOpaque(section->uniformBlock());
                 const bool fluidFill =
                     blocksUniform && registry.isFluid(section->uniformBlock());
-                const bool lightUniform = section->skyLightArray().isUniform();
-                const u8 lightLevel = section->skyLightArray().uniformLevel();
+                const bool lightUniform = section->skyLightArray().isUniform()
+                                          && section->blockLightArray().isUniform();
+                const u8 lightLevel = std::max(section->skyLightArray().uniformLevel(),
+                                               section->blockLightArray().uniformLevel());
 
                 if (blocksUniform && !opaqueFill && !fluidFill && lightUniform
                     && lightLevel == 0) {
@@ -264,7 +277,7 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
                                     ? static_cast<u8>(1u + fluidLevelOf(neighbourBlock))
                                     : u8{0};
                             s.light[paddedIndex(x, y, z)] =
-                                lightUniform ? lightLevel : section->skyLight(lx, ly, lz);
+                                lightUniform ? lightLevel : section->light(lx, ly, lz);
                         }
                     }
                 }

@@ -108,6 +108,26 @@ public:
     }
     bool pinned() const noexcept { return m_pins.load(std::memory_order_acquire) != 0; }
 
+    /// Whether any block in this column emits light.
+    ///
+    /// **A cached answer to a question the streaming path would otherwise ask by
+    /// scanning.** Every column that arrives has to be relit, and relighting reads
+    /// the nine columns around it -- so without this the main thread walks a hundred
+    /// and eight section palettes per column streamed in, to discover that a world
+    /// nobody has put a torch in has no torches in it. Set by the worker that filled
+    /// the column, which is the thread that has just touched every voxel anyway.
+    ///
+    /// Atomic for the same reason `m_state` is: written by a worker, read by the
+    /// main thread. Conservative in one direction only -- it goes true when a torch
+    /// is placed and is never cleared, so at worst it costs a flood that finds
+    /// nothing. A stale false would lose light, and nothing sets it false.
+    bool hasEmitter() const noexcept {
+        return m_hasEmitter.load(std::memory_order_acquire);
+    }
+    void markHasEmitter() noexcept {
+        m_hasEmitter.store(true, std::memory_order_release);
+    }
+
     usize memoryUsage() const;
 
 private:
@@ -119,6 +139,7 @@ private:
     std::atomic<ChunkState> m_state{ChunkState::Empty};
     std::atomic<u16> m_dirty{0};
     std::atomic<u32> m_pins{0};
+    std::atomic<bool> m_hasEmitter{false};
     bool m_edited = false;
 };
 

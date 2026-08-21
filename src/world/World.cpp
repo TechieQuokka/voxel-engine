@@ -1,6 +1,8 @@
 #include "world/World.hpp"
 
 #include "core/Profile.hpp"
+#include "world/BlockLight.hpp"
+#include "world/BlockTable.hpp"
 #include "world/SkyLight.hpp"
 
 #include <algorithm>
@@ -150,6 +152,35 @@ void dirtySection(Chunk* chunk, i32 sectionY) {
 
 } // namespace
 
+void World::dirtyAround(const LightTouch& touched) {
+    // Each moved section, plus the twenty-six around it.
+    //
+    // **The ring is not caution, it is the padded grid.** A section's mesh is built
+    // over a 34-cube that reaches one voxel into every neighbour, light included, so
+    // a cell that changed on a section wall is read by the section on the other side
+    // of it -- and by the diagonal ones too, because smooth lighting averages four
+    // cells per corner. Dirtying only what moved would leave a seam of stale
+    // brightness exactly along the section boundaries, which is the most visible
+    // place it could possibly be.
+    //
+    // A torch spans at most two sections on each axis, so this is a few dozen marks
+    // on a path that runs once per click. `markSectionDirty` is idempotent, so the
+    // overlap between neighbouring entries costs nothing but the lookup.
+    for (const SectionPos& moved : touched.sections) {
+        for (i32 dz = -1; dz <= 1; ++dz) {
+            for (i32 dx = -1; dx <= 1; ++dx) {
+                Chunk* column = find(ChunkPos{moved.x + dx, moved.z + dz});
+                if (column == nullptr) {
+                    continue;
+                }
+                for (i32 dy = -1; dy <= 1; ++dy) {
+                    dirtySection(column, moved.y + dy);
+                }
+            }
+        }
+    }
+}
+
 World::EditStatus World::setBlock(BlockPos pos, BlockId block) {
     MC_PROFILE_SCOPE_N("World::setBlock");
 
@@ -177,10 +208,43 @@ World::EditStatus World::setBlock(BlockPos pos, BlockId block) {
     const i32 ly = blockToLocalCoord(pos.y);
     const i32 lz = blockToLocalCoord(pos.z);
 
-    if (section->get(lx, ly, lz) == block) {
+    const BlockId previous = section->get(lx, ly, lz);
+    if (previous == block) {
         return EditStatus::Unchanged;
     }
+
+    // **The block light flood writes into as many as nine columns, so all nine have
+    // to be checked, not just this one.** Sky light never leaves its column and the
+    // pin above covers it; block light reaches fifteen blocks across a thirty-two
+    // wide column, so it crosses a wall from almost anywhere. Writing into a pinned
+    // neighbour is the same use-after-free the pin exists to prevent -- a mesher is
+    // reading its `LightArray`, and raising a cell out of the uniform state
+    // reallocates it.
+    //
+    // Asked only when there is light in reach to move, which in a world with no
+    // torches in it is never. See `blockLightCanMove`.
+    const bool lightMoves = blockLightCanMove(*this, pos, previous, block);
+    if (lightMoves) {
+        const ChunkPos here = chunk->position();
+        for (i32 dz = -1; dz <= 1; ++dz) {
+            for (i32 dx = -1; dx <= 1; ++dx) {
+                const Chunk* neighbour = find(ChunkPos{here.x + dx, here.z + dz});
+                if (neighbour != nullptr && neighbour->pinned()) {
+                    return EditStatus::Busy;
+                }
+            }
+        }
+    }
+
     section->set(lx, ly, lz, block);
+
+    // Sticky, and never cleared when the last torch in a column is broken. Clearing
+    // it would mean proving no other section holds one, and being wrong in that
+    // direction loses light; being wrong in this one costs a flood that finds
+    // nothing. See `Chunk::hasEmitter`.
+    if (isEmitter(block)) {
+        chunk->markHasEmitter();
+    }
 
     // From here the column is no longer what the generator would produce, so it has
     // to survive being unloaded. Set after the `Unchanged` return above: placing a
@@ -209,7 +273,22 @@ World::EditStatus World::setBlock(BlockPos pos, BlockId block) {
         }
     }
 
-    // (3) Light. Recomputed for the whole column rather than incrementally: the
+    // (3) Block light, which is incremental and crosses columns.
+    //
+    // **The opposite choice from sky light below, and for a reason that is about
+    // correctness rather than speed.** Sky light is recomputed wholesale because one
+    // block can move a column's heightmap by any amount; block light cannot be
+    // recomputed that way at all, because a torch's fifteen-block reach does not fit
+    // inside the thirty-two-wide column the whole-column pass is built around. So it
+    // floods outward through the loaded set instead, and reports the sections it
+    // moved as positions rather than as a mask over one column.
+    if (lightMoves) {
+        LightTouch touched;
+        updateBlockLight(*this, pos, previous, block, touched);
+        dirtyAround(touched);
+    }
+
+    // (4) Sky light. Recomputed for the whole column rather than incrementally: the
     // vertical fill depends on the column's heightmap, which one block can move by
     // any amount, and a full recompute measures about 0.5 ms -- per click, on a
     // path that is not the frame loop. An incremental relight is the optimisation

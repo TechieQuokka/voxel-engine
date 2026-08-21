@@ -410,6 +410,46 @@ constexpr IconMask kStickArt{
     0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
 };
 
+/// The torch's shaft: four pixels wide, running from the bottom of the tile to just
+/// under the flame. Upright rather than diagonal like `kStickArt`, because this one
+/// is drawn on a wall of the world and not in a slot.
+constexpr IconMask kTorchShaftArt{
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0000001111000000, 0b0000001111000000, 0b0000001111000000, 0b0000001111000000,
+    0b0000001111000000, 0b0000001111000000, 0b0000001111000000, 0b0000001111000000,
+};
+
+/// The flame, sitting on top of the shaft and one pixel wider than it on each side.
+///
+/// **Drawn second and therefore over the shaft.** Same reasoning as the tools: an
+/// overlapping pixel belongs to the flame, so the joint reads as the flame burning on
+/// the end of the stick rather than the stick passing through it.
+constexpr IconMask kTorchFlameArt{
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000110000000,
+    0b0000001111000000, 0b0000011111100000, 0b0000011111100000, 0b0000001111000000,
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+    0b0000000000000000, 0b0000000000000000, 0b0000000000000000, 0b0000000000000000,
+};
+
+/// What fills the tile behind the torch until the block stops being a cube.
+///
+/// Dark, and near enough to neutral that it reads as absence rather than as a
+/// material. It is the one part of this tile that Phase 10 deletes.
+constexpr u32 kTorchBackdropArgb = 0xFF2A2A2Eu;
+
+/// A torch: the backdrop, then the shaft, then the flame over it.
+///
+/// See `TextureRecipe::Torch` for why there is a backdrop at all and what happens to
+/// it. The shaft and the flame are where vanilla puts them, so the art outlives the
+/// cube it is currently painted on.
+void generateTorch(std::vector<u8>& out, u32 layer, u32 flameArgb, u32 woodArgb,
+                   f32 roughness, u32 seed) {
+    generateGrain(out, layer, kTorchBackdropArgb, roughness * 0.5f, seed + 3u);
+    drawMask(out, layer, kTorchShaftArt, woodArgb, roughness * 0.6f, seed + 1u);
+    drawMask(out, layer, kTorchFlameArt, flameArgb, roughness * 0.4f, seed + 2u);
+}
+
 /// A tool: the shared shaft in the handle colour, then the head over it in the tier
 /// colour. Head second so an overlapping pixel belongs to the head, which is what
 /// makes the joint read as the head being mounted rather than the shaft passing
@@ -512,6 +552,10 @@ BlockTextures::BlockTextures() {
         case TextureRecipe::Nugget:
             generateNugget(pixels, index, layer.argb, layer.argbSecondary,
                            layer.roughness, layer.seed);
+            break;
+        case TextureRecipe::Torch:
+            generateTorch(pixels, index, layer.argb, layer.argbSecondary,
+                          layer.roughness, layer.seed);
             break;
         case TextureRecipe::Stick:
             drawMask(pixels, index, kStickArt, layer.argb, layer.roughness, layer.seed);

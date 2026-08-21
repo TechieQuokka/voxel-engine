@@ -1,6 +1,7 @@
 add_library(mc_world STATIC
   BlockRegistry.cpp
   SkyLight.cpp
+  BlockLight.cpp
   Chunk.cpp
   ChunkCodec.cpp
   RegionFile.cpp

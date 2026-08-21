@@ -3,6 +3,10 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <array>
+#include <string_view>
+
 using namespace mc;
 
 TEST_CASE("break time follows vanilla hardness") {
@@ -221,11 +225,43 @@ TEST_CASE("every ore is harder in deepslate than in stone") {
 }
 
 TEST_CASE("every block that can be placed or generated has a hardness") {
-    // Air is the one exception. A block left at the default 0 would break the
-    // instant it was touched, which is the kind of thing that only shows up as
-    // "why did that vanish" in play.
+    // A block left at the default 0 would break the instant it was touched, which is
+    // the kind of thing that only shows up as "why did that vanish" in play.
+    //
+    // **The exceptions are named rather than the check being dropped.** Vanilla has
+    // blocks whose hardness genuinely is zero and which genuinely do vanish on
+    // contact -- a torch is the first one here. Naming them keeps the check able to
+    // catch the next block that arrives having simply forgotten the field, which is
+    // the whole reason it exists.
+    constexpr std::array kInstantBreak{
+        std::string_view{"air"},
+        std::string_view{"torch"},
+    };
+
     for (usize id = 1; id < kBlocks.size(); ++id) {
-        CAPTURE(kBlocks[id].name);
+        const std::string_view name = kBlocks[id].name;
+        if (std::find(kInstantBreak.begin(), kInstantBreak.end(), name)
+            != kInstantBreak.end()) {
+            continue;
+        }
+        CAPTURE(name);
         CHECK(kBlocks[id].hardness != 0.0f);
+    }
+}
+
+TEST_CASE("a torch emits vanilla's light level and nothing else emits at all") {
+    CHECK(luminanceOf(kTorchBlock) == 14);
+    CHECK(isEmitter(kTorchBlock));
+
+    // **Every other block is dark, and that is what makes the channel free.** A
+    // generated world has no emitter in it anywhere, so its block light is a uniform
+    // zero array in every section and holds no storage. The day something generated
+    // does emit -- lava -- this check is what says so.
+    for (usize id = 0; id < kBlocks.size(); ++id) {
+        if (id == kTorchBlock) {
+            continue;
+        }
+        CAPTURE(kBlocks[id].name);
+        CHECK(luminanceOf(static_cast<BlockId>(id)) == 0);
     }
 }

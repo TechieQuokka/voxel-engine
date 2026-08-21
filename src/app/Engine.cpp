@@ -581,6 +581,65 @@ void Engine::adoptLoadedFurnaces() {
     }
 }
 
+void Engine::relightArrivedColumns() {
+    MC_PROFILE_SCOPE_N("Engine::relightArrivedColumns");
+
+    std::vector<ChunkPos> arrived;
+    {
+        const std::lock_guard<std::mutex> guard(m_relightMutex);
+        if (m_relightQueue.empty()) {
+            return;
+        }
+        arrived.swap(m_relightQueue);
+    }
+
+    // **Skipped while anything in reach is pinned, and re-queued rather than
+    // dropped.** The flood writes light into the eight columns around this one, and a
+    // mesher holding any of them is reading the very `LightArray` it would
+    // reallocate. This is the same rule `World::setBlock` follows; the difference is
+    // that there is no player waiting on the answer, so it simply comes back next
+    // frame instead of reporting Busy.
+    std::vector<ChunkPos> deferred;
+    LightTouch touched;
+
+    for (const ChunkPos& column : arrived) {
+        // **The gate that keeps this off the streaming path.** Nine flag reads, and
+        // in a world nobody has put a torch in they are all false and the column
+        // costs nothing further. Without it every column that streams in walks a
+        // hundred and eight section palettes to learn the same thing -- which is
+        // measurable in the warm-up, since a render distance of 16 streams in a
+        // thousand of them.
+        bool anyEmitter = false;
+        bool blocked = false;
+        for (i32 dz = -1; dz <= 1; ++dz) {
+            for (i32 dx = -1; dx <= 1; ++dx) {
+                const Chunk* neighbour = m_world->find(ChunkPos{column.x + dx, column.z + dz});
+                if (neighbour == nullptr) {
+                    continue;
+                }
+                anyEmitter = anyEmitter || neighbour->hasEmitter();
+                blocked = blocked || neighbour->pinned();
+            }
+        }
+        if (!anyEmitter) {
+            continue;
+        }
+        if (blocked) {
+            deferred.push_back(column);
+            continue;
+        }
+
+        touched.clear();
+        seedBlockLight(*m_world, column, touched);
+        m_world->dirtyAround(touched);
+    }
+
+    if (!deferred.empty()) {
+        const std::lock_guard<std::mutex> guard(m_relightMutex);
+        m_relightQueue.insert(m_relightQueue.end(), deferred.begin(), deferred.end());
+    }
+}
+
 void Engine::generateColumnJob(void* context, u64 payload) {
     MC_PROFILE_SCOPE_N("generateColumnJob");
 
@@ -613,16 +672,35 @@ void Engine::generateColumnJob(void* context, u64 payload) {
             // its timers moved.
             chunk->markEdited();
 
+            // Before Ready, so the flag is set by the time anything can look at the
+            // column. **This is the branch that matters**: a torch only ever gets
+            // into the world by being placed, so a column off disk is the only one
+            // that can arrive already holding one.
+            noteEmitters(*chunk);
+
             // The same tail `generateColumn` ends on, so a loaded column and a
             // generated one arrive in exactly the same state.
             chunk->markAllDirty();
             chunk->setState(ChunkState::Ready);
+            engine->queueRelight(chunk->position());
             return;
         }
     }
 
     // Sets the column Ready and marks every section dirty when it finishes.
     engine->m_generator->generateColumn(*chunk);
+
+    // Always false today -- nothing the generator places emits. Asked anyway, because
+    // the day something does (lava) the cost of having forgotten is light that never
+    // appears, and the check is twelve palette scans on a worker that has just
+    // written every voxel in the column.
+    noteEmitters(*chunk);
+    engine->queueRelight(chunk->position());
+}
+
+void Engine::queueRelight(ChunkPos column) {
+    const std::lock_guard<std::mutex> guard(m_relightMutex);
+    m_relightQueue.push_back(column);
 }
 
 void Engine::meshSectionJob(void* context, u64 payload) {
@@ -1914,6 +1992,12 @@ void Engine::stepFrame(f64 deltaTime) {
     // Before the tick, so a furnace that came off disk this frame burns on this
     // frame's tick rather than sitting cold until the next one.
     adoptLoadedFurnaces();
+
+    // Before submitting, for the same reason the edit path relights before it
+    // remeshes: a column that arrives holding a torch has to have the light in it
+    // before its sections are handed to a mesher, or it is drawn dark once and only
+    // corrected when something else happens to dirty it.
+    relightArrivedColumns();
 
     // Before submitting, so a block broken this frame is remeshed this frame rather
     // than sitting visibly intact until the next one.
