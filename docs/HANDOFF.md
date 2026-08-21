@@ -23,7 +23,8 @@ no use for.
 |---|---|
 | **Performance** — phases 0-8 | 0-3 done. **4 in progress**: 4a-4c built, **4d (biomes) is the last step and is *not* next** — it still has the unresolved input in section 6. 5-8 untouched. |
 | **Interaction** — 9-15 | **Done**, plus trees, oceans, flowing water, held placement and a real player box. **11 (persistence) is built** -- DESIGN.md 7.24. |
-| **Crafting** — 16-19 | **16 and 17 done** -- the window layer, the crafting table, and the furnace. 18-19 open, below. |
+| **Crafting** — 16-19 | **16, 17 and 18a done** -- the window layer, the crafting table, the furnace, and **block light with a torch you can craft** (DESIGN.md 7.26). 18b (the torch's real shape) and 19 open, below. |
+| **Building** — the current direction | Light is in. **Doors, glass, the sneak edge-stop and non-cube geometry are next, in that order** -- see section 1.1. |
 
 **The world survives being closed now, and the player does not.** Edited columns and
 their furnaces go to disk on unload and on exit; position, inventory, health and the
@@ -39,8 +40,40 @@ is not a contradiction.
 | | Next up | Blocked on |
 |---|---|---|
 | **17** | Crafting bench, **furnace and smelting**, iron/diamond tiers, durability | a **second UI window** |
-| **18** | Torches and block light | a torch is not a cube (Phase 10 geometry) |
+| **18a** | ~~Torches and block light~~ | **done** -- shipped with a cube torch, DESIGN.md 7.26 |
+| **18b** | The torch's real shape | Phase 10 geometry. One field flips: `opaque` to false |
 | **19** | Mobs, combat, weapons, armour | **mobs do not exist at all** |
+
+### 1.1 Building is the direction now, and light was the first thing in the way
+
+**Building was named the core, and the first question turned out not to be about
+building.** You could already lay a floor, raise walls and roof them; the moment the
+roof closed, the inside was absolutely black. That is not a thing that looks wrong,
+it is a place you cannot enter -- so it went first, ahead of everything else on this
+list. DESIGN.md 7.26 has the whole account.
+
+The rest of the list, in the order a builder hits it:
+
+| | What | Why here | Size |
+|---|---|---|---|
+| **1** | ~~Block light~~ | **Done.** | -- |
+| **2** | **A door** | You cannot close a house without one. Today it is a hole, or a block broken and replaced every time you go in | medium |
+| **3** | **Glass** | Windows. Needs a **third mesher pass** -- there are exactly two today, opaque and fluid, and a block that is neither emits no faces. `BlockInfo::opaque` has said "and (later) glass" since before any of this | medium |
+| **4** | **Sneak stops you at an edge** | You fall off your own roof. `kSneakSpeed` changes speed and nothing else; vanilla's edge-stop is missing | **small** |
+| **5** | **Phase 10 non-cube geometry** | Stairs, slabs, fences, panes -- and the torch's real shape. **This is not a prerequisite, it is the building vocabulary**, and it is why 18b sits behind it | large |
+
+**4 is small and pure profit** -- worth doing out of order if a session is short.
+
+**Two design decisions were made on 2026-08-21 and are worth knowing before
+revisiting any of this:**
+
+- **Building is being treated as shelter, not as expression.** That is what put light
+  first. If it flips to expression, item 5 moves to the top and 2-4 matter less.
+- **No day/night cycle.** The whole lighting design rests on sky light being static
+  -- DESIGN.md 3.7 says so explicitly, and `max(sky, block)` is exactly right only
+  because outdoors is always 15. **Adding a cycle makes sky light dynamic and means
+  relighting the world continuously**, which is the one change that would make the
+  current design expensive. Decide it before building on top of the light, not after.
 
 **17's real content is the furnace, not the bench.** Vanilla's harvest tiers are in the
 block table already — iron, copper and lapis need a stone pickaxe; gold, redstone and
@@ -98,9 +131,15 @@ carrying as method rather than as history:
 
 ### Where to resume
 
-**Nothing is half-finished.** 350 tests, asan passes. **tsan is clean** over twelve
-seconds of the running app, re-run on 2026-08-19 after persistence -- twice, once
-writing and once loading, because the two exercise different halves of the store.
+**Nothing is half-finished.** 365 tests, asan passes. **tsan is clean** over twelve
+seconds of the running app, re-run on 2026-08-21 after block light -- which added a
+worker-to-main handoff (`m_relightQueue`), and the tests alone do not prove one.
+
+> **Nobody has played block light yet.** It is built, tested and measured, and what
+> no test in this repository can answer is whether a lit room reads as lit -- or
+> whether a cube torch is legible enough to place on purpose. **That is the first
+> thing to do, and it is the whole reason 18b exists as a separate item.** Craft a
+> torch (coal on a stick, in your own 2x2), dig in, and see.
 
 > **The asan preset had stopped building again**, on `-Wsign-conversion` in
 > `mesh/Quad.hpp:98` -- `fluidDrop`, from the water-surface commit. Fixed on
@@ -420,6 +459,11 @@ src/world/              pure data; knows nothing about rendering
   BlockTable   — **every block type and texture layer; edit this to add a block**
   BlockRegistry— lookup over that table, and nothing else
   SkyLight     — the daylight flood fill, per column; reports what it changed
+  BlockLight   — the torch flood fill, **in world space across columns**, because a
+                 torch reaches 15 blocks and a column is 32 wide. Add and remove
+                 passes, the `blockLightCanMove` gate that keeps it off the digging
+                 path, and `noteEmitters`/`Chunk::hasEmitter`, which keep it off the
+                 streaming path. DESIGN.md 7.26
   Raycast      — voxel DDA; aiming, and the third-person camera's collision
   ItemEntities — dropped blocks: gravity, merging, despawn. The first non-voxel
                  thing that exists in the world. Carries `PickupVolume`, which is
@@ -495,6 +539,19 @@ FastNoise2 are all linked `PRIVATE` so their types cannot appear in public heade
 
 Learned the hard way; all of them cost real time.
 
+- **`seedBlockLight` silently does nothing unless `Chunk::hasEmitter()` is true.**
+  That is the gate that keeps relighting off the streaming path -- nine flag reads
+  per arriving column instead of 108 palette scans -- and it means **writing a torch
+  straight into a section is not enough to make it light anything.** The worker sets
+  the flag via `noteEmitters` before publishing the column; anything else that writes
+  voxels directly, including a test, has to do the same. Two tests in
+  `test_block_light.cpp` caught this the moment the gate landed, and they now assert
+  the ordering on purpose rather than just working around it.
+- **`BlockInfo`'s fields are positional and new ones go at the *end*.** This has now
+  caught three bugs -- `falls`, `fluidLevel`, and `luminance` would have been the
+  third. Every entry in `kBlocks` that spells itself out rather than going through
+  `uniformBlock` shifts meaning if a field is inserted rather than appended. The
+  comments on those three fields say so at the field; believe them.
 - **`packed` is a reserved keyword in GLSL.** The error points at the assignment
   operator, not at the name.
 - **A back face samples its texture mirrored unless you say otherwise.** The texture

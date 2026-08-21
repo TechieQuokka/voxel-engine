@@ -2,7 +2,9 @@
 
 > Status: **Implemented through Phase 4c.** Phases 0-3 are complete and Phase 4
 > (terrain generation) is in progress; results and measurements are in section 7.
-> Last updated: 2026-08-11.
+> Interaction 9-15, crafting 16-17 and persistence 11 are built, and **18a (block
+> light) landed on 2026-08-21** — see 7.26.
+> Last updated: 2026-08-21.
 >
 > **The scope was widened on 2026-08-11** — see the note below. Everything above
 > section 7 predates that decision and still holds; the phase plan in 7 is what
@@ -3453,6 +3455,131 @@ has ever caught either in this project is someone playing it.
 
 ---
 
+### 7.26 Phase 18a — block light, and a room you can be in
+
+Building was named the next thing to work on, and the first question a builder asks
+turned out not to be about building at all. You can lay a floor, raise walls and put
+a roof on today; the moment the roof closes, the inside is **absolutely black**,
+because sky light was the only light there was. A house was not a thing that looked
+wrong, it was a place that could not be entered.
+
+So the light came first, ahead of doors, glass, stairs and the sneak that stops you
+walking off your own roof. All four of those are things you discover *while standing
+inside*, and none of them can be found in a room nobody can see.
+
+#### What was already decided
+
+Almost everything. 3.7 settled the hard part while planning Phase 18: the 64-bit quad
+is exactly full, so sky and block light **combine into the sixteen light bits it
+already carries** with `max` taken at mesh time, rather than the word widening to 128
+bits. That was written before any of this existed and it held without amendment —
+no quad change, no shader change, and `chunk.vert` reads exactly what it always did.
+
+What that costs is the tint, and only the tint. A torch-lit wall is bright but not
+warm, and recovering the warmth means `v_light` gains a channel, which is where the
+sixteen bits would have had to come from after all.
+
+#### The one thing 3.7 did not anticipate: block light cannot be column-local
+
+`computeSkyLight` works on a flat buffer covering exactly one column and **stops at
+the column walls**, documenting the seam as acceptable. It is acceptable, for a
+reason specific to sky: the vertical fill depends only on that column's own
+heightmap, so open sky, the surface and everything above it are exact, and the error
+is confined to cave interiors within about fifteen blocks of a border.
+
+Block light has no such excuse, and the arithmetic says so plainly. A column is 32
+blocks wide and a torch reaches 15, so a torch has to stand in a **3x3 patch at the
+exact centre of a column** for its light to stay inside one — nine positions out of
+1,024. The other 99% would show a straight vertical line of darkness through the
+middle of a lit room, and a player puts a torch where a player wants a torch.
+
+So block light is not a second column pass. `world/BlockLight.cpp` floods in **world
+space through the loaded set**, where a neighbouring column is simply the next
+lookup, and reports what it moved as a list of `SectionPos` rather than as a mask
+over one column — a per-column mask cannot describe the answer. Two passes, both
+bucket-queued 15 down to 1 exactly as the sky pass is, so every cell settles on its
+first write:
+
+- **Add**, from a new emitter or from the cells around a wall that just came down.
+- **Remove**, from a cell that lost what it was holding — then re-add from the
+  survivors at the edge of the hole. The test that separates the two is one
+  comparison: a neighbour *dimmer* than the cell going dark could only have been lit
+  through it and goes too; one as bright or brighter has its own source and becomes a
+  seed. **That comparison is what stops breaking one torch from blacking out a room a
+  second torch is also lighting**, which is the case a naive removal gets wrong.
+
+#### Three things that cost real work and are not visible
+
+**The pin check had to widen, and then had to be kept off the digging path.** The
+flood writes into as many as nine columns, and `LightArray::set` reallocates when a
+cell leaves the uniform state — so a mesher holding any of those nine is the same
+use-after-free the pin exists to prevent. But breaking *any* solid block changes
+whether that cell blocks light, so the edit cannot be ruled out on block types alone,
+and asking all nine columns on every click would put a `Busy` retry in front of
+ordinary digging. `blockLightCanMove` is the O(1) answer: seven light reads, and a
+neighbourhood with no block light in it cannot move any. In a world nobody has put a
+torch in, that is every edit there is.
+
+**Relighting had to move to the main thread, and then had to be gated.** Block light
+is derived, so it is not saved — a column comes back from disk with its torches and
+no light around them. But relighting writes into neighbours, which a worker owning
+one column has no right to touch, so the worker records the position and the main
+thread floods it. And it has to happen for **every** column that arrives, not only
+the ones off disk: a freshly generated column next to a saved one has to receive that
+column's torch light, and neither can know which loaded first.
+
+That is a thousand columns at render distance 16, and the first version walked 108
+section palettes per column to discover that a world with no torches has no torches
+in it. **It was measurable in the warm-up.** `Chunk::hasEmitter` is the fix — set by
+the worker that has just written every voxel anyway, read as nine flags by the main
+thread. Sticky, and deliberately never cleared: being wrong in that direction costs a
+flood that finds nothing, and being wrong in the other loses light.
+
+**Every emitter question is asked of the palette, not of the voxels.** A section holds
+32,768 voxels and names one to sixteen block types. A torch that is not in the palette
+is not in the section.
+
+#### The torch is a cube, and that is the admission
+
+Section 8 asked whether a torch would be Phase 10's cross-quad geometry or "a small
+cube shipped with an admission". **It is the cube, and this is the admission.**
+
+The mesher draws cubes and nothing else: a non-opaque block emits no faces at all, so
+a properly transparent torch would be light coming from something invisible. So the
+block is `opaque`, which means it blocks sky light and casts a shadow it has no
+business casting.
+
+What that buys is that the light is real *now*, and the light is the part nobody
+could see without. Phase 10 flips one field to `false` and gives the block a shape;
+the recipe, the luminance, the flood and the tests are untouched by that change. The
+texture is drawn the same way round — shaft and flame where vanilla puts them, on a
+dark backdrop rather than a transparent one — so the art outlives the cube it is
+currently painted on and only the backdrop is deleted.
+
+Everything else is vanilla's: luminance **14**, falloff one per block, and **coal on
+a stick makes four torches**. That recipe fits in the player's own 2x2 on purpose. A
+player who has dug deep enough to want a torch has coal and has a stick, and sending
+them back to a bench for it would put the one thing that makes a cave enterable
+behind the one thing the seventh session proved is hard to find.
+
+#### Measured
+
+Frame times are unchanged: p99 **4.60–5.71 ms** over three runs at render distance 16
+with caves, against the 4.88–5.18 ms recorded in 7.24. Warm-up **3.46–3.56 s** against
+3.36–3.47 — the low ends match and the difference sits inside the run-to-run spread.
+Block light costs nothing until a torch exists, which is the whole point of the
+palette test and the emitter flag: an untouched world's block channel is a uniform
+zero `LightArray` in every section, holding no storage at all.
+
+15 new tests, 365 total. asan clean, and tsan clean over twelve seconds of the running
+app with a torch in the world — the relight queue is a worker-to-main handoff and the
+tests alone do not prove it.
+
+**What no test here can tell you is whether a lit room reads as lit.** That is the
+one thing this project has never learned by reasoning.
+
+---
+
 ## 8. Open Questions
 
 Filled in with recommended defaults above, but expected to need revisiting once
@@ -3478,9 +3605,13 @@ implementation makes contact with reality:
   planning Phase 18**: they do not. Sky and block light combine into the per-corner
   brightness the 64-bit quad already carries, and the tint is what that costs. 3.7
   also records what would justify widening to 128 bits later.
-- **How a torch is drawn**, which is Phase 18's other half and is *not* resolved. A
-  torch is not a cube, so it is either Phase 10's cross-quad geometry or a small cube
-  shipped with an admission. Everything else about block light is settled.
+- ~~**How a torch is drawn**~~ — **answered in 7.26, and it is the cube.** The mesher
+  emits no faces for a non-opaque block, so a transparent torch would be light with
+  nothing to come from; the block is opaque until Phase 10, and blocks sky light in
+  the meantime. One field flips when the geometry lands. **What 3.7 did not
+  anticipate is now the more interesting half**: block light cannot be column-local
+  the way sky light is, because a torch reaches 15 blocks across a 32-wide column.
+  7.26 has the arithmetic.
 - **What a mob is**, which is all of Phase 19 and is deliberately unplanned here.
   `ItemEntities` is the only non-voxel thing in the world and it neither moves under
   its own decisions nor collides with anything but the ground. Spawning, pathfinding

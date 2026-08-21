@@ -117,11 +117,23 @@ elsewhere and `--no-save` throws the session away.
 `F` switches to flying, `F5` to first person, `Escape` releases the cursor and again
 quits.
 
+**Coal on a stick makes four torches, and a torch is what makes a roof worth putting
+on.** Before them, closing a room in meant sitting in absolute darkness — sky light
+was the only light there was. Now light spreads fifteen blocks, losing one per block,
+around corners and across chunk boundaries; walling it off casts a shadow and knocking
+the wall down lets it back in. That recipe fits in your own 2x2, so a torch never
+waits on finding a crafting table.
+
+**The torch is a cube for now, and that is the one place this deliberately parts with
+vanilla.** The mesher draws cubes and nothing else, so a proper cross-shaped torch has
+to wait for the geometry work — until then it blocks daylight it should not. The light
+itself is vanilla's: level 14, and the same falloff.
+
 Dig down. The caves, ores and darkness are the point, and they are not visible from the
-surface.
+surface — and now you can take a light with you.
 
 ```bash
-ctest --preset debug                       # 350 test cases
+ctest --preset debug                       # 365 test cases
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
