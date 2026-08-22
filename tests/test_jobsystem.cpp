@@ -3,6 +3,7 @@
 #include <doctest/doctest.h>
 
 #include <atomic>
+#include <chrono>
 #include <set>
 #include <thread>
 #include <vector>
@@ -22,15 +23,37 @@ void addPayload(void* context, u64 payload) {
     static_cast<std::atomic<u64>*>(context)->fetch_add(payload, std::memory_order_relaxed);
 }
 
-struct ThreadRecorder {
+/// A meeting every worker has to reach before any of them may leave.
+///
+/// **Counting distinct thread ids over a flood of quick jobs does not prove
+/// parallelism.** One worker draining the whole queue before the others wake from
+/// the semaphore is a legitimate schedule, and on a loaded machine it is a common
+/// one -- that version of this test failed about one run in three once the suite
+/// started running cases concurrently. Holding each worker until all of them have
+/// arrived turns the claim into a fact the scheduler cannot take away.
+struct Rendezvous {
+    std::atomic<usize> arrived{0};
+    usize expected = 0;
     std::mutex mutex;
     std::set<std::thread::id> ids;
 };
 
-void recordThread(void* context, u64 /*payload*/) {
-    auto* recorder = static_cast<ThreadRecorder*>(context);
-    const std::lock_guard<std::mutex> lock(recorder->mutex);
-    recorder->ids.insert(std::this_thread::get_id());
+void rendezvous(void* context, u64 /*payload*/) {
+    auto* meeting = static_cast<Rendezvous*>(context);
+    {
+        const std::lock_guard<std::mutex> lock(meeting->mutex);
+        meeting->ids.insert(std::this_thread::get_id());
+    }
+    meeting->arrived.fetch_add(1, std::memory_order_acq_rel);
+
+    // Bounded, so a pool that cannot deliver the parallelism fails the assertion
+    // rather than hanging the suite. Generous, because the deadline is not the
+    // thing under test and a busy CI machine should not trip it.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (meeting->arrived.load(std::memory_order_acquire) < meeting->expected
+           && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
 }
 
 } // namespace
@@ -147,19 +170,25 @@ TEST_CASE("a full band reports backpressure instead of growing") {
 }
 
 TEST_CASE("jobs run on worker threads, not on the submitting thread") {
-    ThreadRecorder recorder;
+    constexpr usize kWorkers = 4;
+
+    Rendezvous meeting;
+    meeting.expected = kWorkers;
 
     {
-        JobSystem jobs(4);
-        for (usize i = 0; i < 2000; ++i) {
-            REQUIRE(jobs.submit(JobPriority::Normal, Job{&recordThread, &recorder, 0}));
+        JobSystem jobs(kWorkers);
+        // One job per worker. Each holds the worker that took it until all of them
+        // have arrived, so a worker cannot take a second and the ids that turn up
+        // are every worker in the pool rather than however many happened to wake.
+        for (usize i = 0; i < kWorkers; ++i) {
+            REQUIRE(jobs.submit(JobPriority::Normal, Job{&rendezvous, &meeting, 0}));
         }
         jobs.waitIdle();
     }
 
-    const std::lock_guard<std::mutex> lock(recorder.mutex);
-    CHECK(recorder.ids.count(std::this_thread::get_id()) == 0);
-    CHECK(recorder.ids.size() > 1); // Actually parallel, not one thread doing it all.
+    const std::lock_guard<std::mutex> lock(meeting.mutex);
+    CHECK(meeting.ids.count(std::this_thread::get_id()) == 0);
+    CHECK(meeting.ids.size() == kWorkers);
 }
 
 TEST_CASE("destruction with work still queued does not hang") {

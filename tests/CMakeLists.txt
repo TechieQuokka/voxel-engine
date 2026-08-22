@@ -68,4 +68,29 @@ target_link_libraries(mc_tests PRIVATE
 
 mc_set_warnings(mc_tests)
 
-add_test(NAME mc_tests COMMAND mc_tests)
+# One ctest entry per doctest case, rather than one entry for the whole binary.
+#
+# The binary as a single test made `ctest -j` do nothing and reported a failure as
+# "mc_tests failed" with the name of the case buried in the output. Discovery runs
+# the binary once at build time with --list-test-cases and registers what it finds,
+# so a case added to a .cpp file needs no change here.
+#
+# **The cases that write files are the reason this matters and the reason it needs
+# care.** Under -j they run as separate processes, which is what makes
+# test_persistence's RLIMIT_FSIZE case safe to have: its process-wide limit can no
+# longer reach a case running beside it. TempDir already keys its directory off the
+# pid, so parallel cases do not collide.
+#
+# **Except under ThreadSanitizer.** Discovery runs the binary at build time to ask
+# it for its case names, and tsan will not start on this kernel without ASLR
+# disabled -- so the listing fails and takes the whole build down with it. doctest
+# 2.4.11 offers only POST_BUILD discovery, with no PRE_TEST mode to defer it, and
+# wrapping the discovery command in `setarch` would bake a Linux-only workaround
+# into every build. tsan is driven by hand through `setarch -R` anyway (HANDOFF
+# section 2), where one entry is all it ever needed.
+if(CMAKE_CXX_FLAGS MATCHES "sanitize=thread")
+  add_test(NAME mc_tests COMMAND mc_tests)
+else()
+  include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
+  doctest_discover_tests(mc_tests)
+endif()

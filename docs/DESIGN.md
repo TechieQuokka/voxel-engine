@@ -490,6 +490,9 @@ to `world`.
 
 ### 5.2 Directory tree
 
+**Everything below exists unless it is marked.** `(planned)` reserves a slot so
+earlier work does not grow into it; those files have not been created.
+
 ```
 minecraft/
 ├── CMakeLists.txt
@@ -497,30 +500,37 @@ minecraft/
 ├── cmake/
 │   ├── CPM.cmake
 │   └── CompilerWarnings.cmake
-├── .clang-format
-├── .clang-tidy
+├── .github/workflows/ci.yml   # debug + asan on every push
 ├── .gitignore
 │
 ├── docs/
-│   └── DESIGN.md
+│   ├── DESIGN.md              # what was built and why
+│   ├── HANDOFF.md             # what is left, and the traps
+│   └── RESEARCH.md            # the vanilla numbers everything is measured against
 │
 ├── assets/
-│   ├── shaders/
-│   │   ├── chunk.vert         # expands quads from gl_VertexID
-│   │   ├── chunk.frag
-│   │   ├── cull.comp          # GPU frustum culling -> indirect buffer
-│   │   ├── hzb_build.comp     # Phase 8
-│   │   └── raymarch.frag      # Phase 7
-│   └── textures/
-│       └── blocks/
+│   └── shaders/
+│       ├── chunk.vert         # expands quads from gl_VertexID
+│       ├── chunk.frag
+│       ├── glass.frag         # the cutout pass; its own program to keep early-Z
+│       ├── water.vert/.frag   # reads bits 33..40 as surface height, not AO
+│       ├── character.vert/.frag
+│       ├── item.vert/.frag
+│       ├── selection.vert/.frag
+│       ├── cracks.vert/.frag
+│       ├── hud.vert/.frag
+│       ├── cull.comp          # (planned) GPU frustum culling -> indirect buffer
+│       ├── hzb_build.comp     # (planned) Phase 8
+│       └── raymarch.frag      # (planned) Phase 7
 │
 ├── src/
 │   ├── core/
-│   │   ├── Types.hpp          # BlockId, fixed-width aliases, GL loader types
+│   │   ├── Types.hpp          # BlockId, fixed-width aliases
 │   │   ├── Math.hpp           # glm aliases (only file that includes glm)
 │   │   ├── Result.hpp         # Result<T, E>; replaced by std::expected under C++23
 │   │   ├── Paths.hpp/.cpp     # executable-relative asset resolution, file reads
 │   │   ├── BitPack.hpp        # palette index packing/unpacking
+│   │   ├── RangeAllocator.hpp/.cpp  # the mesh arena's free list
 │   │   ├── Log.hpp/.cpp
 │   │   ├── Assert.hpp/.cpp
 │   │   ├── Profile.hpp        # Tracy macros, no-op when disabled
@@ -539,56 +549,76 @@ minecraft/
 │   │   ├── RingLayout.hpp/.cpp  # its offsets, with no GL in them, so they can be tested
 │   │   ├── Shader.hpp/.cpp      # graphics + compute
 │   │   ├── Texture.hpp/.cpp     # 2D_ARRAY, 3D
-│   │   ├── VertexArray.hpp/.cpp # empty VAO required by core profile
-│   │   └── IndirectDraw.hpp     # draw command structs
+│   │   └── VertexArray.hpp/.cpp # empty VAO required by core profile
 │   │
 │   ├── world/
 │   │   ├── Coords.hpp         # BlockPos / SectionPos / ChunkPos conversions
+│   │   ├── BlockTable.hpp     # every block type; adding one is a line here
+│   │   ├── ItemTable.hpp      # every item, and the id space extending BlockId's
 │   │   ├── BlockRegistry.hpp/.cpp
 │   │   ├── Palette.hpp/.cpp   # palette + bit-packed indices
+│   │   ├── LightArray.hpp     # the per-section nibble array
 │   │   ├── Section.hpp        # 32^3, uniform optimization
 │   │   ├── Chunk.hpp/.cpp     # column of 12 sections
 │   │   ├── Neighbourhood.hpp  # the 3x3x3 sections a mesher may read
+│   │   ├── SkyLight.hpp/.cpp  # daylight per column; its only input is `opaque`
+│   │   ├── BlockLight.hpp/.cpp  # torch flood, in world space across columns
+│   │   ├── Raycast.hpp/.cpp   # voxel DDA: aiming, and the camera's collision
+│   │   ├── BlockUpdates.hpp/.cpp  # the tick queue, and the fluid flow
+│   │   ├── FallingBlocks.hpp/.cpp # sand and gravel between two cells
+│   │   ├── ItemEntities.hpp/.cpp  # dropped blocks: gravity, merging, despawn
+│   │   ├── Inventory / ItemStack / Container / CraftingGrid / Screen
+│   │   ├── Crafting / Smelting / Furnace / Tools
+│   │   ├── Player.hpp         # the whole of what persists across a quit
 │   │   ├── PlayerBox.hpp      # where the player stands, how tall and how wide
 │   │   ├── WalkMove.hpp       # sliding, and stepping up, extracted from Engine
+│   │   ├── RegionFile / WorldStore / ChunkCodec / PlayerCodec   # persistence
 │   │   └── World.hpp/.cpp     # chunk map, streaming
 │   │
 │   ├── worldgen/
-│   │   ├── DensityGraph.hpp/.cpp   # FastNoise2 wrapper
-│   │   ├── TerrainShaper.hpp/.cpp  # continentalness / erosion / peaks-valleys
-│   │   ├── SurfaceRule.hpp/.cpp
-│   │   └── Generator.hpp/.cpp      # worker entry point
+│   │   ├── DensityField.hpp/.cpp   # the 4x8x4 grid; no FastNoise2, so it is testable
+│   │   ├── DensityGraph.hpp/.cpp   # the only file that includes FastNoise2
+│   │   ├── FeatureTable.hpp        # ore and tree counts, calibrated not copied
+│   │   ├── Features.hpp/.cpp       # stateless placement, replayed across the 3x3
+│   │   ├── TerrainProbe.hpp/.cpp   # --probe: what the terrain is actually made of
+│   │   └── Generator.hpp/.cpp      # worker entry point; the stage order matters
 │   │
 │   ├── mesh/
 │   │   ├── Quad.hpp                # 64-bit packed format
-│   │   ├── ChunkMesh.hpp           # a flat vector of quads
+│   │   ├── ChunkMesh.hpp           # one flat vector, with the two split points
 │   │   ├── CulledMesher.hpp/.cpp   # reference mesher; oracle for Phase 2
 │   │   ├── BinaryGreedyMesher.hpp/.cpp
-│   │   └── Downsample.hpp/.cpp     # LOD mode filter
+│   │   └── Downsample.hpp/.cpp     # (planned) LOD mode filter
 │   │
 │   ├── render/
-│   │   ├── ItemModel.hpp/.cpp      # a sprite extruded into the thing a hand holds
 │   │   ├── Camera.hpp/.cpp
-│   │   ├── Frustum.hpp
+│   │   ├── Frustum.hpp/.cpp        # five planes; the far one has a zero normal
 │   │   ├── BlockTextures.hpp/.cpp
-│   │   ├── ChunkRenderer.hpp/.cpp
-│   │   ├── CullingPass.hpp/.cpp
-│   │   ├── LodManager.hpp/.cpp
-│   │   ├── Brickmap.hpp/.cpp       # Phase 7
-│   │   ├── RayMarchPass.hpp/.cpp   # Phase 7
-│   │   └── Renderer.hpp/.cpp
+│   │   ├── SectionMeshArena.hpp/.cpp   # who owns which range, and when reuse is safe
+│   │   ├── SectionMeshStore.hpp/.cpp   # the same arena plus the GL buffer
+│   │   ├── ChunkRenderer.hpp/.cpp  # one multi-draw, three layers
+│   │   ├── CharacterRenderer.hpp/.cpp
+│   │   ├── SelectionRenderer.hpp/.cpp
+│   │   ├── ItemModel.hpp/.cpp      # a sprite extruded into the thing a hand holds
+│   │   ├── ItemRenderer.hpp/.cpp
+│   │   ├── ScreenLayout.hpp/.cpp
+│   │   ├── HudRenderer.hpp/.cpp
+│   │   ├── CullingPass.hpp/.cpp    # (planned) Phase 5
+│   │   ├── LodManager.hpp/.cpp     # (planned) Phase 6
+│   │   ├── Brickmap.hpp/.cpp       # (planned) Phase 7
+│   │   └── RayMarchPass.hpp/.cpp   # (planned) Phase 7
 │   │
 │   └── app/
 │       ├── main.cpp
-│       ├── Engine.hpp/.cpp
-│       └── DebugUI.hpp/.cpp
+│       └── Engine.hpp/.cpp     # streaming, physics, interaction, screens, capture
 │
-└── tests/
+└── tests/                      # 38 files, 405 cases, one ctest entry each
+    ├── test_main.cpp
     ├── test_palette.cpp
-    ├── test_bitpack.cpp
-    ├── test_mesher.cpp
-    └── test_coords.cpp
+    ├── test_section_mesh_arena.cpp
+    └── ...
 ```
+
 
 Notes on deliberate choices:
 
@@ -598,8 +628,16 @@ Notes on deliberate choices:
 - **`core/Math.hpp` is the only file that includes GLM**, and
   **`platform/Window.cpp` is the only file that knows GLFW.** If either
   dependency has to be replaced, exactly one file changes.
-- **Phase 7 files are listed but not yet created.** Reserving the slot keeps
-  earlier work from growing into it.
+- **Files for later phases are listed but not yet created**, marked `(planned)`.
+  Reserving the slot keeps earlier work from growing into it. The marker exists
+  because the unmarked version of this tree stopped being true: it listed
+  `.clang-format` and `.clang-tidy`, which were never added, while omitting most
+  of what `world/` and `render/` had grown. **A tree that mixes what is there with
+  what is wanted and does not say which is which is worse than no tree.**
+- **`.clang-format` and `.clang-tidy` are deliberately absent**, not pending.
+  Adding a formatter now reformats every file in one commit and buries the history
+  of the ones it touches. If that trade is taken later it should be its own commit,
+  touching nothing else.
 - **No `external/` directory.** CPM fetches into the build tree, so no
   third-party source enters the source tree.
 

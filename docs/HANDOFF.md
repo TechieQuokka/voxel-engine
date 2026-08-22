@@ -100,7 +100,8 @@ suite because no test can answer these:
 ```bash
 cmake --preset debug            # configure; only after CMakeLists changes
 cmake --build --preset debug
-ctest --preset debug            # 391 cases, doctest
+ctest --preset debug            # 405 cases, one ctest entry each, 8 at a time
+ctest --preset debug -R walk    # a name filter now selects cases, not the binary
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything on
 # the streaming path. If a documented command has not been run in a while, run it
@@ -193,9 +194,20 @@ One static library per module. **Dependency direction is enforced at link time**
 `mc_render` does not link `mc_worldgen`, and glad, GLFW and FastNoise2 are `PRIVATE` so
 their types cannot appear in public headers.
 
-**`Engine` is 3,200 lines and 67 members** — streaming, player physics, interaction,
-screens, persistence, furnace ticks, benchmarks and capture. It has no tests. Anything
-that can be lifted out of it and tested should be.
+**`Engine` is 2,477 lines over 58 methods, with 47 members and an 815-line header** —
+streaming, player physics, interaction, screens, persistence, furnace ticks,
+benchmarks and capture. **It has no tests, and it is the file this project changes
+most**: 66 of the first 83 commits touched `Engine.cpp` or `Engine.hpp`. Highest churn
+and lowest coverage in the same file is the standing structural risk here.
+
+Anything that can be lifted out of it and tested should be, and the ones already
+lifted say what the seam looks like: `WalkMove` (sliding and step-up), `PlayerBox`
+(the collision box and the eye height), `Player` (what gets saved), `FallDamage` (the
+rule, not the health). **Each was a private constant or a private method that no test
+could reach, and two of them were shipping bugs at the time.** Remaining candidates,
+roughly in order of how much they would repay: the furnace tick, the streaming
+priority function, and `groundBelow`/`boxBlocked`, which are `World` queries wearing
+`Engine` as a coat.
 
 ---
 
@@ -273,6 +285,23 @@ Learned the hard way; all of them cost real time. The full accounts are in DESIG
   RNG. The air-exposure test also treats outside the column as solid, deliberately —
   the honest answer needs a neighbour that may not be generated yet.
 
+**Persistence**
+
+- **Never free a region's sectors before the record that replaces them is on disk.**
+  Releasing first and reallocating is the obvious way to let a column that grew reuse
+  its own gap. It is also how one failed write costs 1024 columns: between the release
+  and the failure the header still names those sectors while the map calls them free,
+  the next column saved takes them, two entries claim the same sectors, and `open`
+  refuses the whole region rather than serve one column's bytes as another's.
+  `RegionFile::tryExtend` gets the reuse without the window. A test injects the failed
+  write with `RLIMIT_FSIZE`, which is the only way to make a write fail on demand.
+- **A stream `flush` is not durability.** It hands the bytes to the kernel and no
+  further. `RegionFile::flush` fsyncs, and it is called on eviction and shutdown
+  rather than per write — a column is saved on every unload and a disk round trip
+  does not belong on the streaming path. The accepted cost is that a power loss can
+  leave one column's header naming a record that never landed; `read` rejects it and
+  the column regenerates.
+
 **Threading and lifetimes**
 
 - **A meshing job holds pointers into nine columns across frames.** `Chunk::pin()`
@@ -322,7 +351,20 @@ Learned the hard way; all of them cost real time. The full accounts are in DESIG
   the *eye*. Worth remembering when the `Player` struct in section 1 gets pulled out.
 - **`-Wconversion` and `-Werror` are on, and an incremental build hides breakage in a
   file it did not recompile.** `ctest --preset asan` had been failing to *build* for
-  weeks while reporting a pass.
+  weeks while reporting a pass. CI now catches this class of thing, because a runner
+  always starts cold — but only for the two presets it runs.
+- **A test that passes is not a test that works.** The way to find out is to break the
+  code on purpose and check the test notices. Doing that to `SectionMeshArena::recycle`
+  is what proved the reuse-delay cases bite; the first attempt at it compiled with
+  errors and *the suite still passed*, against the stale binary, which is the trap
+  directly above wearing a different hat. **Check the build succeeded before believing
+  the test result.**
+- **A concurrent test suite is a different suite.** Running cases 8 at a time surfaced
+  a JobSystem case that had been asserting a race it usually won — it counted distinct
+  thread ids over 2000 quick jobs, and one worker draining the queue before the others
+  wake is a legitimate schedule. It failed about one run in three under load and never
+  once on an idle machine. The fix was a rendezvous every worker has to reach, which is
+  the stronger claim anyway. **Timing-shaped assertions survive by being lucky.**
 - **A nested struct's default member initializers cannot be seen by a `= {}` default
   argument** in the enclosing class. The error points at the default argument, not the
   field. This is why `Engine(Options)` takes its argument unconditionally.
@@ -365,9 +407,13 @@ Learned the hard way; all of them cost real time. The full accounts are in DESIG
   dozen over as many ticks for a six-block collapse in open desert. 7.27 took every
   other caller off that path, so **this is the case that would justify the incremental
   relight** `World.hpp` already names.
-- **No test covers `SectionMeshStore`** — the trickiest lifetime logic in the engine
-  (deferred reuse, pending list, arena exhaustion). `RangeAllocator` under it is
-  unit-tested; the combination is not.
+- **`SectionMeshStore` is now two classes.** The bookkeeping — deferred reuse, the
+  pending list, arena exhaustion — is `SectionMeshArena` and is tested; what is left
+  in the store is a GL buffer and a memcpy, and that half is still only covered by
+  looking at a frame. **The split was forced by the test binary having no GL
+  context**, which is the same seam `WalkMove` and `PlayerBox` came out of, and it is
+  worth remembering the next time something untestable turns out to be untestable
+  only because it is holding a GL object.
 - **Re-measure AO merging.** The 13.5-point figure in DESIGN.md 7.3 came from smooth
   heightmap terrain. Caves and overhangs exist now, so `--mesh-benchmark` should run
   against a real generated column rather than the synthetic section it still uses.
@@ -405,10 +451,9 @@ Learned the hard way; all of them cost real time. The full accounts are in DESIG
 
 **Tooling**
 
-- **No CI.** The remote is public and nothing is verified on push. The asan and tsan
-  presets and `tsan.supp` already exist; a workflow is assembly, not design.
-- **391 test cases run as one `ctest` entry**, so `ctest -j` does nothing and a failure
-  is not isolated. `doctest_discover_tests()` is the fix.
-- **`.clang-format` and `.clang-tidy` are listed in DESIGN.md 5.2 and do not exist.**
-  Adding a formatter now reformats the whole tree in one commit — either take that
-  commit or drop them from the document.
+- **CI runs debug and asan on every push** (`.github/workflows/ci.yml`). What it does
+  *not* run is release and tsan, both on purpose — release is the only preset that
+  turns tests off, and tsan needs `setarch -R` plus a GL context no runner has. **tsan
+  is still a command a person runs**, and section 2 still means it.
+- **No formatter.** `.clang-format` and `.clang-tidy` were dropped from DESIGN.md 5.2
+  rather than added; see the note there for the trade.

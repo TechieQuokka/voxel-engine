@@ -1,0 +1,87 @@
+# What is verified on every push, and why each job is here.
+#
+# The presets are the same ones the project is developed with. A workflow that
+# configures its own flags is a second build definition that drifts from the first
+# -- and this repository has already been bitten once by a baseline configured with
+# a plain -DCMAKE_BUILD_TYPE=Release, which skipped the preset's LTO and made new
+# code look faster than it was.
+#
+# **There is no release job.** Release is the only preset that turns tests off, so
+# a release build here would compile and assert nothing. What it would catch that
+# debug does not is LTO and -O3 breaking something, which is worth having later and
+# is not worth twenty minutes of every push today.
+#
+# **There is no tsan job**, though the preset exists. ThreadSanitizer will not start
+# without disabling ASLR (setarch -R), a hosted runner may not permit that, and the
+# app run needs a GL context no runner has. Keeping it out of CI is deliberate: it
+# stays a command a person runs after touching MpmcQueue, JobSystem or the streaming
+# path, which is what HANDOFF section 2 already says.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first one's result irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.preset }}
+    runs-on: ubuntu-24.04
+
+    strategy:
+      # One preset failing should not hide the other's result.
+      fail-fast: false
+      matrix:
+        preset: [debug, asan]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # GLFW needs the X11 and Wayland development headers to configure at all, even
+      # though nothing in CI opens a window. glad2 generates its loader at configure
+      # time and needs python3 with jinja2.
+      #
+      # The compiler is the runner's default g++, which on ubuntu-24.04 is 13 --
+      # the version this project is actually developed against. Pinning a newer one
+      # here would mean CI verifies a build nobody runs.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev wayland-protocols \
+            python3-jinja2
+
+      - name: Record the toolchain
+        run: |
+          g++ --version | head -1
+          cmake --version | head -1
+
+      # CPM fetches six dependencies from GitHub. Cached on the pinned tags in
+      # CMakeLists.txt, so the cache is only cold when one of them is bumped --
+      # which is exactly when it should be.
+      - name: Cache CPM sources
+        uses: actions/cache@v4
+        with:
+          path: .cache/cpm
+          key: cpm-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: cpm-${{ runner.os }}-
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      # -Werror is on, so this step is a real check and not just a prerequisite.
+      # An incremental build can hide breakage in a file it did not recompile; a
+      # runner always starts cold, which is half the value of having this at all.
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }} --output-on-failure

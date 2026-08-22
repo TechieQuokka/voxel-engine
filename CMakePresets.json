@@ -84,16 +84,20 @@
     {
       "name": "debug",
       "configurePreset": "debug",
-      "output": { "outputOnFailure": true }
+      "description": "393 cases, one ctest entry each. jobs is a fixed 8 because a test preset has no way to say 'all cores' -- 0 means serial here, unlike a build preset. Oversubscribing a smaller machine costs nothing at this case length; override with -j to be exact.",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 8 }
     },
     {
       "name": "asan",
       "configurePreset": "asan",
-      "output": { "outputOnFailure": true }
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 8 }
     },
     {
       "name": "tsan",
       "configurePreset": "tsan",
+      "description": "Serial on purpose: ThreadSanitizer's shadow memory is several times the heap, and eight of these at once is how a machine starts swapping.",
       "output": { "outputOnFailure": true }
     }
   ]
