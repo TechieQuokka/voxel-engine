@@ -100,7 +100,7 @@ suite because no test can answer these:
 ```bash
 cmake --preset debug            # configure; only after CMakeLists changes
 cmake --build --preset debug
-ctest --preset debug            # 405 cases, one ctest entry each, 8 at a time
+ctest --preset debug            # 411 cases, one ctest entry each, 8 at a time
 ctest --preset debug -R walk    # a name filter now selects cases, not the binary
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything on
@@ -451,9 +451,14 @@ Learned the hard way; all of them cost real time. The full accounts are in DESIG
 
 **Tooling**
 
-- **CI runs debug and asan on every push** (`.github/workflows/ci.yml`). What it does
-  *not* run is release and tsan, both on purpose — release is the only preset that
-  turns tests off, and tsan needs `setarch -R` plus a GL context no runner has. **tsan
-  is still a command a person runs**, and section 2 still means it.
+- **CI runs debug and asan on every push** (`.github/workflows/ci.yml`), green as of
+  1.5.0. What it does *not* run is release and tsan, both on purpose — release is the
+  only preset that turns tests off, and tsan needs `setarch -R` plus a GL context no
+  runner has. **tsan is still a command a person runs**, and section 2 still means it.
+- **A dependency this machine already has is one the workflow will forget.** The first
+  CI run failed to build on `GL/gl.h`, which `GLFW/glfw3.h` includes and which every
+  workstation with a graphics driver already carries — so it was invisible from here.
+  If a new dependency appears, the runner is the only honest check that the apt list
+  still covers it, and the answer is usually a `-dev` package nobody had to install.
 - **No formatter.** `.clang-format` and `.clang-tidy` were dropped from DESIGN.md 5.2
   rather than added; see the note there for the trade.

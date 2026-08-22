@@ -612,7 +612,7 @@ minecraft/
 │       ├── main.cpp
 │       └── Engine.hpp/.cpp     # streaming, physics, interaction, screens, capture
 │
-└── tests/                      # 38 files, 405 cases, one ctest entry each
+└── tests/                      # 39 files, 411 cases, one ctest entry each
     ├── test_main.cpp
     ├── test_palette.cpp
     ├── test_section_mesh_arena.cpp
@@ -3846,6 +3846,109 @@ land.
 
 ---
 
+### 7.29 Four things that could not be checked, and what it took to check them
+
+Version 1.5.0 adds no block you can hold. It is about what the project can trust, and
+every item in it was found the same way: by asking what a passing test suite was not
+covering.
+
+#### A failed save cost a region, not a column
+
+`RegionFile::write` freed an entry's old sectors before writing the record that
+replaced them, so a column which grew by a sector could often be placed in the gap it
+had just made. The reuse is worth having; freeing first to get it is not.
+
+**Between the release and a write that then fails, the header still names those
+sectors while the map calls them free.** The next column saved takes them, two entries
+claim the same sectors, and `open` refuses the region -- all 1024 columns. Refusing is
+the right answer to a table that disagrees with its file; the wrong part is arranging
+for the disagreement.
+
+`tryExtend` grows an entry in place when the sectors behind it are free or past the
+end of the file, which is the same reuse without the window. Nothing an entry owns is
+released now until the record is written *and* the header names it.
+
+**The test injects the failure with `RLIMIT_FSIZE`**, the only way to make a write
+fail on demand short of a fake filesystem -- with SIGXFSZ ignored, or the process dies
+instead of the write. It was run against the old code first and reproduced exactly the
+predicted failure. A regression test that has never seen the regression is a guess.
+
+`flush` also fsyncs now. A stream flush reaches the kernel and stops, so "build
+something, quit, come back" was one power cut from being untrue. Per write would put a
+disk round trip on the streaming path, so it goes where flush already was: eviction and
+shutdown. **The residual cost is written down rather than left to be found** -- a power
+loss can still leave one column's header naming a record that never landed, and `read`
+rejects it so the column regenerates.
+
+#### The untestable class was only holding a GL object
+
+`SectionMeshStore` had the trickiest lifetime logic in the engine -- deferred reuse,
+the pending list, arena exhaustion -- and no tests. The reason was one line: no test
+here may create a GL context, and the class held an `rhi::Buffer`.
+
+The buffer is touched twice, by the constructor and by `m_buffer.write`. Everything
+else was bookkeeping that never needed GL and was unreachable only for sitting beside
+something that did. That half is `SectionMeshArena` now; the store is a buffer, a
+memcpy, and the decision to memcpy outside the lock. The public API did not move.
+
+**This is the third time this seam has appeared** -- `WalkMove`, `PlayerBox`, and now
+this -- and it is worth stating as a rule: *something that cannot be tested is often
+only holding a GL object.* Ask what the class would be without it before accepting that
+it is untestable.
+
+The sharpest of the fourteen cases is a refused update. When the arena is full and a
+section's new mesh cannot be allocated, the placement it already had must survive;
+retiring it first and failing after would make the section **vanish** until the arena
+drained. A hole in the world, not a stale mesh -- and a hole is what nobody thinks to
+look for.
+
+#### A parity number nothing could assert
+
+`kSafeFallBlocks` was a private constant on `Engine` beside a private method. This
+document has already written down that **a constant only the caller can see cannot be
+tested**, and paid for it twice -- item pickup, and a placement box with no width.
+
+The fatal height is a parity decision, not an implementation detail: a player learns in
+Minecraft that 23 blocks kills them and brings the number here. `FallDamage` is the
+rule and nothing else; the caller still owns the health and what death means. The guard
+is a negated `>` so a NaN distance answers zero rather than flooring into health, where
+it would make every later comparison false and leave the player neither alive enough to
+respawn nor dead enough to notice.
+
+#### A suite that ran serially was hiding a race, and a build that hid its own breakage
+
+411 cases ran as one `ctest` entry, so `ctest -j` did nothing and a failure named the
+binary rather than the case. `doctest_discover_tests` registers them individually:
+37.9 s to 12.0 s. **Except under ThreadSanitizer**, where discovery runs the binary at
+build time to list its cases and tsan will not start without ASLR disabled -- so it
+took the build down. doctest 2.4.11 has only POST_BUILD discovery, so tsan keeps its
+single entry.
+
+**Running the cases concurrently immediately found a test asserting a race it usually
+won.** `jobs run on worker threads` counted distinct thread ids over 2000 quick jobs,
+and one worker draining the queue before the others wake is a legitimate schedule --
+common under load, never seen on an idle machine. It failed about one run in three. It
+is a rendezvous now: one job per worker, each holding its worker until all arrive,
+which scheduling cannot take away and is the stronger claim.
+
+Two lessons about method, both of which cost time here:
+
+- **A passing test is not a working test.** The reuse-delay cases were only trusted
+  after `recycle` was broken on purpose and six assertions failed. The first attempt
+  at that check *compiled with errors and the suite passed anyway*, against the stale
+  binary -- section 4 of HANDOFF already warns about incremental builds hiding
+  breakage, and this is that trap wearing a different hat. **Check the build succeeded
+  before believing the result.**
+- **A dependency this machine has is one CI will forget.** The first workflow run
+  failed on `GL/gl.h`, which `GLFW/glfw3.h` includes and which any workstation with a
+  graphics driver already carries. It was invisible from here, and a cold runner is the
+  only honest check that the package list is complete.
+
+CI runs debug and asan on every push. Not release, the only preset that turns tests
+off; not tsan, for the reason above plus a GL context no runner has.
+
+---
+
 ## 8. Open Questions
 
 Filled in with recommended defaults above, but expected to need revisiting once
@@ -3864,9 +3967,10 @@ implementation makes contact with reality:
   deltas, and uncompressed: the palette words are already the compressed form and
   zlib would be a seventh dependency, with the compression byte reserved in vanilla's
   position so that stays reversible. Only edited columns are written, which is what
-  the seed check in the level file exists to protect. **What is still open is the
-  player**: position, inventory and health are not saved, which is a small file and a
-  separate decision about what belongs in it.
+  the seed check in the level file exists to protect. **The player followed in 7.28**,
+  and 7.29 closed the durability half: nothing an entry owns is freed before its
+  replacement is on disk, and `flush` fsyncs so a clean quit is durable rather than
+  merely handed to the page cache.
 - ~~**Where block light's sixteen bits come from**~~ — **resolved in 3.7 as part of
   planning Phase 18**: they do not. Sky and block light combine into the per-corner
   brightness the 64-bit quad already carries, and the tint is what that costs. 3.7

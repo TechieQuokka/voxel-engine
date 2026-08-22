@@ -145,7 +145,7 @@ Dig down. The caves, ores and darkness are the point, and they are not visible f
 surface — and now you can take a light with you.
 
 ```bash
-ctest --preset debug                       # 391 test cases
+ctest --preset debug                       # 411 test cases, one ctest entry each
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
