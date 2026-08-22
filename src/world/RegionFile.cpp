@@ -6,6 +6,10 @@
 #include <chrono>
 #include <cstring>
 
+// For fsync in `flush`. Linux only, like the rest of the project.
+#include <fcntl.h>
+#include <unistd.h>
+
 namespace mc {
 namespace {
 
@@ -76,6 +80,7 @@ RegionFile::open(const std::filesystem::path& path, bool createIfMissing) {
         }
     }
 
+    region->m_path = path;
     region->m_file.open(path, std::ios::binary | std::ios::in | std::ios::out);
     if (!region->m_file) {
         return makeError(Error::CannotOpen);
@@ -172,6 +177,29 @@ u32 RegionFile::allocate(u32 sectorCount) {
     return first;
 }
 
+bool RegionFile::tryExtend(u32 firstSector, u32 haveCount, u32 wantCount) {
+    MC_ASSERT(wantCount > haveCount);
+
+    const usize from = static_cast<usize>(firstSector) + haveCount;
+    const usize to = static_cast<usize>(firstSector) + wantCount;
+    MC_ASSERT(from <= m_used.size()); // The entry itself is reserved, so it is in the map.
+
+    for (usize sector = from; sector < std::min(to, m_used.size()); ++sector) {
+        if (m_used[sector]) {
+            return false;
+        }
+    }
+
+    // Past the end of the file is free by definition; the write extends it.
+    if (to > m_used.size()) {
+        m_used.resize(to, false);
+    }
+    for (usize sector = from; sector < to; ++sector) {
+        m_used[sector] = true;
+    }
+    return true;
+}
+
 Result<std::optional<std::vector<u8>>, RegionFile::Error>
 RegionFile::read(i32 localX, i32 localZ) {
     const u32 entry = m_offsets[slotOf(localX, localZ)];
@@ -233,21 +261,35 @@ RegionFile::write(i32 localX, i32 localZ, std::span<const u8> payload) {
     }
 
     const u32 existing = m_offsets[slot];
-    u32 firstSector = existing >> 8;
+    const u32 existingFirst = existing >> 8;
     const u32 existingCount = existing & 0xFFu;
 
-    if (existing == 0 || existingCount < needed) {
-        // Either new, or it outgrew what it had. Give the old sectors back first,
-        // so a column that grew by one sector can often be placed in the gap it
-        // just made plus the free sector after it.
-        if (existing != 0) {
-            releaseSectors(firstSector, existingCount);
-        }
+    // **Nothing this entry owns is released until the record is on disk.** Freeing
+    // first and reallocating is the obvious way to let a column that grew reuse its
+    // own gap, and it is wrong: between the release and a write that then fails, the
+    // header still points at those sectors while the map calls them free. The next
+    // column to be saved takes them, two header entries end up claiming the same
+    // sectors, and `open` answers that by refusing the whole region -- 1024 columns
+    // for one failed write. `tryExtend` gets the same reuse without the window.
+    u32 firstSector = existingFirst;
+    u32 releaseFirst = 0;
+    u32 releaseCount = 0;
+
+    if (existing == 0) {
         firstSector = allocate(needed);
+    } else if (existingCount < needed) {
+        // It outgrew what it had. Grow in place when the sectors after it are free,
+        // which is the common case for a column the player keeps digging in.
+        if (!tryExtend(existingFirst, existingCount, needed)) {
+            firstSector = allocate(needed);
+            releaseFirst = existingFirst;
+            releaseCount = existingCount;
+        }
     } else if (existingCount > needed) {
         // Shrank. Hand back the tail rather than holding sectors that will never
         // be read -- this is the case that would otherwise leak on every save.
-        releaseSectors(firstSector + needed, existingCount - needed);
+        releaseFirst = existingFirst + needed;
+        releaseCount = existingCount - needed;
     }
 
     m_file.clear();
@@ -279,7 +321,21 @@ RegionFile::write(i32 localX, i32 localZ, std::span<const u8> payload) {
 
     m_offsets[slot] = (firstSector << 8) | needed;
     m_timestamps[slot] = nowSeconds();
-    return writeHeaderSlot(slot);
+
+    const Result<void, Error> header = writeHeaderSlot(slot);
+    if (!header) {
+        // The header did not land, so on disk this slot still names the old record
+        // and those sectors have to stay reserved. In memory the table has already
+        // moved on to the new ones; the two are reconciled at the next open, which
+        // rebuilds the map from the file rather than trusting anything here.
+        return header;
+    }
+
+    // Safe now: the record is written and the header names it.
+    if (releaseCount > 0) {
+        releaseSectors(releaseFirst, releaseCount);
+    }
+    return {};
 }
 
 Result<void, RegionFile::Error> RegionFile::writeHeaderSlot(usize slot) {
@@ -304,6 +360,25 @@ Result<void, RegionFile::Error> RegionFile::writeHeaderSlot(usize slot) {
 Result<void, RegionFile::Error> RegionFile::flush() {
     m_file.flush();
     if (!m_file) {
+        return makeError(Error::Io);
+    }
+
+    // `flush` on the stream only hands the bytes to the kernel; a power loss after
+    // it still loses them. `fsync` is what makes "quit the game and come back"
+    // durable, and this is the right place for it because flush is called on
+    // eviction and shutdown rather than per column.
+    //
+    // A second descriptor is enough: fsync acts on the file, not on the descriptor
+    // it was reached through. Opening one here rather than holding it for the
+    // object's lifetime keeps `m_file` the only thing that owns the file, at the
+    // cost of an open() on a path that runs a handful of times a session.
+    const int fd = ::open(m_path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return makeError(Error::Io);
+    }
+    const int synced = ::fsync(fd);
+    ::close(fd);
+    if (synced != 0) {
         return makeError(Error::Io);
     }
     return {};

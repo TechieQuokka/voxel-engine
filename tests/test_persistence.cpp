@@ -9,8 +9,10 @@
 #include <doctest/doctest.h>
 
 #include <atomic>
+#include <csignal>
 #include <filesystem>
 #include <fstream>
+#include <sys/resource.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -58,6 +60,35 @@ void fillColumn(Chunk& chunk, BlockId marker) {
     chunk.sectionByIndex(2).set(1, 2, 3, marker);
     chunk.sectionByIndex(2).set(31, 31, 31, marker);
 }
+
+/// Caps how large a file this process may write, and puts the limit back after.
+///
+/// The only way to make a write fail on demand short of a fake filesystem. The
+/// limit is process-wide, so it has to be scoped tightly -- and SIGXFSZ ignored,
+/// because the default action is to kill the process rather than fail the write.
+class RestoreFileSizeLimit {
+public:
+    explicit RestoreFileSizeLimit(rlim_t bytes) {
+        m_previousHandler = std::signal(SIGXFSZ, SIG_IGN);
+        REQUIRE(::getrlimit(RLIMIT_FSIZE, &m_previous) == 0);
+
+        rlimit capped = m_previous;
+        capped.rlim_cur = bytes;
+        REQUIRE(::setrlimit(RLIMIT_FSIZE, &capped) == 0);
+    }
+
+    ~RestoreFileSizeLimit() {
+        ::setrlimit(RLIMIT_FSIZE, &m_previous);
+        std::signal(SIGXFSZ, m_previousHandler);
+    }
+
+    RestoreFileSizeLimit(const RestoreFileSizeLimit&) = delete;
+    RestoreFileSizeLimit& operator=(const RestoreFileSizeLimit&) = delete;
+
+private:
+    rlimit m_previous{};
+    void (*m_previousHandler)(int) = SIG_DFL;
+};
 
 std::vector<u8> payloadOf(usize size, u8 seed) {
     std::vector<u8> bytes(size);
@@ -172,6 +203,89 @@ TEST_CASE("a column that shrinks gives its spare sectors back") {
     auto second = region.value()->read(1, 0);
     REQUIRE(second.hasValue());
     CHECK(*second.value() == payloadOf(20000, 3));
+}
+
+TEST_CASE("a column that grows with room behind it stays where it is") {
+    // The reuse `tryExtend` exists for. A column the player keeps digging in gains
+    // a sector now and then, and relocating it every time would walk it up the file
+    // leaving a gap behind at each step.
+    const TempDir dir;
+    const std::filesystem::path path = dir.path() / "r.0.0.mcr";
+
+    auto region = RegionFile::open(path, true);
+    REQUIRE(region.hasValue());
+
+    // Last column in the file, so the sectors after it are past the end and free.
+    REQUIRE(region.value()->write(0, 0, payloadOf(100, 1)).hasValue());
+    REQUIRE(region.value()->write(0, 0, payloadOf(9000, 2)).hasValue());
+    REQUIRE(region.value()->flush().hasValue());
+
+    // Two header sectors plus three for the record. A relocation would have left
+    // the original sector stranded and pushed the file to six.
+    CHECK(std::filesystem::file_size(path) == 5u * RegionFile::kSectorSize);
+
+    auto read = region.value()->read(0, 0);
+    REQUIRE(read.hasValue());
+    REQUIRE(read.value().has_value());
+    CHECK(*read.value() == payloadOf(9000, 2));
+}
+
+TEST_CASE("a write that fails part-way does not free sectors the header still names") {
+    // **The failure this guards is a whole region, not a column.** Releasing an
+    // entry's old sectors before the new record is on disk leaves the header naming
+    // sectors the map calls free. The next column to be saved takes them, two header
+    // entries end up claiming the same sectors, and `open` answers that by refusing
+    // the region -- all 1024 columns in it -- rather than handing out one column's
+    // bytes as another's.
+    //
+    // The failure is injected with RLIMIT_FSIZE, which is the one way to make a
+    // write fail on demand without a fake filesystem. SIGXFSZ has to be ignored or
+    // the process dies instead of the write.
+    const TempDir dir;
+    const std::filesystem::path path = dir.path() / "r.0.0.mcr";
+
+    {
+        auto region = RegionFile::open(path, true);
+        REQUIRE(region.hasValue());
+
+        // Column 0 first, then a neighbour immediately behind it so that growing
+        // column 0 has to relocate rather than extend in place.
+        REQUIRE(region.value()->write(0, 0, payloadOf(100, 1)).hasValue());
+        REQUIRE(region.value()->write(1, 0, payloadOf(100, 2)).hasValue());
+        REQUIRE(region.value()->flush().hasValue());
+        REQUIRE(std::filesystem::file_size(path) == 4u * RegionFile::kSectorSize);
+
+        {
+            // Cap the file at its current size, so relocating column 0 past the end
+            // fails once it reaches the limit.
+            const RestoreFileSizeLimit limit(4u * RegionFile::kSectorSize);
+
+            const Result<void, RegionFile::Error> failed =
+                region.value()->write(0, 0, payloadOf(60000, 3));
+            REQUIRE_FALSE(failed.hasValue());
+            CHECK(failed.error() == RegionFile::Error::Io);
+        }
+
+        // The sectors column 0 held must still be reserved, so this lands elsewhere.
+        REQUIRE(region.value()->write(2, 0, payloadOf(100, 4)).hasValue());
+        REQUIRE(region.value()->flush().hasValue());
+    }
+
+    // The whole point: the region is still readable, and column 0 still holds what
+    // it held before the failed write rather than column 2's bytes.
+    auto reopened = RegionFile::open(path, true);
+    REQUIRE(reopened.hasValue());
+    REQUIRE(reopened.value() != nullptr);
+
+    auto first = reopened.value()->read(0, 0);
+    REQUIRE(first.hasValue());
+    REQUIRE(first.value().has_value());
+    CHECK(*first.value() == payloadOf(100, 1));
+
+    auto third = reopened.value()->read(2, 0);
+    REQUIRE(third.hasValue());
+    REQUIRE(third.value().has_value());
+    CHECK(*third.value() == payloadOf(100, 4));
 }
 
 TEST_CASE("a region whose header claims sectors past the end is refused") {

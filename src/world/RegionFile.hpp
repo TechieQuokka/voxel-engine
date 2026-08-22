@@ -106,10 +106,22 @@ public:
     /// Rewrites in place when the new payload still fits the sectors already
     /// allocated to it, which is the common case -- a column is saved again and
     /// again as the player keeps digging in it, and its size barely moves.
+    ///
+    /// **A sector this entry already owns is never freed before the new record is
+    /// on disk.** See the comment on `write` in the .cpp: the alternative loses a
+    /// whole region rather than a column.
     Result<void, Error> write(i32 localX, i32 localZ, std::span<const u8> payload);
 
-    /// Flushes the stream. Called on shutdown; writes are otherwise left to the
-    /// stream's own buffering.
+    /// Flushes the stream and `fsync`s the file, so a clean shutdown is durable
+    /// rather than merely handed to the page cache. Called when a region is evicted
+    /// from `WorldStore`'s cache and when the store is destroyed.
+    ///
+    /// **Individual writes are deliberately not synced.** A column is saved on every
+    /// unload, and an fsync each time would put a disk round trip on the streaming
+    /// path. The cost of that choice is bounded: a power loss can leave one column's
+    /// header pointing at a record that never landed, and `read` rejects it so the
+    /// column regenerates. Losing the region needs the sector map to disagree with
+    /// the header, which `write` is careful never to cause.
     Result<void, Error> flush();
 
     /// How many columns this region currently holds. For tests and the stats line.
@@ -131,10 +143,18 @@ private:
     /// hundred bits is not worth a smarter policy.
     u32 allocate(u32 sectorCount);
 
+    /// Grows an entry in place, when the sectors immediately after it are free or
+    /// past the end of the file. This is what keeps a column that gained a sector
+    /// from moving, and it exists because the obvious way to get the same effect --
+    /// releasing the old run and letting `allocate` find it again -- frees sectors
+    /// the header still points at. Returns false having changed nothing.
+    bool tryExtend(u32 firstSector, u32 haveCount, u32 wantCount);
+
     void releaseSectors(u32 firstSector, u32 sectorCount);
 
     Result<void, Error> writeHeaderSlot(usize slot);
 
+    std::filesystem::path m_path;
     std::fstream m_file;
     /// (offsetInSectors << 8) | sectorCount, in vanilla's packing. Zero is absent.
     std::vector<u32> m_offsets;
