@@ -1,34 +1,14 @@
 #pragma once
 
-#include "core/RangeAllocator.hpp"
 #include "core/Types.hpp"
 #include "mesh/ChunkMesh.hpp"
+#include "render/SectionMeshArena.hpp"
 #include "rhi/Buffer.hpp"
 #include "world/Coords.hpp"
 
-#include <mutex>
 #include <optional>
-#include <unordered_map>
-#include <vector>
 
 namespace mc {
-
-/// Hash for SectionPos, built the same way as ChunkPosHash.
-struct SectionPosHash {
-    usize operator()(SectionPos pos) const noexcept {
-        // 21 bits per axis is ±1,048,576 sections, far beyond any reachable
-        // coordinate, so this packing loses nothing in practice.
-        u64 h = (static_cast<u64>(static_cast<u32>(pos.x) & 0x1FFFFFu))
-              | (static_cast<u64>(static_cast<u32>(pos.y) & 0x1FFFFFu) << 21)
-              | (static_cast<u64>(static_cast<u32>(pos.z) & 0x1FFFFFu) << 42);
-        h ^= h >> 30;
-        h *= 0xBF58476D1CE4E5B9ull;
-        h ^= h >> 27;
-        h *= 0x94D049BB133111EBull;
-        h ^= h >> 31;
-        return static_cast<usize>(h);
-    }
-};
 
 /// Every section mesh currently on the GPU, in one persistently mapped buffer.
 ///
@@ -37,42 +17,20 @@ struct SectionPosHash {
 /// together; a single arena lets the whole visible set be drawn with one
 /// multi-draw, which is what makes render distance 16 affordable at all.
 ///
-/// **Reuse is deferred by kReuseDelayFrames.** A freed range may still be read by
-/// a frame the GPU has not finished, and a coherent mapping gives no protection
-/// against that -- coherence orders writes, it does not know what the GPU is
-/// reading. Holding released ranges for a few frames is the cheap form of the
-/// triple buffering DESIGN.md 3.8 calls for, and it is sufficient because nothing
-/// here overwrites a range in place: an updated mesh always takes a fresh range.
+/// **This class is the GL half and nothing else.** Who owns which range, and when a
+/// freed range is safe to reuse, is `SectionMeshArena` -- split out because a test
+/// may not create a GL context, and the bookkeeping is the part with the hazards in
+/// it. What is left here is a buffer, a memcpy, and the decision to do the memcpy
+/// outside the lock.
 class SectionMeshStore {
 public:
-    /// Three frames: the GPU is at most two behind with a triple-buffered
-    /// swapchain, and the third is slack for a driver that queues one more.
-    static constexpr u64 kReuseDelayFrames = 3;
+    using Placement = SectionMeshArena::Placement;
 
-    /// Where one section's quads live in the arena.
-    ///
-    /// One contiguous range holding the opaque quads, then the cutout ones, then the
-    /// translucent ones, with the two counts marking the joins. Three ranges would
-    /// mean three allocations, three retirements and three lifetimes to keep in step
-    /// for what is arithmetic on a single offset.
-    ///
-    /// The order matches `ChunkMesh`, and it matches the order the three passes have
-    /// to be drawn in: opaque fills depth, cutout tests against it and may discard,
-    /// translucent blends over both and writes no depth.
-    struct Placement {
-        usize byteOffset = 0;
-        u32 quadCount = 0;
-        u32 opaqueCount = 0;
-        u32 cutoutCount = 0;
-
-        u32 translucentCount() const noexcept {
-            return quadCount - opaqueCount - cutoutCount;
-        }
-    };
+    static constexpr u64 kReuseDelayFrames = SectionMeshArena::kReuseDelayFrames;
 
     /// `capacityBytes` is fixed for the store's lifetime, because the arena is
     /// immutable GL storage. Sizing it is a budget decision, not a guess: see
-    /// kDefaultCapacityBytes.
+    /// meshArenaBytesFor.
     explicit SectionMeshStore(usize capacityBytes);
 
     /// Uploads (or replaces) one section's mesh.
@@ -83,46 +41,25 @@ public:
     bool store(SectionPos pos, const ChunkMesh& mesh, u64 frame);
 
     /// Drops a section's storage. Silently ignores a section that has none.
-    void release(SectionPos pos, u64 frame);
+    void release(SectionPos pos, u64 frame) { m_arena.release(pos, frame); }
 
-    std::optional<Placement> find(SectionPos pos) const;
+    std::optional<Placement> find(SectionPos pos) const { return m_arena.find(pos); }
 
     /// Returns ranges released at least kReuseDelayFrames ago to the allocator.
     /// Call once per frame, before the frame's store() calls.
-    void recycle(u64 frame);
+    void recycle(u64 frame) { m_arena.recycle(frame); }
 
     const rhi::Buffer& buffer() const noexcept { return m_buffer; }
 
-    /// Fixed at construction, so this one needs no lock.
-    usize capacityBytes() const noexcept { return m_allocator.capacity(); }
-
-    // The rest read state the upload thread also writes, so they take the mutex --
-    // they are called a handful of times per second for statistics, and a torn read
-    // in a log line is not worth leaving as a documented race.
-    usize sectionCount() const;
-    usize usedBytes() const;
-    usize pendingReuseBytes() const;
-    usize largestFreeBlock() const;
+    usize capacityBytes() const noexcept { return m_arena.capacityBytes(); }
+    usize sectionCount() const { return m_arena.sectionCount(); }
+    usize usedBytes() const { return m_arena.usedBytes(); }
+    usize pendingReuseBytes() const { return m_arena.pendingReuseBytes(); }
+    usize largestFreeBlock() const { return m_arena.largestFreeBlock(); }
 
 private:
-    struct Pending {
-        usize byteOffset;
-        usize byteSize;
-        u64 releasedOnFrame;
-    };
-
-    /// Guards the allocator, the placement map and the pending list.
-    ///
-    /// A mutex, not a lock-free structure, and deliberately: this is touched a few
-    /// hundred times a frame at most, by the upload thread and the main thread. The
-    /// data path -- the memcpy into the mapped buffer -- is outside the lock, which
-    /// is the part that actually needs to be concurrent.
-    mutable std::mutex m_mutex;
-
     rhi::Buffer m_buffer;
-    RangeAllocator m_allocator;
-    std::unordered_map<SectionPos, Placement, SectionPosHash> m_placements;
-    std::vector<Pending> m_pending;
+    SectionMeshArena m_arena;
 };
 
 /// Arena size for a given render distance.

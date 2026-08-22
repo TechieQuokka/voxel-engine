@@ -4,6 +4,7 @@ add_library(mc_render STATIC
   CharacterRenderer.cpp
   ChunkRenderer.cpp
   Frustum.cpp
+  SectionMeshArena.cpp
   SectionMeshStore.cpp
   SelectionRenderer.cpp
   ItemModel.cpp

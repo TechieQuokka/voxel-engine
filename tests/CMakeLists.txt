@@ -22,6 +22,7 @@ add_executable(mc_tests
   test_mpmc_queue.cpp
   test_jobsystem.cpp
   test_range_allocator.cpp
+  test_section_mesh_arena.cpp
   test_ring_layout.cpp
   test_frustum.cpp
   test_coords.cpp
