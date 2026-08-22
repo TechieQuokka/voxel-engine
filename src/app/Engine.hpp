@@ -22,6 +22,7 @@
 #include "world/CraftingGrid.hpp"
 #include "world/Furnace.hpp"
 #include "world/ItemEntities.hpp"
+#include "world/FallDamage.hpp"
 #include "world/Player.hpp"
 #include "world/PlayerBox.hpp"
 #include "world/WalkMove.hpp"
@@ -726,12 +727,9 @@ private:
     f32 m_fallFromY = 0.0f;
     bool m_trackingFall = false;
 
-    /// Vanilla's rule: no damage for the first three blocks, then one half-heart per
-    /// block after that. Three is what makes a jump free and a two-storey drop hurt.
-    static constexpr f32 kSafeFallBlocks = 3.0f;
-
     /// Applies fall damage for a landing from `fromY` to `toY`, and respawns the
-    /// player if it kills them.
+    /// player if it kills them. The rule itself is `world/FallDamage.hpp`; what is
+    /// left here is the health and what death does.
     void applyFallDamage(f32 fromY, f32 toY);
     void respawn();
 

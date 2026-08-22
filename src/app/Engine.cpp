@@ -1930,15 +1930,7 @@ void Engine::updateWalk(f32 dt) {
 
 void Engine::applyFallDamage(f32 fromY, f32 toY) {
     const f32 distance = fromY - toY;
-    if (distance <= kSafeFallBlocks) {
-        return;
-    }
-
-    // Vanilla's formula: one half-heart per block past the third, rounded down. At
-    // 20 health that means a 23-block drop is fatal, which is close enough to the
-    // real thing that the height a player learns to fear transfers.
-    const auto damage = static_cast<f32>(
-        static_cast<i32>(std::floor(distance - kSafeFallBlocks)));
+    const f32 damage = FallDamage::forDistance(distance);
     if (damage <= 0.0f) {
         return;
     }
