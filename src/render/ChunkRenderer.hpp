@@ -38,6 +38,10 @@ public:
         /// Of `quadsDrawn`, how many were glass. Separate for the same reason and
         /// one more: the cutout pass is the only one that discards, so it is the one
         /// whose cost does not follow from its quad count alone.
+        /// Model boxes, counted in boxes rather than quads -- each draws 36 vertices
+        /// where a quad draws 6. Not part of `quadsDrawn` for that reason: adding
+        /// them would make one number mean two different amounts of geometry.
+        usize modelBoxesDrawn = 0;
         usize cutoutQuadsDrawn = 0;
         usize sectionsConsidered = 0;
         usize columnsCulled = 0;
@@ -118,6 +122,11 @@ private:
     /// terrain in the world to draw the handful of tiles that need it. It shares
     /// `chunk.vert` -- the geometry is identical; only the fragment rule differs.
     rhi::Shader m_cutoutShader;
+    /// **The model pass -- non-cube geometry.** A fourth program because the words it
+    /// reads are `ModelBox`es rather than `Quad`s: a box, not a face, expanded to 36
+    /// vertices instead of 6. Same arena, same texture array, different decode. See
+    /// mesh/ModelBox.hpp.
+    rhi::Shader m_modelShader;
     rhi::VertexArray m_vao;
     std::optional<BlockTextures> m_textures;
 
@@ -133,6 +142,13 @@ private:
     std::vector<i32> m_firsts;
     std::vector<i32> m_counts;
     std::vector<vec4> m_origins;
+
+    /// The model pass -- slabs and the rest of the non-cube vocabulary. Drawn right
+    /// after opaque, because it is depth-writing geometry of the same kind and the
+    /// alpha test below has to see it in the depth buffer.
+    std::vector<i32> m_modelFirsts;
+    std::vector<i32> m_modelCounts;
+    std::vector<vec4> m_modelOrigins;
 
     /// The cutout pass -- glass. Between opaque and translucent, because it writes
     /// depth like the first and must not be occluded by the second.

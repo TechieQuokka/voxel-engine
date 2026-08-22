@@ -9,6 +9,10 @@
 
 uniform mat4 u_viewProjection;
 uniform vec3 u_blockOrigin;
+// The box inside the cell; see selection.vert. Cracks spread over the surface being
+// mined, so they follow the same shape the outline does.
+uniform vec3 u_boxMin;
+uniform vec3 u_boxSize;
 uniform float u_inflate;
 
 out vec2 v_uv;
@@ -59,5 +63,6 @@ void main() {
     vec3 offset = (unit - vec3(0.5)) * (2.0 * u_inflate);
 
     v_uv = corner;
-    gl_Position = u_viewProjection * vec4(u_blockOrigin + unit + offset, 1.0);
+    gl_Position = u_viewProjection
+                * vec4(u_blockOrigin + u_boxMin + unit * u_boxSize + offset, 1.0);
 }

@@ -1,12 +1,15 @@
 #include "mesh/BinaryGreedyMesher.hpp"
 
 #include "core/Profile.hpp"
+#include "mesh/ModelBox.hpp"
 #include "world/BlockRegistry.hpp"
+#include "world/BlockShape.hpp"
 
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <cstring>
+#include <span>
 
 namespace mc {
 namespace {
@@ -98,6 +101,14 @@ struct Scratch {
     /// `fluid` is separate: it is neither opaque nor a fluid, and a block that is
     /// none of the three emits nothing at all.
     std::array<u8, kPaddedVolume> cutout{};
+
+    /// Whether the centre section holds any block that is not a full cube.
+    ///
+    /// **The same gate `anyFluid` and `anyCutout` are, and the same argument.** A
+    /// world nobody has built in holds none of these, and the model pass then costs
+    /// one boolean rather than a walk over 32,768 voxels per section -- of which a
+    /// render distance of 16 meshes about five thousand.
+    bool anyModel = false;
     /// Whether the centre section holds any cutout block. Skips the pass whole for
     /// every section nobody has glazed, which is all of them until somebody does --
     /// the same argument `anyFluid` makes, and it matters more here because glass is
@@ -235,6 +246,7 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
     std::memset(s.light.data(), 0, s.light.size());
     s.anyFluid = false;
     s.anyCutout = false;
+    s.anyModel = false;
 
     // **Sky and block light collapse to one number here and nowhere else.**
     // DESIGN.md 3.7: the quad's sixteen light bits are full, so a torch does not
@@ -264,6 +276,14 @@ void decodeNeighbourhood(const SectionNeighbourhood& hood, Scratch& s) {
                 if (isCutout(block)) {
                     s.cutout[paddedIndex(x, y, z)] = 1;
                     s.anyCutout = true;
+                }
+                // **No occupancy grid for these, on purpose.** A non-cube block is
+                // already absent from `opaque` -- a slab is not opaque -- so it emits
+                // no cube faces and hides none of its neighbours', which is exactly
+                // right. All the model pass needs is to know the section is worth
+                // walking, and `s.blocks` already holds which voxels they are.
+                if (!isFullCube(block)) {
+                    s.anyModel = true;
                 }
                 s.light[paddedIndex(x, y, z)] =
                     centerLightUniform ? centerLightLevel : center->light(x, y, z);
@@ -644,6 +664,75 @@ void voxelFor(const FacePlan& plan, i32 p, i32 u, i32 v, i32& x, i32& y, i32& z)
     z = plan.nz != 0 ? p : (plan.uz != 0 ? u : v);
 }
 
+/// Appends one word per box of every non-cube block in the centre section.
+///
+/// **Nothing merges here, and that is the difference from every other pass.** The
+/// greedy method exists because a wall of stone is thousands of coplanar faces that
+/// are one quad; a slab's geometry stops at its own cell, and two slabs side by side
+/// share no face a merge could remove. So this is a walk, and it is affordable for the
+/// reason the whole format is: a house holds a few hundred of these against the
+/// millions of quads the terrain around it is worth.
+///
+/// **Light comes from the neighbours, not from the block's own cell**, and getting
+/// that wrong once is what this paragraph is for. A slab shades what is under it --
+/// `shadesLight` is true, which is vanilla's rule -- so `computeSkyLight` writes zero
+/// into the cell it stands in, and a box lit from there comes out black. The cube path
+/// never had this problem because a face is lit by the cell it *faces*, which is why
+/// `Scratch::light` is a padded grid in the first place.
+///
+/// The brightest of the six neighbours, rather than the cell above alone. Above is the
+/// right answer for a slab in the open and the wrong one for a slab under a ceiling,
+/// where the light arrives from the side; six reads settle both and cost nothing at
+/// this frequency.
+///
+/// **One value for the whole box, and it is `max(sky, block)` already combined.** The
+/// word has room to keep the two apart -- it is laid out that way, because a day/night
+/// cycle needs the separation -- but the mesher has only the combined padded grid to
+/// read, so the sky field carries the answer and the block field is zero. Splitting
+/// them is a second padded grid in `Scratch`, and it belongs with the cycle that needs
+/// it rather than here.
+u8 neighbourLight(const Scratch& s, i32 x, i32 y, i32 z) {
+    u8 best = s.light[paddedIndex(x, y + 1, z)];
+    best = std::max(best, s.light[paddedIndex(x, y - 1, z)]);
+    best = std::max(best, s.light[paddedIndex(x - 1, y, z)]);
+    best = std::max(best, s.light[paddedIndex(x + 1, y, z)]);
+    best = std::max(best, s.light[paddedIndex(x, y, z - 1)]);
+    best = std::max(best, s.light[paddedIndex(x, y, z + 1)]);
+    return best;
+}
+
+void emitModelBoxes(const Scratch& s, ChunkMesh& out, const BlockRegistry& registry) {
+    for (i32 y = 0; y < kN; ++y) {
+        for (i32 z = 0; z < kN; ++z) {
+            for (i32 x = 0; x < kN; ++x) {
+                const BlockId block = s.blocks[localIndex(x, y, z)];
+                if (isFullCube(block)) {
+                    continue;
+                }
+                const std::span<const BlockBox> boxes = blockBoxes(block);
+                if (boxes.empty()) {
+                    continue; // Air and water reach here and have no geometry.
+                }
+
+                // One layer for the whole box rather than one per face. A slab is cut
+                // from a block, so every face of it is that block's side texture --
+                // and `PosY` is what a top face asks for, which is the one a player
+                // looks at.
+                const u16 layer = registry.textureLayer(block, Face::PosY);
+                const u8 light = neighbourLight(s, x, y, z);
+
+                for (const BlockBox& box : boxes) {
+                    out.quads.push_back(
+                        ModelBox::make(static_cast<u32>(x), static_cast<u32>(y),
+                                       static_cast<u32>(z), box, layer, light,
+                                       /*blockLight=*/0)
+                            .asQuad());
+                }
+            }
+        }
+    }
+}
+
 } // namespace
 
 void meshSectionGreedy(const SectionNeighbourhood& hood,
@@ -692,6 +781,17 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
 
         if (pass == Pass::Cutout) {
             out.opaqueQuads = out.quads.size();
+
+            // **Between opaque and cutout, and before either early exit below.** The
+            // model boxes are depth-writing geometry like the opaque pass, so they
+            // belong on that side of the alpha test; and putting the call here rather
+            // than inside the `anyCutout` branch is what keeps a section that holds
+            // slabs and nothing else from losing them to a `break`.
+            if (s.anyModel) {
+                emitModelBoxes(s, out, registry);
+            }
+            out.modelBoxes = out.quads.size() - out.opaqueQuads;
+
             if (!s.anyCutout) {
                 // Every section nobody has glazed, which is all of them until
                 // somebody does. Costs one boolean.
@@ -704,7 +804,7 @@ void meshSectionGreedy(const SectionNeighbourhood& hood,
         }
 
         if (pass == Pass::Fluid) {
-            out.cutoutQuads = out.quads.size() - out.opaqueQuads;
+            out.cutoutQuads = out.quads.size() - out.opaqueQuads - out.modelBoxes;
             if (!s.anyFluid) {
                 // Almost every section in the world: everything above sea level and
                 // everything below the sea bed. The whole third pass costs one

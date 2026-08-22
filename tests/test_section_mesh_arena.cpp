@@ -21,7 +21,7 @@ SectionPos at(i32 x, i32 y, i32 z) { return SectionPos{x, y, z}; }
 /// the split counts have their own case.
 std::optional<usize> reserveOpaque(SectionMeshArena& arena, SectionPos pos, u32 quadCount,
                                    u64 frame) {
-    return arena.reserve(pos, quadCount, quadCount, 0, frame);
+    return arena.reserve(pos, quadCount, quadCount, 0, 0, frame);
 }
 
 /// Advances past the reuse delay so everything released on `frame` is collectable.
@@ -36,17 +36,18 @@ void recycleAfterDelay(SectionMeshArena& arena, u64 frame) {
 TEST_CASE("a reserved section reports where it landed and how it splits") {
     SectionMeshArena arena(quads(64));
 
-    const std::optional<usize> offset = arena.reserve(at(0, 0, 0), 10, 6, 3, 1);
+    const std::optional<usize> offset = arena.reserve(at(0, 0, 0), 10, 5, 2, 2, 1);
     REQUIRE(offset.has_value());
 
     const std::optional<SectionMeshArena::Placement> found = arena.find(at(0, 0, 0));
     REQUIRE(found.has_value());
     CHECK(found->byteOffset == *offset);
     CHECK(found->quadCount == 10);
-    CHECK(found->opaqueCount == 6);
-    CHECK(found->cutoutCount == 3);
-    // The third pass is whatever is left, which is the invariant ChunkRenderer's
-    // three draws rest on.
+    CHECK(found->opaqueCount == 5);
+    CHECK(found->modelCount == 2);
+    CHECK(found->cutoutCount == 2);
+    // The last pass is whatever is left, which is the invariant ChunkRenderer's
+    // four draws rest on.
     CHECK(found->translucentCount() == 1);
 
     CHECK(arena.sectionCount() == 1);

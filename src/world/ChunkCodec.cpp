@@ -36,6 +36,16 @@ public:
     }
 
     void putBytes(const void* data, usize size) {
+        // **Zero is a real case here and `memcpy` will not take it.** A uniform
+        // section -- every sky section above the terrain -- stores its voxels in zero
+        // bits and therefore in zero words, so this is called with an empty vector
+        // whose `data()` is null. Passing a null pointer to `memcpy` is undefined even
+        // when the count is zero, which every implementation tolerates and
+        // UBSan reports. Found by running the app under the asan preset against a
+        // world that had been saved once.
+        if (size == 0) {
+            return;
+        }
         const usize offset = m_out.size();
         m_out.resize(offset + size);
         std::memcpy(m_out.data() + offset, data, size);
@@ -246,8 +256,12 @@ Result<void, ChunkDecodeError> decodeChunk(std::span<const u8> bytes, Chunk& chu
 
         // Copied rather than viewed in place: the payload is a byte span with no
         // alignment guarantee, and a u64 span over it would be misaligned.
+        // Guarded for `putBytes`'s reason, on the decode side: a uniform section
+        // encodes zero words, and both pointers are then null.
         std::vector<u64> words(wordCount);
-        std::memcpy(words.data(), raw.data(), raw.size());
+        if (!raw.empty()) {
+            std::memcpy(words.data(), raw.data(), raw.size());
+        }
 
         std::optional<Palette> storage =
             Palette::fromParts(kSectionVolume, entries, bits, words);

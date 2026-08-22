@@ -612,7 +612,7 @@ minecraft/
 │       ├── main.cpp
 │       └── Engine.hpp/.cpp     # streaming, physics, interaction, screens, capture
 │
-└── tests/                      # 39 files, 411 cases, one ctest entry each
+└── tests/                      # 40 files, 441 cases, one ctest entry each
     ├── test_main.cpp
     ├── test_palette.cpp
     ├── test_section_mesh_arena.cpp
@@ -3946,6 +3946,198 @@ Two lessons about method, both of which cost time here:
 
 CI runs debug and asan on every push. Not release, the only preset that turns tests
 off; not tsan, for the reason above plus a GL context no runner has.
+
+### 7.30 A shutdown that only ran on the path nobody fails on
+
+**The upload thread could not be stopped by the thing that owns it.**
+
+`Engine` started it as a `std::jthread` and never read the `stop_token`. The loop parks
+in `m_uploadSignal.acquire()` and leaves on one atomic, `m_uploadStopping`, which only
+`shutdownStreaming()` ever set -- and `shutdownStreaming()` was called from `~Engine`
+and nowhere else. On the ordinary path that is correct and the thread stops in
+microseconds.
+
+The path it did not cover is the one where `~Engine` never runs. **A constructor that
+throws destroys the members without executing the destructor body.** `m_uploadThread`
+was declared after `m_jobs`, so it was torn down first, and `~jthread` calls
+`request_stop()` and then `join()` -- joining a thread that has been told nothing it can
+hear. The process hung. It did not crash, did not reach `main`'s catch, and did not
+print the "Fatal:" line that exists precisely to explain this class of failure.
+
+Reaching it takes a throw after `startUploadThread()`, which in that constructor meant
+`updateLoadedRegion()` or `drainStreaming()` -- the two allocation-heavy calls, on
+exactly the `--render-distance 64 --warm-up` path that would produce a `bad_alloc`. Low
+probability, worst possible failure mode: a hang tells you nothing about where it was.
+
+**The fix is not the interesting part; the fact that the project already knew the answer
+is.** `JobSystem::~JobSystem` sets its stop flag and releases one permit per worker in
+the *destructor body*, and the comment there says why: "a thread parked in acquire()
+cannot observe a stop request". The upload thread was the one thread not owned by a
+class of its own, and it was the one that got this wrong. A `std::stop_callback`
+registered inside the thread function now routes `request_stop()` into the same flag and
+the same permit, so both paths open the same door.
+
+**That is also the argument for `ChunkStreamer`.** The pool, the task ring, the upload
+thread and the two worker-to-main handoffs are one mechanism with one shutdown order,
+and they were members of a class that also owned the window, the player, the HUD and the
+benchmark. The ordering constraint was real and correctly implemented -- workers before
+the upload thread, both before the World and the arena -- but it was maintained by a
+destructor body sixty methods away from the members it was ordering, and by a comment on
+a declaration asking the reader to trust that the declaration order below it was
+deliberate. Moving all of it behind one type makes the destructor three lines standing
+next to the things it stops, and makes the borrowed objects explicit: the streamer holds
+`World&`, `Generator&`, `WorldStore*` and `SectionMeshStore&`, and is declared after all
+four so member destruction stops its threads before any of them goes away.
+
+`Engine` went from 2,477 lines over 58 methods and 44 members to 2,062 over 47 and 30,
+and its header from 815 lines to 724. That is the smaller half of the result. The larger half is that `priorityFor` is now
+reachable by a test, and that the shutdown order is legible without reading the whole
+class.
+
+Two smaller things went with it. **`Engine`'s constructor was 270 lines and 83 of them
+were capture fixtures** -- a furnace mid-smelt, a crafting grid mid-recipe, fourteen
+inventory `add` calls -- none of which run in an ordinary session. They are in
+`app/CaptureScenarios.cpp` now; what stayed in the constructor is the ordering, which is
+not local to that file and is written down there. And **`Chunk::unpin`'s guard was an
+`MC_ASSERT`**, which compiles out under `NDEBUG`. What an unmatched unpin does in
+release is wrap a `u32` to four billion, after which the column reads as pinned forever,
+is never unloaded and never relit, and says nothing. It is `MC_VERIFY` now: a failure
+that is silent in the build that matters is worth a branch.
+
+### 7.31 Phase 10a — a block that is not a cube
+
+**The whole engine assumed a block filled its cell, and three separate things were
+resting on that without saying so.**
+
+The mesher was the obvious one: binary greedy meshing is bitwise culling over 32-bit
+occupancy columns, and a column of bits has no way to spell half a cell. The other two
+were not obvious at all. `BlockInfo::opaque` was answering two different questions with
+one bit — "does this hide the face behind it" for the mesher and "does this stop light"
+for `SkyLight` and `BlockLight` — and they agree for every full cube, which is why
+nothing had ever noticed. And collision asked `isSolidBlock(BlockId)` per whole cell,
+so a slab would have been a block you cannot walk through and cannot stand on the top
+of.
+
+#### The quad could not be stretched, and it should not have been
+
+A `Quad` is a *merged face*: origin, width, height, direction, and the word is exactly
+full (3.7). Non-cube geometry is not a face that got smaller, it is a different shape of
+thing — a slab is a box, a stair is two, a fence is five. Widening the quad to hold a
+box would have doubled the arena for the millions of terrain quads that do not need it,
+to serve the few hundred a house is worth.
+
+So the model pass is **a fourth program over the same arena**, reading the same 64 bits
+with a different layout (`mesh/ModelBox.hpp`). That is the third time this engine has
+done it and the reasoning has not changed: water reads a quad's bits 33..40 as corner
+drops rather than AO, glass shares `chunk.vert` and differs only in the fragment rule.
+A separate arena would have meant a second allocator, a second lifetime, a second
+upload path and a second copy of the deferred-reuse frame clock.
+
+The unit is a box rather than a face, and that is the one real difference from the other
+three passes. Nothing merges — a slab's geometry stops at its own cell — so one word
+that the vertex shader expands to six faces is a sixth of the memory and a sixth of the
+words to sort through. `gl_VertexID / 36` instead of `/ 6`, and there is still no vertex
+buffer anywhere in this engine.
+
+**What the format gives up is per-corner light.** A quad spends sixteen bits on four
+corners so a cave mouth fades smoothly; there is no room for that beside a box. Sky and
+block light are kept in *separate* fields rather than pre-combined the way a quad's are,
+because nine bits were spare and a day/night cycle needs exactly that separation (1.1) —
+but the mesher fills only the sky field today, because the only light data it has on a
+padded grid is already `max(sky, block)`. Splitting it is a second padded grid in
+`Scratch`, and it belongs with the cycle that needs it.
+
+#### `opaque` was two flags, and the split cost nothing
+
+`opaque` now answers only the drawing question. `shadesLight` is the new half, and
+`blocksLight(id)` is `opaque || shadesLight` — which is what the two light systems read.
+Because the new field defaults to false, every one of the sixty-two existing entries
+kept exactly the answer it had. **The split changed no behaviour on its own**, and the
+411 tests passing unmodified is the evidence.
+
+A slab is the first block where they part: not opaque, so it does not hide the face of
+the block beside it and does not draw as a solid wall; shading, because vanilla stops
+daylight under a slab and a floor of them that lit the room below would be a rule nobody
+could guess by looking.
+
+The field went at the **end** of `BlockInfo`, and the first attempt did not. Every entry
+in `kBlocks` is positional, and the comment on `falls` says outright that a field
+inserted rather than appended silently reinterprets every entry after it — it says the
+rule has caught three bugs already. It caught a fourth: the insert compiled, and would
+have shifted sixty-two blocks' texture layers by one.
+
+#### The lighting bug the capture found, which no test could have
+
+The first frame drew the slabs almost black. The cause is worth recording because it is
+a direct consequence of the split above: model boxes were lit from the block's **own**
+cell, and a slab shades its own cell, so `computeSkyLight` had correctly written zero
+there. The cube path never had this problem — a face is lit by the cell it *faces*,
+which is the entire reason `Scratch::light` is a padded grid.
+
+It now takes the brightest of the six neighbours. Above alone is right for a slab in the
+open and wrong for one under a ceiling, where the light arrives from the side; six reads
+settle both and cost nothing at this frequency. **No test would have caught this**: the
+value is correct light data read from the correct array, and only looking at it says the
+array was the wrong one.
+
+#### What it cost
+
+`--render-distance 16`, release, 15 seconds of flight: mean 4.57 ms, p99 5.83. A section
+holding no non-cube block sets `anyModel` false during the decode it was already doing
+and the pass is skipped whole — the same gate `anyFluid` and `anyCutout` use, and the
+same argument: a world nobody has built in pays one boolean.
+
+Six model boxes drawn for six placed slabs, which is the number the capture line now
+reports. That line exists for the reason the block name beside the crosshair does: a
+slab is a few hundred pixels in a 1280x720 frame, and a box that was never submitted
+looks identical from here to one drawn inside the block next to it.
+
+#### The aim ray had no shape awareness, and that is what "a block is a cube" really cost
+
+**Sixty slabs, one play session, and not one of them landed where it was aimed.** They
+came out scattered across a hillside instead of stacked into a wall, and the session
+ended with "이거 아주많이 이상한데" and a house that was never going to get finished.
+
+The cause is one line that was not changed. `Raycast.cpp` marches cell to cell and
+decides a hit with `isSolidBlock(world.blockAt(block))` — the *cell*, not what is in it.
+A slab fills half of one, so:
+
+- a ray through the empty half reported a hit on the slab anyway, and
+- `face` came from the cell boundary the DDA had just crossed rather than from the
+  surface the player was looking at, so
+- `adjacent` — which is the whole of where a placement goes — named a cell one step to
+  the side of the one being pointed at.
+
+Every placement went sideways. Aiming down at the top of a slab reported a *side* face,
+and the block went next to it. The selection outline made it worse rather than
+revealing it: a unit cube drawn around a half block says you are aiming at something
+solid, so the frame agrees with the wrong answer.
+
+**The design note for this phase named collision as the cost the handoff had not
+mentioned, and stopped there.** That was the omission: shape awareness is not one change
+but three — what you walk into, what you *aim at*, and what the outline says you aimed
+at — and for building, aiming is the one that matters most. Collision being wrong makes
+a slab feel odd. Aiming being wrong makes it unusable.
+
+The fix is a ray-AABB test against the block's own boxes when it is not a full cube,
+with the face and the distance taken from the box surface. The test that pins it is a
+number: looking straight down from y = 74 at a bottom slab in cell 70 must report 3.5,
+the surface at 70.5. The old code reported 3.0, the cell boundary at 71.0.
+
+**Nothing could have caught this except playing it.** 425 tests were green, asan and
+tsan were clean, and every capture looked right — because a capture aims where it is
+told and never asks whether the block went where the crosshair was. The session that
+found it was about eighty seconds long, which is the third time on this project that a
+session of roughly that length has overturned something reasoning had signed off.
+
+#### A pre-existing bug the sanitizer found on the way
+
+Running the app under asan against a world that had been **saved** — which no earlier
+sanitizer run had done, they all used `--no-save` — reported two null pointers passed to
+`memcpy` in `ChunkCodec`. A uniform section stores its voxels in zero bits and therefore
+zero words, so both the encode and the decode call `memcpy` with a null pointer and a
+count of zero. Every implementation tolerates it and the standard does not. Unrelated to
+this phase, latent since Phase 11, and fixed here.
 
 ---
 

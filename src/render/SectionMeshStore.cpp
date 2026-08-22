@@ -24,6 +24,7 @@ bool SectionMeshStore::store(SectionPos pos, const ChunkMesh& mesh, u64 frame) {
     const std::optional<usize> offset =
         m_arena.reserve(pos, static_cast<u32>(mesh.quadCount()),
                         static_cast<u32>(mesh.opaqueQuads),
+                        static_cast<u32>(mesh.modelBoxes),
                         static_cast<u32>(mesh.cutoutQuads), frame);
     if (!offset.has_value()) {
         return false;

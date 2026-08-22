@@ -81,6 +81,27 @@ struct PlayerBox {
             && z + 1.0f > feet.z - kHalfWidth && z < feet.z + kHalfWidth;
     }
 
+    /// Whether a sub-cell box inside the block at `pos` overlaps this box.
+    ///
+    /// **The same rule as `intersects` above, with the cube's 0..1 replaced by the
+    /// box's own bounds** -- and it is spelled as a separate overload rather than the
+    /// unit-cube version calling it, so that the cube path keeps exactly the arithmetic
+    /// it has always had. A slab that collides half a pixel differently from the block
+    /// it replaced would be felt on the first step and blamed on the slab.
+    ///
+    /// Takes the bounds already converted to fractions of a block, so this header
+    /// stays free of `BlockShape` and a test can pass numbers directly.
+    bool intersectsBox(BlockPos pos, f32 minX, f32 minY, f32 minZ, f32 maxX, f32 maxY,
+                       f32 maxZ) const noexcept {
+        const auto x = static_cast<f32>(pos.x);
+        const auto y = static_cast<f32>(pos.y);
+        const auto z = static_cast<f32>(pos.z);
+
+        return x + maxX > feet.x - kHalfWidth && x + minX < feet.x + kHalfWidth
+            && y + maxY > feet.y && y + minY < feet.y + kHeight
+            && z + maxZ > feet.z - kHalfWidth && z + minZ < feet.z + kHalfWidth;
+    }
+
 private:
     /// First cell a span starting at `low` touches.
     static i32 spanMin(f32 low) noexcept {

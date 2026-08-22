@@ -14,20 +14,64 @@ Building, in the order a builder hits it:
 
 | | What | Why here | Size |
 |---|---|---|---|
-| **1** | **A door** | You cannot close a house without one. Today it is a hole, or a block broken and replaced every time you go in. **Blocked on a decision, below** | medium |
-| **2** | **Phase 10 non-cube geometry** | Stairs, slabs, fences, panes — and the torch's real shape (18b: one field flips, `opaque` to false). **This is not a prerequisite, it is the building vocabulary** | large |
+| **1** | **Stairs** | The model pass exists and the slab proves it end to end. A stair is two boxes and eight states, and it is the biggest visual change a house gets | medium |
+| **2** | **A door** | You cannot close a house without one. Needs the model pass (it has one) plus the first **multi-block state** in the engine: placing sets two cells and breaking either must break both | medium |
+| **3** | **Fences and panes** | Connecting geometry — the shape depends on the neighbours, which nothing else here does yet | medium |
+| **4** | **The torch's real shape** | 18b. `opaque` flips to false, `shadesLight` to false, `shape` to a cross. The one deliberate deviation left | small |
 
-**The door is blocked on a decision, not on code.** A vanilla door is 3/16 of a block
-thick and two blocks tall; the mesher draws cubes only, and nothing in this engine has
-multi-block state — placing sets two blocks and breaking either must break both. So
-either a **cube door now** (a second deliberate deviation after the torch, and far more
-visible — a door is at eye height in a wall you built), or **Phase 10 first**, which
-delivers doors, panes, stairs, slabs, fences and the torch's real shape together
-because they are all the same missing thing. The second is the better trade if there is
-time for it.
+**The decision that blocked this is made: Phase 10 went first, and the door comes out
+of it rather than being a cube exception.** The alternative was a cube door now, and
+what argued against it is in HANDOFF's own rule about things that are *felt* — a door
+is at eye height in a wall you built, which is the worst place to put the minimal
+version of anything.
+
+**The vocabulary is built, and a slab is what proved it.** `world/BlockShape.hpp` holds
+the boxes, `mesh/ModelBox.hpp` the word they pack into, `assets/shaders/model.*` the
+fourth pass. Adding a shape is now an entry in `BlockShape`, its boxes, and a line in
+`kBlocks` — the same one-line rule the block table already had.
+
+**A shape has four consumers, and forgetting one is how the slab shipped unusable the
+first time.** Check all of them before adding stairs:
+
+| | Where | State |
+|---|---|---|
+| What you walk into | `Engine::boxBlocked`, `groundBelow` | per-box |
+| **What you aim at** | `Raycast.cpp` | per-box. **This is the one that was missed** — see DESIGN 7.31; every placed block landed a cell to the side |
+| What the outline says | `selection.vert`, `cracks.vert` | per-box |
+| What the icon shows | `HudRenderer::iconRect`, `buildBlockModel` | per-box, in the hotbar and in the fist |
+
+**The double slab is in.** Clicking the top of a bottom slab (or the underside of a top
+one) fills the free half and the cell becomes `oak_slab_double` -- a full cube in every
+respect, so the greedy mesher merges it and the model pass never sees it. It drops two
+slabs, which is what `BlockInfo::dropCount` was appended for; everything else drops one.
+
+**Watch the two rules that read alike and are not.** `slabGoesInTopHalf` answers "which
+half when the slab lands in an *empty* cell" -- clicking a top surface gives *bottom*,
+because a slab laid on a floor rests on it. `combinesIntoDoubleSlab` answers the
+opposite question about the cell that was *clicked*, where a top face is the one looking
+into the empty half. Reusing the first for the second was the first attempt and the
+tests caught it.
 
 **Building is shelter, not expression.** If that flips, the geometry work moves to the
 top and the door stops being the question.
+
+### 1.0 Death is invisible, and a play session said so
+
+Fall damage reaches zero health and `respawn()` runs -- **and nothing about that is
+visible to the player.** It restores full health where they stand: no screen, no
+respawn point, no dropped inventory, no pause. The first session that ever died to a
+fall reported it as "죽진않네" (it doesn't kill you), which is exactly right from the
+outside.
+
+The placeholder is deliberate and its comment says so: a death screen needs the UI
+layer to grow a second kind of window, and dropping the inventory needs somewhere for
+it to go that the player can walk back to. Both are real decisions rather than
+oversights. What the session established is that the *current* state reads as a bug
+rather than as a stub, so whichever lands first should be the one that makes death
+legible -- even a fade and a "You died" panel with a button would do it.
+
+Sits above the cycle below because it is cheap and because mobs (Phase 19) make it
+urgent: fall damage is the only thing that can kill anybody today.
 
 ### 1.1 A day/night cycle — in scope, and the cost is the bit budget
 
@@ -100,7 +144,7 @@ suite because no test can answer these:
 ```bash
 cmake --preset debug            # configure; only after CMakeLists changes
 cmake --build --preset debug
-ctest --preset debug            # 411 cases, one ctest entry each, 8 at a time
+ctest --preset debug            # 441 cases, one ctest entry each, 8 at a time
 ctest --preset debug -R walk    # a name filter now selects cases, not the binary
 
 # Sanitizers. tsan is mandatory after touching MpmcQueue, JobSystem, or anything on
@@ -174,6 +218,8 @@ src/world/      pure data; knows nothing about rendering
   FallingBlocks sand and gravel between two cells
   BlockUpdates  the tick queue, dedupe, retry discipline, **and the fluid flow**
   Inventory / ItemStack / Container / CraftingGrid / Screen / Crafting / Tools
+  BlockShape    **the boxes a block occupies**, in sixteenths. Cube, slab; the
+                collision path and the model pass read the same integers
   PlayerBox     the 0.6-wide collision box; height and eye height live here
   WalkMove      slide-with-step-up, extracted so it can be tested
   RegionFile / WorldStore / ChunkCodec / Furnace   persistence and block entities
@@ -181,12 +227,18 @@ src/worldgen/   knows world, nothing above it; FastNoise2 is PRIVATE
   DensityField (4x8x4 grid, no FastNoise2 so it is testable), DensityGraph (the only
   file including FastNoise2), Generator (noise, carvers, surface, features, light --
   order matters), FeatureTable, Features, TerrainProbe
-src/mesh/       Quad (64-bit packed), ChunkMesh, CulledMesher, BinaryGreedyMesher
+src/mesh/       Quad (64-bit packed), ModelBox (**the same 64 bits, read as a box**),
+                ChunkMesh, CulledMesher, BinaryGreedyMesher
 src/render/     Camera, Frustum (5 planes), BlockTextures, SectionMeshStore,
                 ChunkRenderer (one multi-draw), CharacterRenderer, SelectionRenderer,
                 ItemRenderer, ScreenLayout, HudRenderer, ItemModel
-src/app/        main, Engine (streaming pipeline, upload thread, and most else)
+src/app/        main (argument parsing), Engine (the frame loop and most else)
+  ChunkStreamer   generation, meshing and the upload thread: the job pool, the task
+                  ring, and the two worker-to-main handoffs (furnaces, relight)
+  CaptureScenarios  fixture data for --furnace / --inventory / --hold, kept out of
+                  Engine's constructor because none of it runs in a real session
 assets/shaders/ chunk.*, water.* (reads bits 33..40 as surface height, not AO),
+                model.* (**reads the word as a box, 36 vertices not 6**),
                 character.*, selection.*
 ```
 
@@ -194,20 +246,29 @@ One static library per module. **Dependency direction is enforced at link time**
 `mc_render` does not link `mc_worldgen`, and glad, GLFW and FastNoise2 are `PRIVATE` so
 their types cannot appear in public headers.
 
-**`Engine` is 2,477 lines over 58 methods, with 47 members and an 815-line header** —
-streaming, player physics, interaction, screens, persistence, furnace ticks,
+**`Engine` is 2,062 lines over 47 methods, with 30 members and a 724-line header** —
+the frame loop, player physics, interaction, screens, persistence, furnace ticks,
 benchmarks and capture. **It has no tests, and it is the file this project changes
 most**: 66 of the first 83 commits touched `Engine.cpp` or `Engine.hpp`. Highest churn
 and lowest coverage in the same file is the standing structural risk here.
+
+It was 2,477 lines over 58 methods and an 815-line header before the streaming pipeline
+moved out to `ChunkStreamer`. **That split was worth more than the line count says**: the
+pool, the task ring, the upload thread and the two handoffs are one mechanism with one
+shutdown order, and while they were members of a class that also owned the window and
+the HUD, that order was maintained by a destructor body sixty methods away from them.
+It is now a three-line destructor standing next to the things it stops -- which is what
+closed the startup hang described in section 4.
 
 Anything that can be lifted out of it and tested should be, and the ones already
 lifted say what the seam looks like: `WalkMove` (sliding and step-up), `PlayerBox`
 (the collision box and the eye height), `Player` (what gets saved), `FallDamage` (the
 rule, not the health). **Each was a private constant or a private method that no test
 could reach, and two of them were shipping bugs at the time.** Remaining candidates,
-roughly in order of how much they would repay: the furnace tick, the streaming
-priority function, and `groundBelow`/`boxBlocked`, which are `World` queries wearing
-`Engine` as a coat.
+roughly in order of how much they would repay: the furnace tick, and
+`groundBelow`/`boxBlocked`, which are `World` queries wearing `Engine` as a coat.
+`ChunkStreamer::priorityFor` is now reachable by a test that constructs a streamer,
+which the old private `Engine::priorityFor` was not.
 
 ---
 

@@ -169,3 +169,90 @@ TEST_CASE("an unloaded column reads as air rather than as a hit") {
     CHECK_FALSE(raycast(*world, vec3{16.5f, 10.5f, 16.5f}, vec3{1.0f, 0.0f, 0.0f}, 64.0f)
                     .has_value());
 }
+
+// -- Non-cube blocks ------------------------------------------------------------
+//
+// **The aim ray had no shape awareness, and it is what made slabs unbuildable.** A
+// slab fills half its cell; the DDA decided a hit from the cell alone, so a ray
+// through the empty half reported a hit anyway -- and the face came from the cell
+// boundary rather than from the surface, so `adjacent` named a cell the player was
+// not pointing at. Sixty placed slabs ended up scattered across a hillside.
+
+TEST_CASE("a ray through the empty half of a slab's cell passes through it") {
+    auto world = emptyWorld();
+    poke(*world, BlockPos{4, 70, 4}, blockIdOf("oak_slab")); // bottom half only
+    poke(*world, BlockPos{8, 70, 4}, blockIdOf("stone"));    // something to stop on
+
+    // Along +x at y = 70.75, which is inside the cell and above the slab.
+    const std::optional<RaycastHit> hit =
+        raycast(*world, vec3{0.5f, 70.75f, 4.5f}, vec3{1.0f, 0.0f, 0.0f}, 20.0f);
+
+    REQUIRE(hit.has_value());
+    CHECK(hit->block == BlockPos{8, 70, 4}); // not the slab
+}
+
+TEST_CASE("a ray through the filled half of a slab's cell hits it") {
+    auto world = emptyWorld();
+    poke(*world, BlockPos{4, 70, 4}, blockIdOf("oak_slab"));
+
+    // y = 70.25 is inside the bottom half, where the slab actually is.
+    const std::optional<RaycastHit> hit =
+        raycast(*world, vec3{0.5f, 70.25f, 4.5f}, vec3{1.0f, 0.0f, 0.0f}, 20.0f);
+
+    REQUIRE(hit.has_value());
+    CHECK(hit->block == BlockPos{4, 70, 4});
+    CHECK(hit->face == Face::NegX);
+    CHECK(hit->adjacent == BlockPos{3, 70, 4});
+}
+
+TEST_CASE("looking down onto a slab reports its top surface, not the cell boundary") {
+    auto world = emptyWorld();
+    poke(*world, BlockPos{4, 70, 4}, blockIdOf("oak_slab"));
+
+    // Straight down from above. The surface is at y = 70.5, in the middle of the
+    // cell -- a distance no boundary crossing can produce, and the face is PosY.
+    const std::optional<RaycastHit> hit =
+        raycast(*world, vec3{4.5f, 74.0f, 4.5f}, vec3{0.0f, -1.0f, 0.0f}, 20.0f);
+
+    REQUIRE(hit.has_value());
+    CHECK(hit->block == BlockPos{4, 70, 4});
+    CHECK(hit->face == Face::PosY);
+    // **The number that proves the fix**: 74.0 - 70.5 = 3.5. The old code stopped at
+    // the cell boundary, 74.0 - 71.0 = 3.0.
+    CHECK(hit->distance == doctest::Approx(3.5f));
+    // And this is the cell a placement goes in -- above the slab, which is where the
+    // player is pointing.
+    CHECK(hit->adjacent == BlockPos{4, 71, 4});
+}
+
+TEST_CASE("a top slab is hit in the upper half and missed in the lower") {
+    auto world = emptyWorld();
+    poke(*world, BlockPos{4, 70, 4}, blockIdOf("oak_slab_top"));
+    poke(*world, BlockPos{8, 70, 4}, blockIdOf("stone"));
+
+    const std::optional<RaycastHit> low =
+        raycast(*world, vec3{0.5f, 70.25f, 4.5f}, vec3{1.0f, 0.0f, 0.0f}, 20.0f);
+    REQUIRE(low.has_value());
+    CHECK(low->block == BlockPos{8, 70, 4}); // through the empty lower half
+
+    const std::optional<RaycastHit> high =
+        raycast(*world, vec3{0.5f, 70.75f, 4.5f}, vec3{1.0f, 0.0f, 0.0f}, 20.0f);
+    REQUIRE(high.has_value());
+    CHECK(high->block == BlockPos{4, 70, 4});
+}
+
+TEST_CASE("a full cube still reports exactly what it always did") {
+    // The no-regression case: every block in the world but two is a cube, and the
+    // box path must not shift any of them by a hair.
+    auto world = emptyWorld();
+    poke(*world, BlockPos{4, 70, 4}, blockIdOf("stone"));
+
+    const std::optional<RaycastHit> hit =
+        raycast(*world, vec3{0.5f, 70.5f, 4.5f}, vec3{1.0f, 0.0f, 0.0f}, 20.0f);
+
+    REQUIRE(hit.has_value());
+    CHECK(hit->block == BlockPos{4, 70, 4});
+    CHECK(hit->face == Face::NegX);
+    CHECK(hit->distance == doctest::Approx(3.5f)); // 4.0 - 0.5
+    CHECK(hit->adjacent == BlockPos{3, 70, 4});
+}

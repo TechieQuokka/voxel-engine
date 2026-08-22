@@ -17,11 +17,11 @@ usize bytesFor(u32 quadCount) {
 } // namespace
 
 std::optional<usize> SectionMeshArena::reserve(SectionPos pos, u32 quadCount,
-                                               u32 opaqueCount, u32 cutoutCount,
-                                               u64 frame) {
+                                               u32 opaqueCount, u32 modelCount,
+                                               u32 cutoutCount, u64 frame) {
     MC_PROFILE_SCOPE_N("SectionMeshArena::reserve");
     MC_ASSERT(quadCount > 0); // An empty mesh is a release, not a reservation.
-    MC_ASSERT(static_cast<u64>(opaqueCount) + cutoutCount <= quadCount);
+    MC_ASSERT(static_cast<u64>(opaqueCount) + modelCount + cutoutCount <= quadCount);
 
     const std::lock_guard<std::mutex> lock(m_mutex);
 
@@ -38,7 +38,7 @@ std::optional<usize> SectionMeshArena::reserve(SectionPos pos, u32 quadCount,
             Pending{existing->second.byteOffset, bytesFor(existing->second.quadCount), frame});
     }
 
-    m_placements[pos] = Placement{offset, quadCount, opaqueCount, cutoutCount};
+    m_placements[pos] = Placement{offset, quadCount, opaqueCount, modelCount, cutoutCount};
     return offset;
 }
 

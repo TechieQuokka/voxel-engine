@@ -27,16 +27,24 @@ public:
     SelectionRenderer();
 
     /// `blockOrigin` is the block's minimum corner in world space, i.e. its integer
-    /// position. The box drawn is the unit cube from there.
+    /// position. `boxMin` and `boxSize` are the shape inside that cell, as fractions
+    /// of a block -- (0,0,0) and (1,1,1) for a full cube, which is what the defaults
+    /// give.
+    ///
+    /// **The shape is a parameter because a slab is not a cube.** An outline that is
+    /// always a unit cube says the player is aiming at a whole block when half of it
+    /// is air, and aiming is the thing building rests on.
     void draw(rhi::Device& device, const Camera& camera, const vec3& blockOrigin,
-              f32 aspect);
+              f32 aspect, const vec3& boxMin = vec3{0.0f},
+              const vec3& boxSize = vec3{1.0f});
 
     /// Overlays destroy stage `stage` (0 to kStageCount - 1) on the same cube.
     ///
     /// Drawn blended, depth-tested but not depth-writing: the overlay has to be
     /// hidden by a wall in front of it and must not occlude anything itself.
     void drawCracks(rhi::Device& device, const Camera& camera, const vec3& blockOrigin,
-                    u32 stage);
+                    u32 stage, const vec3& boxMin = vec3{0.0f},
+                    const vec3& boxSize = vec3{1.0f});
 
     /// Destroy stages, matching vanilla's ten.
     static constexpr u32 kStageCount = 10;

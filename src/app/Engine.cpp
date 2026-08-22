@@ -16,6 +16,7 @@
 #include <format>
 #include <fstream>
 #include <stdexcept>
+#include <stop_token>
 #include <utility>
 #include <vector>
 
@@ -30,19 +31,6 @@ constexpr f32 kFovYDegrees = 70.0f;
 /// Reversed-Z concentrates depth precision in the distance, which is what allows
 /// a near plane this close without z-fighting far away.
 constexpr f32 kNearPlane = 0.05f;
-
-/// How much work the main thread hands to the pool per frame.
-///
-/// These bound *submission*, not execution -- the pool does the work, and the frame
-/// loop never waits for it. They exist because submitting is not free: each meshing
-/// job gathers a neighbourhood and pins nine columns, so an unbounded submit on the
-/// frame a region reloads would put thousands of those in one frame.
-///
-/// Measured at distance 24, flying at 40 blocks/s, these keep the loaded set complete
-/// -- nothing left generating at the end of a 20-second run -- so they are not the
-/// limiting factor and there is no reason to raise them.
-constexpr usize kColumnsPerFrame = 16;
-constexpr usize kSectionsPerFrame = 32;
 
 /// Sky colour, written as the sRGB value it was picked as. The framebuffer is
 /// sRGB-encoded on write, so Device::clear takes linear values -- decoded once
@@ -155,89 +143,12 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
         }
     }
 
-    if (m_options.openFurnace) {
-        // A furnace part-way through a smelt, which is the only state worth a still
-        // frame: an empty one shows three slots and proves nothing about the gauges.
-        m_openFurnace = BlockPos{0, 0, 0};
-        Furnace& furnace = m_furnaces[m_openFurnace];
-        furnace.mutableAt(Furnace::kInputSlot) = ItemStack{itemIdOf("iron_ore"), 5};
-        furnace.mutableAt(Furnace::kFuelSlot) = ItemStack{itemIdOf("coal"), 3};
-        furnace.tick(kSmeltTicks + kSmeltTicks / 2); // One done, one half done.
-
-        openScreen(ScreenKind::Furnace);
-
-        m_player.inventory.add(itemIdOf("iron_ore"), 12);
-        m_player.inventory.add(itemIdOf("coal"), 9);
-        m_player.inventory.add(blockIdOf("furnace"), 2);
-        m_player.inventory.add(itemIdOf("iron_ingot"), 4);
-        m_player.inventory.add(itemIdOf("iron_pickaxe"), 1);
-        m_player.inventory.add(itemIdOf("diamond_pickaxe"), 1);
-        m_player.health = 13.0f;
-    } else if (m_options.openInventory) {
-        // **The crafting table's window, not the player's**, because the 3x3 is where
-        // a pickaxe is made and a 2x2 capture would show the smaller half of the
-        // feature. All of this lives after `m_input` exists rather than beside the
-        // other member setup, because opening a screen releases the cursor and
-        // `m_input` is what owns it.
-        openScreen(ScreenKind::CraftingTable);
-
-        // **The grid is seeded first, and the order is load-bearing.** Items reach it
-        // the way a player puts them there -- pick a stack up, right click into a
-        // cell -- which needs the storage slot they landed in, and the only
-        // predictable index is slot 0 of a pack that is still empty. Seeding this
-        // after the display items below once asked `usedSlots()` for an index, which
-        // is a count and not one, and quietly dragged the wrong items in.
-        const auto intoGrid = [this](ItemId item, u32 amount,
-                                     std::initializer_list<usize> cells) {
-            m_player.inventory.add(item, amount);
-            m_screen->click(m_screen->containerSlots()); // The pack's slot 0.
-            for (const usize cell : cells) {
-                m_screen->split(cell);
-            }
-        };
-        // A stone pickaxe, mid-recipe: cobblestone across the top, sticks down the
-        // middle. An empty grid proves the nine cells draw and nothing else, and the
-        // output preview is the part with a recipe match behind it.
-        intoGrid(itemIdOf("cobblestone"), 3, {0, 1, 2});
-        intoGrid(itemIdOf("stick"), 2, {4, 7});
-
-        // Something to look at. A capture of an empty pack proves the panel draws
-        // and nothing else -- not the icons, not the counts, not the two-digit
-        // layout, which are the parts with arithmetic in them.
-        m_player.inventory.add(blockIdOf("stone"), 64);
-        m_player.inventory.add(blockIdOf("dirt"), 7);
-        m_player.inventory.add(blockIdOf("grass"), 12);
-        m_player.inventory.add(blockIdOf("sand"), 3);
-        m_player.inventory.add(blockIdOf("oak_log"), 128);
-        m_player.inventory.add(blockIdOf("cobblestone"), 45);
-        m_player.inventory.add(blockIdOf("gravel"), 1);
-
-        // Phase 16's half: items that are not blocks, and one tool of each kind, so a
-        // capture shows every icon recipe rather than only the cubes. Phase 17 adds
-        // the table itself, which is a block whose icon is the thing you go and place.
-        m_player.inventory.add(itemIdOf("coal"), 9);
-        m_player.inventory.add(itemIdOf("stick"), 6);
-        m_player.inventory.add(itemIdOf("wooden_pickaxe"), 1);
-        m_player.inventory.add(itemIdOf("stone_axe"), 1);
-        m_player.inventory.add(itemIdOf("stone_sword"), 1);
-        m_player.inventory.add(itemIdOf("wooden_shovel"), 1);
-        m_player.inventory.add(blockIdOf("crafting_table"), 2);
-
-        m_player.health = 13.0f; // An odd number, so a half heart is in the frame too.
-    }
-
-    // Before the renderers, so a bad name fails immediately rather than after a
-    // window has been created and a region streamed in.
-    if (!m_options.heldItem.empty()) {
-        const ItemId item = itemIdOrNothing(m_options.heldItem);
-        MC_VERIFY_MSG(item != kNoItem, "--hold names an item that does not exist");
-
-        // Into the first hotbar slot, which is the one selected at startup. Placed
-        // rather than added, so it is held whatever else the seeding above put there.
-        m_player.inventory.mutableAt(0) = ItemStack{item, 1};
-        m_player.hotbarSlot = 0;
-        logInfo("Holding: {}", itemName(item));
-    }
+    // **Every line of this is fixture data for a capture flag, and it lives in
+    // app/CaptureScenarios.cpp.** None of it runs in an ordinary session. What stays
+    // here is only its position: after `m_input`, because opening a screen releases
+    // the cursor; after the saved player, because these deliberately override it; and
+    // before the renderers, so a bad `--hold` name fails before a window exists.
+    seedCaptureScenario();
 
     m_chunkRenderer.emplace();
     m_character.emplace();
@@ -257,18 +168,13 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
             DensityField::kSampleCount,
             static_cast<usize>(kSectionSize) * kSectionSize * static_cast<usize>(kWorldHeight));
 
-    // Sized and filled before any thread exists, and never resized afterwards:
-    // indices into it travel through queues to other threads.
-    m_meshTasks.resize(kMeshTaskPoolSize);
-    m_freeMeshTasks = std::make_unique<MpmcQueue<u32>>(kMeshTaskPoolSize);
-    m_uploadQueue = std::make_unique<MpmcQueue<u32>>(kMeshTaskPoolSize);
-    for (u32 index = 0; index < kMeshTaskPoolSize; ++index) {
-        const bool pushed = m_freeMeshTasks->tryPush(index);
-        MC_VERIFY(pushed);
-    }
-
-    m_jobs = std::make_unique<JobSystem>();
-    startUploadThread();
+    // **Last of the subsystems, because it borrows four of the others.** The streamer
+    // holds references to the World it fills, the Generator it fills it from, the
+    // store it loads edited columns out of and the arena it uploads into, so it is
+    // constructed after all four and -- being declared after them -- destroyed before
+    // any of them. It starts its workers and its upload thread here.
+    m_streamer = std::make_unique<ChunkStreamer>(*m_world, *m_generator, m_store.get(),
+                                                 *m_meshStore, m_options.renderDistance);
 
     if (m_options.meshBenchmark) {
         runMeshBenchmark();
@@ -333,15 +239,15 @@ Engine::Engine(Options options) : m_options(std::move(options)) {
         // rather than whatever had streamed in by frame one, and a benchmark should
         // measure the steady state rather than the fill.
         Clock clock;
-        drainStreaming();
+        m_streamer->drain();
         const f64 seconds = clock.elapsed();
 
-        const usize meshed = m_sectionsMeshed.load();
-        const usize empty = m_sectionsEmpty.load();
+        const ChunkStreamer::Stats streaming = m_streamer->stats();
         logInfo("Warm-up: {} columns, {} sections meshed in {:.2f} s on {} workers",
-                m_world->loadedChunkCount(), meshed, seconds, m_jobs->workerCount());
+                m_world->loadedChunkCount(), streaming.sectionsMeshed, seconds,
+                m_streamer->workerCount());
         logInfo("  {} sections hold geometry, {} are fully enclosed and hold none",
-                m_meshStore->sectionCount(), empty);
+                m_meshStore->sectionCount(), streaming.sectionsEmpty);
         m_reportedWarm = true;
     }
 
@@ -387,7 +293,13 @@ Engine::~Engine() {
     // Streaming stops first. A worker part-way through loading a column is reading
     // the same region file this is about to write, and the store's lock would let
     // both happen in an order nobody chose.
-    shutdownStreaming();
+    //
+    // Explicitly rather than by letting `m_streamer` fall out of scope: the save below
+    // must happen with every worker already stopped, and member destruction runs after
+    // this body.
+    if (m_streamer) {
+        m_streamer->shutdown();
+    }
 
     // After the workers and before the World: `m_world` is a member and outlives
     // this body, so every loaded column is still here to be written.
@@ -529,6 +441,10 @@ void Engine::updateLoadedRegion() {
     m_loadedCenter = center;
     m_hasLoadedCenter = true;
 
+    // What the streamer measures job priority from. Only changes here, which is the
+    // only place the answer can change.
+    m_streamer->setCentre(center);
+
     for (const std::unique_ptr<Chunk>& dropped : result.unloaded) {
         const ChunkPos pos = dropped->position();
 
@@ -638,14 +554,7 @@ void Engine::saveEverything() {
 }
 
 void Engine::adoptLoadedFurnaces() {
-    std::vector<SavedFurnace> loaded;
-    {
-        const std::lock_guard<std::mutex> guard(m_loadedFurnaceMutex);
-        if (m_loadedFurnaces.empty()) {
-            return;
-        }
-        loaded.swap(m_loadedFurnaces);
-    }
+    const std::vector<SavedFurnace> loaded = m_streamer->takeLoadedFurnaces();
 
     for (const SavedFurnace& saved : loaded) {
         applyFurnace(saved, m_furnaces[saved.position]);
@@ -655,13 +564,9 @@ void Engine::adoptLoadedFurnaces() {
 void Engine::relightArrivedColumns() {
     MC_PROFILE_SCOPE_N("Engine::relightArrivedColumns");
 
-    std::vector<ChunkPos> arrived;
-    {
-        const std::lock_guard<std::mutex> guard(m_relightMutex);
-        if (m_relightQueue.empty()) {
-            return;
-        }
-        arrived.swap(m_relightQueue);
+    const std::vector<ChunkPos> arrived = m_streamer->takeRelightQueue();
+    if (arrived.empty()) {
+        return;
     }
 
     // **Skipped while anything in reach is pinned, and re-queued rather than
@@ -705,327 +610,7 @@ void Engine::relightArrivedColumns() {
         m_world->dirtyAround(touched);
     }
 
-    if (!deferred.empty()) {
-        const std::lock_guard<std::mutex> guard(m_relightMutex);
-        m_relightQueue.insert(m_relightQueue.end(), deferred.begin(), deferred.end());
-    }
-}
-
-void Engine::generateColumnJob(void* context, u64 payload) {
-    MC_PROFILE_SCOPE_N("generateColumnJob");
-
-    auto* engine = static_cast<Engine*>(context);
-    auto* chunk = reinterpret_cast<Chunk*>(static_cast<std::uintptr_t>(payload));
-
-    // **Loading happens here rather than on the main thread, and the reason is the
-    // same one that puts generation here**: this is the one point where a single
-    // thread owns the column and nothing else can see it. The `Generating` state it
-    // was put in before submission is what keeps the World from unloading it, and
-    // what makes `World::blockAt` answer air for it in the meantime.
-    if (engine->m_store) {
-        std::vector<SavedFurnace> furnaces;
-        const Result<bool, WorldStore::Error> loaded =
-            engine->m_store->loadColumn(*chunk, &furnaces);
-
-        // A value of false means nobody edited this column, which is the ordinary
-        // case; an error means it is on disk and unreadable, and both regenerate.
-        // Regenerating over a half-decoded column is safe: every branch of
-        // `generateColumn` fills the section it is about to write.
-        if (loaded.hasValue() && loaded.value()) {
-            if (!furnaces.empty()) {
-                const std::lock_guard<std::mutex> guard(engine->m_loadedFurnaceMutex);
-                engine->m_loadedFurnaces.insert(engine->m_loadedFurnaces.end(),
-                                                furnaces.begin(), furnaces.end());
-            }
-
-            // A column off disk is written back when it unloads, because a furnace
-            // in it burns down while nobody is looking and nothing else would say
-            // its timers moved.
-            chunk->markEdited();
-
-            // Before Ready, so the flag is set by the time anything can look at the
-            // column. **This is the branch that matters**: a torch only ever gets
-            // into the world by being placed, so a column off disk is the only one
-            // that can arrive already holding one.
-            noteEmitters(*chunk);
-
-            // The same tail `generateColumn` ends on, so a loaded column and a
-            // generated one arrive in exactly the same state.
-            chunk->markAllDirty();
-            chunk->setState(ChunkState::Ready);
-            engine->queueRelight(chunk->position());
-            return;
-        }
-    }
-
-    // Sets the column Ready and marks every section dirty when it finishes.
-    engine->m_generator->generateColumn(*chunk);
-
-    // Always false today -- nothing the generator places emits. Asked anyway, because
-    // the day something does (lava) the cost of having forgotten is light that never
-    // appears, and the check is twelve palette scans on a worker that has just
-    // written every voxel in the column.
-    noteEmitters(*chunk);
-    engine->queueRelight(chunk->position());
-}
-
-void Engine::queueRelight(ChunkPos column) {
-    const std::lock_guard<std::mutex> guard(m_relightMutex);
-    m_relightQueue.push_back(column);
-}
-
-void Engine::meshSectionJob(void* context, u64 payload) {
-    MC_PROFILE_SCOPE_N("meshSectionJob");
-
-    auto* engine = static_cast<Engine*>(context);
-    const auto index = static_cast<usize>(payload);
-    MeshTask& task = engine->m_meshTasks[index];
-
-    meshSectionGreedy(task.hood, task.mesh);
-
-    // The upload queue is at least as large as the task pool, so there is always
-    // room -- a slot cannot be in flight without having come from the pool.
-    const bool pushed = engine->m_uploadQueue->tryPush(static_cast<u32>(index));
-    MC_VERIFY_MSG(pushed, "upload queue smaller than the mesh task pool");
-
-    engine->m_uploadSignal.release();
-}
-
-JobPriority Engine::priorityFor(ChunkPos pos) const {
-    const i32 distance = std::max(std::abs(pos.x - m_loadedCenter.x),
-                                  std::abs(pos.z - m_loadedCenter.z));
-    const i32 renderDistance = std::max(1, m_options.renderDistance);
-
-    // Thirds of the render distance. The bands only have to be roughly right: they
-    // decide what gets done first, and the camera keeps changing the answer anyway.
-    if (distance * 3 <= renderDistance) {
-        return JobPriority::High;
-    }
-    if (distance * 3 <= renderDistance * 2) {
-        return JobPriority::Normal;
-    }
-    return JobPriority::Low;
-}
-
-usize Engine::submitGeneration() {
-    MC_PROFILE_SCOPE_N("Engine::submitGeneration");
-
-    usize submitted = 0;
-    m_world->forEachChunk([&](Chunk& chunk) {
-        if (submitted >= kColumnsPerFrame || chunk.state() != ChunkState::Empty) {
-            return;
-        }
-
-        // Claimed before submitting: the World must not unload a column a worker is
-        // about to write into, and Generating is what tells it so.
-        chunk.setState(ChunkState::Generating);
-
-        const Job job{&generateColumnJob, this,
-                      static_cast<u64>(reinterpret_cast<std::uintptr_t>(&chunk))};
-
-        if (!m_jobs->submit(priorityFor(chunk.position()), job)) {
-            chunk.setState(ChunkState::Empty); // Band full; try again next frame.
-            return;
-        }
-        ++submitted;
-    });
-    return submitted;
-}
-
-usize Engine::submitMeshing() {
-    MC_PROFILE_SCOPE_N("Engine::submitMeshing");
-
-    usize submitted = 0;
-
-    m_world->forEachChunk([&](Chunk& chunk) {
-        if (submitted >= kSectionsPerFrame || !chunk.anyDirty()) {
-            return;
-        }
-        if (!neighboursReady(chunk.position())) {
-            return;
-        }
-
-        for (usize index = 0; index < Chunk::kSectionCount && submitted < kSectionsPerFrame;
-             ++index) {
-            if (!chunk.isSectionDirty(index)) {
-                continue;
-            }
-
-            const SectionPos pos{chunk.position().x,
-                                 kMinSectionY + static_cast<i32>(index),
-                                 chunk.position().z};
-
-            if (chunk.sectionByIndex(index).isEmpty()) {
-                // Nothing to draw and nothing to keep -- the common case above the
-                // surface. No job needed.
-                m_meshStore->release(pos, m_frame);
-                chunk.clearSectionDirty(index);
-                continue;
-            }
-
-            u32 taskIndex = 0;
-            if (!m_freeMeshTasks->tryPop(taskIndex)) {
-                return; // Pool exhausted. Backpressure, not an error.
-            }
-
-            MeshTask& task = m_meshTasks[taskIndex];
-            task.pos = pos;
-            task.hood = m_world->neighbourhood(pos);
-
-            // Pin every column the neighbourhood points into, for as long as the
-            // task lives -- which is until the upload thread is done with it, not
-            // until the mesher returns.
-            usize slot = 0;
-            for (i32 dz = -1; dz <= 1; ++dz) {
-                for (i32 dx = -1; dx <= 1; ++dx) {
-                    Chunk* neighbour = m_world->find(ChunkPos{pos.x + dx, pos.z + dz});
-                    task.pinned[slot++] = neighbour;
-                    if (neighbour != nullptr) {
-                        neighbour->pin();
-                    }
-                }
-            }
-            MC_ASSERT(task.pinned[kCentrePinSlot] == &chunk);
-
-            // Cleared before submitting rather than after: if something dirties the
-            // section again while the job runs, that has to be noticed and remeshed,
-            // not swallowed by a clear that happens later.
-            chunk.clearSectionDirty(index);
-
-            const Job job{&meshSectionJob, this, static_cast<u64>(taskIndex)};
-            if (!m_jobs->submit(priorityFor(chunk.position()), job)) {
-                for (Chunk* pinned : task.pinned) {
-                    if (pinned != nullptr) {
-                        pinned->unpin();
-                    }
-                }
-                task.pinned.fill(nullptr);
-                chunk.markSectionDirty(index);
-
-                const bool returned = m_freeMeshTasks->tryPush(taskIndex);
-                MC_VERIFY_MSG(returned, "free-task queue smaller than the pool");
-                return;
-            }
-            ++submitted;
-        }
-    });
-
-    return submitted;
-}
-
-void Engine::uploadLoop() {
-    MC_PROFILE_THREAD("upload");
-
-    for (;;) {
-        m_uploadSignal.acquire();
-
-        if (m_uploadStopping.load(std::memory_order_acquire)) {
-            return;
-        }
-
-        u32 index = 0;
-        if (!m_uploadQueue->tryPop(index)) {
-            continue; // Spurious wake; permits and pushes are otherwise one to one.
-        }
-
-        MeshTask& task = m_meshTasks[index];
-
-        // The whole of the upload: a memcpy into a persistently mapped, coherent
-        // buffer. No GL call, which is exactly why this thread needs no context.
-        m_sectionsMeshed.fetch_add(1, std::memory_order_relaxed);
-        if (task.mesh.empty()) {
-            m_sectionsEmpty.fetch_add(1, std::memory_order_relaxed);
-        }
-
-        const u64 frame = m_frameForUpload.load(std::memory_order_relaxed);
-        if (!m_meshStore->store(task.pos, task.mesh, frame)) {
-            // Arena full. Put the section back on the dirty list -- while its column
-            // is still pinned, so it is certainly still alive -- and let the main
-            // thread resubmit once recycle() has returned some ranges.
-            m_arenaFullEvents.fetch_add(1, std::memory_order_relaxed);
-            if (Chunk* owner = task.pinned[kCentrePinSlot]) {
-                owner->markSectionDirty(
-                    static_cast<usize>(sectionIndexInColumn(task.pos.y)));
-            }
-        }
-
-        for (Chunk* pinned : task.pinned) {
-            if (pinned != nullptr) {
-                pinned->unpin();
-            }
-        }
-        task.pinned.fill(nullptr);
-
-        const bool returned = m_freeMeshTasks->tryPush(index);
-        MC_VERIFY_MSG(returned, "free-task queue smaller than the pool");
-    }
-}
-
-void Engine::startUploadThread() {
-    m_uploadThread = std::jthread([this] { uploadLoop(); });
-}
-
-void Engine::shutdownStreaming() {
-    // Order matters. Workers hold task indices and Chunk pins, so they have to stop
-    // before the upload thread that recycles what they produce, and both have to
-    // stop before the World and the mesh store go away.
-    if (m_jobs) {
-        m_jobs.reset(); // Joins the workers; queued jobs are dropped.
-    }
-
-    if (m_uploadThread.joinable()) {
-        m_uploadStopping.store(true, std::memory_order_release);
-        m_uploadSignal.release();
-        m_uploadThread.join();
-    }
-}
-
-void Engine::drainStreaming() {
-    // Submit, let the pool finish, repeat. Generation produces meshing work, so this
-    // needs more than one pass; it settles when a full round submits nothing.
-    //
-    // The round counter is not paranoia. A full arena makes store() fail, which marks
-    // the section dirty again, which makes the next round submit it again -- a loop that
-    // never terminates and never says why. That happened the first time caves ran at
-    // distance 16, because the arena budget still reflected pre-cave mesh sizes.
-    constexpr usize kMaxRounds = 512;
-
-    for (usize round = 0; round < kMaxRounds; ++round) {
-        const usize generated = submitGeneration();
-        const usize meshedSubmitted = submitMeshing();
-
-        m_jobs->waitIdle();
-
-        // Wait for the upload thread to drain what those jobs produced. Nothing else
-        // is running by now, so an empty queue means finished.
-        while (m_uploadQueue->sizeApprox() != 0) {
-            std::this_thread::yield();
-        }
-
-        if (generated == 0 && meshedSubmitted == 0) {
-            return;
-        }
-    }
-
-    logWarn("Warm-up gave up after {} rounds: arena {} / {} MiB, largest free block {} KiB, "
-            "{} arena-full events -- the mesh arena is too small for this render distance",
-            kMaxRounds,
-            m_meshStore->usedBytes() / (1024 * 1024),
-            m_meshStore->capacityBytes() / (1024 * 1024),
-            m_meshStore->largestFreeBlock() / 1024,
-            m_arenaFullEvents.load());
-}
-
-bool Engine::neighboursReady(ChunkPos pos) const {
-    for (i32 dz = -1; dz <= 1; ++dz) {
-        for (i32 dx = -1; dx <= 1; ++dx) {
-            const Chunk* chunk = m_world->find(ChunkPos{pos.x + dx, pos.z + dz});
-            if (chunk == nullptr || chunk->state() != ChunkState::Ready) {
-                return false;
-            }
-        }
-    }
-    return true;
+    m_streamer->requeueRelight(deferred);
 }
 
 void Engine::buildVisibleSet() {
@@ -1193,10 +778,15 @@ void Engine::breakTargetBlock() {
     }
 
     // At the centre of the block that was removed, which is where the space now is.
+    //
+    // **The count comes from the block, not from a 1.** A double slab is two slabs and
+    // vanilla gives both back; without that, stacking two slabs and changing your mind
+    // costs one of them, which is exactly the kind of quiet tax that stops a player
+    // experimenting with a shape.
     m_items.spawn(vec3{static_cast<f32>(m_target->block.x) + 0.5f,
                        static_cast<f32>(m_target->block.y) + 0.5f,
                        static_cast<f32>(m_target->block.z) + 0.5f},
-                  drop, 1);
+                  drop, dropCountOf(broken));
 }
 
 void Engine::updateSwing(f32 dt, bool swinging) {
@@ -1298,6 +888,27 @@ bool Engine::placeTargetBlock() {
         return false;
     }
 
+    // **A slab put into the free half of a cell that already holds one fills it**,
+    // rather than going into the cell beyond. Decided before the player-box test
+    // below, because the cell being filled is the one that was clicked and not the
+    // empty one next to it -- and it is already occupied, so it cannot be inside the
+    // player either.
+    const vec3 aimPoint = m_camera.position() + m_camera.forward() * m_target->distance;
+    const BlockId inCell = m_world->blockAt(m_target->block);
+    const ItemStack& holding = m_player.inventory.at(m_player.hotbarSlot);
+    if (!holding.empty()) {
+        const BlockId heldForFill = blockOfItem(holding.item);
+        if (heldForFill != kAirBlock
+            && combinesIntoDoubleSlab(heldForFill, inCell, m_target->face)) {
+            if (!applyEdit(m_target->block, doubleSlabFor(heldForFill))) {
+                return false;
+            }
+            m_player.inventory.takeOne(m_player.hotbarSlot);
+            ++m_blocksPlaced;
+            return true;
+        }
+    }
+
     const BlockPos target = m_target->adjacent;
 
     // Do not place a block inside the player. **This used to be a two-block column at
@@ -1320,10 +931,16 @@ bool Engine::placeTargetBlock() {
     // does nothing rather than placing a mysterious cube, which is what would happen
     // if the id were used as a `BlockId` unchecked -- and it would be silent, because
     // the two share a type.
-    const BlockId block = blockOfItem(held.item);
-    if (block == kAirBlock) {
+    const BlockId heldBlock = blockOfItem(held.item);
+    if (heldBlock == kAirBlock) {
         return false;
     }
+
+    // **Which half a slab lands in, decided by where on the block the ray met it.**
+    // `distance` is carried on the hit precisely so the point is recoverable without
+    // a second raycast; only the y of it matters, and only for a side face. Anything
+    // that is not a slab comes back unchanged.
+    const BlockId block = placedVariant(heldBlock, m_target->face, aimPoint.y);
 
     // Taken only once the edit is known to have landed, so a placement refused for
     // being outside the world does not silently cost a block.
@@ -1738,8 +1355,18 @@ std::optional<f32> Engine::groundBelow(f32 x, f32 z, f32 fromY) const {
     for (i32 y = start; y >= stop; --y) {
         // Solid, not merely non-air. Water holds nothing up, and before it existed
         // these two tests were the same thing -- a player stood on the sea otherwise.
-        if (isSolidBlock(m_world->blockAt(BlockPos{blockX, y, blockZ}))) {
-            return static_cast<f32>(y + 1); // Stand on top of it.
+        //
+        // **The top of the highest box, not the top of the cell.** For a cube that is
+        // `y + 1` exactly as it always was; for a bottom slab it is `y + 0.5`, which is
+        // the whole of what makes standing on one work.
+        f32 highest = 0.0f;
+        bool found = false;
+        for (const BlockBox& shape : blockBoxes(m_world->blockAt(BlockPos{blockX, y, blockZ}))) {
+            highest = found ? std::max(highest, shape.topFraction()) : shape.topFraction();
+            found = true;
+        }
+        if (found) {
+            return static_cast<f32>(y) + highest;
         }
     }
     return std::nullopt;
@@ -1753,13 +1380,21 @@ bool Engine::boxBlocked(const vec3& feet) const {
     // is the same call the ground probe already makes -- holding position at an
     // unloaded edge would be a worse lie than passing through it, because the column
     // is usually about to arrive and usually empty where the player is standing.
+    const PlayerBox box{feet};
     for (i32 y = range.minY; y <= range.maxY; ++y) {
         for (i32 z = range.minZ; z <= range.maxZ; ++z) {
             for (i32 x = range.minX; x <= range.maxX; ++x) {
-                // Solid, not merely non-air: water is walked into, which is what
-                // makes swimming possible at all.
-                if (isSolidBlock(m_world->blockAt(BlockPos{x, y, z}))) {
-                    return true;
+                const BlockPos pos{x, y, z};
+                // **The boxes, not the cell.** `blockBoxes` is empty for anything not
+                // solid -- water is walked into, which is what makes swimming possible
+                // at all -- and one full box for a cube, so this is the same test it
+                // has always been for every block that fills its cell. A slab is the
+                // case that needs the loop.
+                for (const BlockBox& shape : blockBoxes(m_world->blockAt(pos))) {
+                    if (box.intersectsBox(pos, shape.lowX(), shape.lowY(), shape.lowZ(),
+                                          shape.highX(), shape.highY(), shape.highZ())) {
+                        return true;
+                    }
                 }
             }
         }
@@ -1832,6 +1467,13 @@ void Engine::updateWalk(f32 dt) {
         } else if (m_player.onGround) {
             m_player.verticalVelocity = kJumpVelocity;
             m_player.onGround = false;
+            // **The fall starts here too, and for a long time it did not.** The
+            // substep loop below begins tracking when it sees the player was on the
+            // ground the step before; the line above clears that flag first, so a
+            // fall that began with a jump was never tracked and landed for free from
+            // any height. Walking off a ledge tracked correctly, which is what made
+            // it read as damage being capped rather than missing.
+            m_fall.leftGround(feet.y);
         }
     }
 
@@ -1867,7 +1509,7 @@ void Engine::updateWalk(f32 dt) {
                 m_player.verticalVelocity - kGravity * kSwimGravityScale * step, -kSinkSpeed);
             // Entering water cancels a fall, which is vanilla's rule and the reason
             // jumping off a cliff into a lake is a thing people do.
-            m_trackingFall = false;
+            m_fall.cancel();
         } else {
             m_player.verticalVelocity =
                 std::max(m_player.verticalVelocity - kGravity * step, -kTerminalVelocity);
@@ -1899,16 +1541,13 @@ void Engine::updateWalk(f32 dt) {
             // And do not let that count as a fall. A column arriving late is an
             // engine detail, and taking damage for it would be the game punishing
             // the player for the streaming pipeline.
-            m_trackingFall = false;
+            m_fall.cancel();
         } else if (feet.y <= *ground) {
             feet.y = *ground;
             m_player.verticalVelocity = 0.0f;
             m_player.onGround = true;
 
-            if (m_trackingFall) {
-                applyFallDamage(m_fallFromY, feet.y);
-                m_trackingFall = false;
-            }
+            applyFallDamage(m_fall.landed(feet.y));
         } else {
             m_player.onGround = false;
 
@@ -1916,11 +1555,9 @@ void Engine::updateWalk(f32 dt) {
             // peak. A jump therefore costs its own arc, which is why the three-block
             // grace exists at all -- vanilla measures the same way.
             if (wasOnGround) {
-                m_fallFromY = feet.y;
-                m_trackingFall = true;
-            } else if (feet.y > m_fallFromY) {
-                // Still rising. The fall has not started yet.
-                m_fallFromY = feet.y;
+                m_fall.leftGround(feet.y);
+            } else {
+                m_fall.rose(feet.y);
             }
         }
     }
@@ -1928,8 +1565,7 @@ void Engine::updateWalk(f32 dt) {
     m_player.position = feet;
 }
 
-void Engine::applyFallDamage(f32 fromY, f32 toY) {
-    const f32 distance = fromY - toY;
+void Engine::applyFallDamage(f32 distance) {
     const f32 damage = FallDamage::forDistance(distance);
     if (damage <= 0.0f) {
         return;
@@ -1952,7 +1588,7 @@ void Engine::respawn() {
     // placeholder, and it says so in the log rather than pretending nothing happened.
     m_player.health = Player::kMaxHealth;
     m_player.verticalVelocity = 0.0f;
-    m_trackingFall = false;
+    m_fall.cancel();
     logWarn("You died. Respawning with full health where you stand.");
 }
 
@@ -1988,8 +1624,14 @@ void Engine::captureAndExit() {
     writePpm(m_options.capturePath, width, height, pixels);
 
     const ChunkRenderer::Stats& stats = m_chunkRenderer->stats();
-    logInfo("Captured {}x{} frame to {} ({} sections, {} quads drawn)",
-            width, height, m_options.capturePath, stats.sectionsDrawn, stats.quadsDrawn);
+    // **Model boxes are counted separately and said out loud, for the reason the
+    // block name below is.** A slab is a few hundred pixels in a 1280x720 frame and
+    // "did the fourth pass run at all" is not a question a still image answers -- a
+    // box that was never submitted and one drawn inside the block next to it look
+    // identical from here.
+    logInfo("Captured {}x{} frame to {} ({} sections, {} quads and {} model boxes drawn)",
+            width, height, m_options.capturePath, stats.sectionsDrawn, stats.quadsDrawn,
+            stats.modelBoxesDrawn);
 
     // What the crosshair is on, in words. The selection box is a few dark pixels in
     // a 1280x720 image and is genuinely hard to confirm by eye; this says outright
@@ -2092,10 +1734,10 @@ void Engine::stepFrame(f64 deltaTime) {
 
     // Submit only. Nothing here waits for a worker, which is the entire point:
     // whatever the pool has not finished simply appears a frame or two later.
-    const usize generated = submitGeneration();
-    const usize meshed = submitMeshing();
+    const usize generated = m_streamer->submitGeneration();
+    const usize meshed = m_streamer->submitMeshing();
 
-    if (!m_reportedWarm && generated == 0 && meshed == 0 && m_jobs->pending() == 0) {
+    if (!m_reportedWarm && generated == 0 && meshed == 0 && m_streamer->idle()) {
         logInfo("Streaming settled: {} columns, {} sections meshed, {} MiB arena",
                 m_world->loadedChunkCount(), m_meshStore->sectionCount(),
                 m_meshStore->usedBytes() / (1024 * 1024));
@@ -2105,7 +1747,7 @@ void Engine::stepFrame(f64 deltaTime) {
     renderFrame();
 
     ++m_frame;
-    m_frameForUpload.store(m_frame, std::memory_order_relaxed);
+    m_streamer->setFrame(m_frame);
 }
 
 void Engine::followGround() {
@@ -2348,7 +1990,25 @@ void Engine::renderFrame() {
                           static_cast<f32>(m_target->block.z)};
         const auto aspect = static_cast<f32>(m_window->framebufferWidth())
                             / static_cast<f32>(std::max(1, m_window->framebufferHeight()));
-        m_selection->draw(*m_device, m_renderCamera, origin, aspect);
+
+        // **The outline follows the shape, not the cell.** The union of the block's
+        // boxes, which is the box itself for everything that has one today; a stair
+        // will want the union of two and this already gives it.
+        vec3 boxMin{0.0f};
+        vec3 boxSize{1.0f};
+        const std::span<const BlockBox> boxes = blockBoxes(m_world->blockAt(m_target->block));
+        if (!boxes.empty()) {
+            vec3 low{boxes[0].lowX(), boxes[0].lowY(), boxes[0].lowZ()};
+            vec3 high{boxes[0].highX(), boxes[0].highY(), boxes[0].highZ()};
+            for (const BlockBox& box : boxes.subspan(1)) {
+                low = math::min(low, vec3{box.lowX(), box.lowY(), box.lowZ()});
+                high = math::max(high, vec3{box.highX(), box.highY(), box.highZ()});
+            }
+            boxMin = low;
+            boxSize = high - low;
+        }
+
+        m_selection->draw(*m_device, m_renderCamera, origin, aspect, boxMin, boxSize);
 
         // Only while a break is actually running on *this* block. Progress is reset
         // the moment the crosshair leaves it, so the cracks cannot be left behind on
@@ -2356,7 +2016,8 @@ void Engine::renderFrame() {
         if (m_breakProgress > 0.0f && m_breakingBlock.has_value()
             && *m_breakingBlock == m_target->block) {
             m_selection->drawCracks(*m_device, m_renderCamera, origin,
-                                    SelectionRenderer::stageFor(m_breakProgress));
+                                    SelectionRenderer::stageFor(m_breakProgress),
+                                    boxMin, boxSize);
         }
     }
 

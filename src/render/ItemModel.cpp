@@ -113,32 +113,41 @@ std::vector<ItemQuad> buildSpriteModel(std::span<const u8> pixels, u32 size, f32
     return quads;
 }
 
-std::vector<ItemQuad> buildBlockModel(f32 topLayer, f32 sideLayer, f32 bottomLayer) {
-    constexpr f32 h = 0.5f;
+std::vector<ItemQuad> buildBlockModel(f32 topLayer, f32 sideLayer, f32 bottomLayer,
+                                      const vec3& boxMin, const vec3& boxMax) {
+    // **Centred on the origin, which is what makes a slab hang correctly in the fist.**
+    // The caller's display transform positions a one-block model about its centre, so
+    // a box that is not the whole cube has to keep the cube's centre rather than its
+    // own -- a bottom slab then sits in the lower half of where a block would be,
+    // exactly as it does in the world.
+    const vec3 low = boxMin - vec3{0.5f, 0.5f, 0.5f};
+    const vec3 high = boxMax - vec3{0.5f, 0.5f, 0.5f};
+    const vec3 size = high - low;
 
     // Face order, origins and axes are `CharacterRenderer::appendBox`'s, for the same
     // reason it has them: cross(U, V) has to point out of the cube or back-face
     // culling removes the faces that should be visible and keeps the ones that
-    // should not.
+    // should not. Scaling U and V by the box keeps that property -- the direction of
+    // each is unchanged and only its length moves.
     return {
         // +X
-        ItemQuad{vec3{h, -h, -h}, vec3{0.0f, 1.0f, 0.0f}, vec3{0.0f, 0.0f, 1.0f},
-                 vec3{}, sideLayer},
+        ItemQuad{vec3{high.x, low.y, low.z}, vec3{0.0f, size.y, 0.0f},
+                 vec3{0.0f, 0.0f, size.z}, vec3{}, sideLayer},
         // -X
-        ItemQuad{vec3{-h, -h, -h}, vec3{0.0f, 0.0f, 1.0f}, vec3{0.0f, 1.0f, 0.0f},
-                 vec3{}, sideLayer},
+        ItemQuad{vec3{low.x, low.y, low.z}, vec3{0.0f, 0.0f, size.z},
+                 vec3{0.0f, size.y, 0.0f}, vec3{}, sideLayer},
         // +Y
-        ItemQuad{vec3{-h, h, -h}, vec3{0.0f, 0.0f, 1.0f}, vec3{1.0f, 0.0f, 0.0f},
-                 vec3{}, topLayer},
+        ItemQuad{vec3{low.x, high.y, low.z}, vec3{0.0f, 0.0f, size.z},
+                 vec3{size.x, 0.0f, 0.0f}, vec3{}, topLayer},
         // -Y
-        ItemQuad{vec3{-h, -h, -h}, vec3{1.0f, 0.0f, 0.0f}, vec3{0.0f, 0.0f, 1.0f},
-                 vec3{}, bottomLayer},
+        ItemQuad{vec3{low.x, low.y, low.z}, vec3{size.x, 0.0f, 0.0f},
+                 vec3{0.0f, 0.0f, size.z}, vec3{}, bottomLayer},
         // +Z
-        ItemQuad{vec3{-h, -h, h}, vec3{1.0f, 0.0f, 0.0f}, vec3{0.0f, 1.0f, 0.0f},
-                 vec3{}, sideLayer},
+        ItemQuad{vec3{low.x, low.y, high.z}, vec3{size.x, 0.0f, 0.0f},
+                 vec3{0.0f, size.y, 0.0f}, vec3{}, sideLayer},
         // -Z
-        ItemQuad{vec3{-h, -h, -h}, vec3{0.0f, 1.0f, 0.0f}, vec3{1.0f, 0.0f, 0.0f},
-                 vec3{}, sideLayer},
+        ItemQuad{vec3{low.x, low.y, low.z}, vec3{0.0f, size.y, 0.0f},
+                 vec3{size.x, 0.0f, 0.0f}, vec3{}, sideLayer},
     };
 }
 

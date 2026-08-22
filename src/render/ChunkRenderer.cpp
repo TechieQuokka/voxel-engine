@@ -3,6 +3,7 @@
 #include "core/Log.hpp"
 #include "core/Paths.hpp"
 #include "core/Profile.hpp"
+#include "mesh/ModelBox.hpp"
 
 #include <cstddef>
 #include <optional>
@@ -19,6 +20,10 @@ ChunkRenderer::ChunkRenderer() {
 
     m_waterShader = rhi::Shader::fromFiles(assetPath("shaders/water.vert"),
                                            assetPath("shaders/water.frag"));
+
+    m_modelShader = rhi::Shader::fromFiles(assetPath("shaders/model.vert"),
+                                           assetPath("shaders/model.frag"));
+    m_modelShader.setUniform("u_blockTextures", static_cast<i32>(kTextureUnit));
     m_textures.emplace();
     m_shader.setUniform("u_blockTextures", static_cast<i32>(kTextureUnit));
     m_waterShader.setUniform("u_blockTextures", static_cast<i32>(kTextureUnit));
@@ -32,6 +37,9 @@ void ChunkRenderer::beginFrame() {
     m_firsts.clear();
     m_counts.clear();
     m_origins.clear();
+    m_modelFirsts.clear();
+    m_modelCounts.clear();
+    m_modelOrigins.clear();
     m_cutoutFirsts.clear();
     m_cutoutCounts.clear();
     m_cutoutOrigins.clear();
@@ -63,8 +71,19 @@ void ChunkRenderer::addSection(SectionPos pos, const SectionMeshStore::Placement
         m_origins.push_back(origin);
     }
 
+    // **36 vertices a box, not 6 a quad**, which is why this count is not scaled by
+    // the same constant as its neighbours. The words sit between the opaque stretch
+    // and the cutout one.
+    if (placement.modelCount > 0) {
+        const usize modelBase = quadBase + placement.opaqueCount;
+        m_modelFirsts.push_back(static_cast<i32>(modelBase * ModelBox::kVerticesPerBox));
+        m_modelCounts.push_back(
+            static_cast<i32>(placement.modelCount * ModelBox::kVerticesPerBox));
+        m_modelOrigins.push_back(origin);
+    }
+
     if (placement.cutoutCount > 0) {
-        const usize cutoutBase = quadBase + placement.opaqueCount;
+        const usize cutoutBase = quadBase + placement.opaqueCount + placement.modelCount;
         m_cutoutFirsts.push_back(static_cast<i32>(cutoutBase * kVerticesPerQuad));
         m_cutoutCounts.push_back(
             static_cast<i32>(placement.cutoutCount * kVerticesPerQuad));
@@ -72,7 +91,8 @@ void ChunkRenderer::addSection(SectionPos pos, const SectionMeshStore::Placement
     }
 
     if (placement.translucentCount() > 0) {
-        const usize waterBase = quadBase + placement.opaqueCount + placement.cutoutCount;
+        const usize waterBase = quadBase + placement.opaqueCount + placement.modelCount
+                              + placement.cutoutCount;
         m_waterFirsts.push_back(static_cast<i32>(waterBase * kVerticesPerQuad));
         m_waterCounts.push_back(
             static_cast<i32>(placement.translucentCount() * kVerticesPerQuad));
@@ -81,6 +101,7 @@ void ChunkRenderer::addSection(SectionPos pos, const SectionMeshStore::Placement
 
     ++m_stats.sectionsDrawn;
     m_stats.quadsDrawn += placement.quadCount;
+    m_stats.modelBoxesDrawn += placement.modelCount;
     m_stats.cutoutQuadsDrawn += placement.cutoutCount;
     m_stats.waterQuadsDrawn += placement.translucentCount();
 }
@@ -89,20 +110,22 @@ void ChunkRenderer::draw(rhi::Device& device, const Camera& camera,
                          const SectionMeshStore& store, rhi::FrameRing& ring) {
     MC_PROFILE_SCOPE_N("ChunkRenderer::draw");
 
-    if (m_firsts.empty() && m_cutoutFirsts.empty() && m_waterFirsts.empty()) {
+    if (m_firsts.empty() && m_modelFirsts.empty() && m_cutoutFirsts.empty()
+        && m_waterFirsts.empty()) {
         return;
     }
 
-    // **One slice: opaque origins, then cutout, then water.** Each pass reaches its
-    // own stretch through `u_drawIdBase` rather than through a binding of its own, so
-    // the three lists have to be contiguous -- which is why this reserves once and
-    // writes three times instead of uploading each list separately.
+    // **One slice: opaque origins, then model, then cutout, then water.** Each pass
+    // reaches its own stretch through `u_drawIdBase` rather than through a binding of
+    // its own, so the four lists have to be contiguous -- which is why this reserves
+    // once and writes four times instead of uploading each list separately.
     const usize originBytes = m_origins.size() * sizeof(vec4);
+    const usize modelBytes = m_modelOrigins.size() * sizeof(vec4);
     const usize cutoutBytes = m_cutoutOrigins.size() * sizeof(vec4);
     const usize waterBytes = m_waterOrigins.size() * sizeof(vec4);
 
     const std::optional<rhi::FrameRing::Slice> slice =
-        ring.reserve(originBytes + cutoutBytes + waterBytes);
+        ring.reserve(originBytes + modelBytes + cutoutBytes + waterBytes);
     if (!slice.has_value()) {
         // The ring logs why. Skipping the terrain for one frame is visible and bad,
         // but it is a frame rather than a corrupted draw reading a neighbour's data.
@@ -113,15 +136,22 @@ void ChunkRenderer::draw(rhi::Device& device, const Camera& camera,
                std::span<const std::byte>{
                    reinterpret_cast<const std::byte*>(m_origins.data()), originBytes});
 
-    if (!m_cutoutOrigins.empty()) {
+    if (!m_modelOrigins.empty()) {
         ring.write(*slice, originBytes,
+                   std::span<const std::byte>{
+                       reinterpret_cast<const std::byte*>(m_modelOrigins.data()),
+                       modelBytes});
+    }
+
+    if (!m_cutoutOrigins.empty()) {
+        ring.write(*slice, originBytes + modelBytes,
                    std::span<const std::byte>{
                        reinterpret_cast<const std::byte*>(m_cutoutOrigins.data()),
                        cutoutBytes});
     }
 
     if (!m_waterOrigins.empty()) {
-        ring.write(*slice, originBytes + cutoutBytes,
+        ring.write(*slice, originBytes + modelBytes + cutoutBytes,
                    std::span<const std::byte>{
                        reinterpret_cast<const std::byte*>(m_waterOrigins.data()), waterBytes});
     }
@@ -148,7 +178,23 @@ void ChunkRenderer::draw(rhi::Device& device, const Camera& camera,
         device.multiDrawTriangles(m_firsts, m_counts);
     }
 
-    // **Glass second: after the depth buffer is filled, before anything blends.**
+    // **The model pass next, still opaque and still writing depth.**
+    //
+    // A separate program only because the words are boxes rather than faces -- there
+    // is no early-Z argument here as there is for glass, and nothing about it needs to
+    // come after the terrain. It is second simply because both fill the same depth
+    // buffer and the alpha test below has to test against a finished one.
+    if (!m_modelFirsts.empty()) {
+        m_modelShader.bind();
+        m_modelShader.setUniform("u_viewProjection", camera.viewProjectionMatrix());
+        m_modelShader.setUniform("u_cameraPosition", camera.position());
+        m_modelShader.setUniform("u_fadeDistance", m_fadeDistance);
+        m_modelShader.setUniform("u_fogColor", m_fogColor);
+        m_modelShader.setUniform("u_drawIdBase", static_cast<i32>(m_origins.size()));
+        device.multiDrawTriangles(m_modelFirsts, m_modelCounts);
+    }
+
+    // **Glass third: after the depth buffer is filled, before anything blends.**
     //
     // Its own program purely so the opaque pass above keeps early-Z -- a shader that
     // can `discard` loses it for the whole draw, and paying that on all of the
@@ -162,7 +208,8 @@ void ChunkRenderer::draw(rhi::Device& device, const Camera& camera,
         m_cutoutShader.setUniform("u_aoStrength", m_aoStrength);
         m_cutoutShader.setUniform("u_fadeDistance", m_fadeDistance);
         m_cutoutShader.setUniform("u_fogColor", m_fogColor);
-        m_cutoutShader.setUniform("u_drawIdBase", static_cast<i32>(m_origins.size()));
+        m_cutoutShader.setUniform(
+            "u_drawIdBase", static_cast<i32>(m_origins.size() + m_modelOrigins.size()));
         device.multiDrawTriangles(m_cutoutFirsts, m_cutoutCounts);
     }
 
@@ -212,7 +259,8 @@ void ChunkRenderer::draw(rhi::Device& device, const Camera& camera,
     m_waterShader.setUniform("u_fogColor", m_fogColor);
     m_waterShader.setUniform("u_time", m_time);
     m_waterShader.setUniform("u_drawIdBase",
-                             static_cast<i32>(m_origins.size() + m_cutoutOrigins.size()));
+                             static_cast<i32>(m_origins.size() + m_modelOrigins.size()
+                                              + m_cutoutOrigins.size()));
     device.multiDrawTriangles(m_waterFirsts, m_waterCounts);
 
     device.setAlphaBlending(false);

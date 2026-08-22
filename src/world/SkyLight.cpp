@@ -32,8 +32,10 @@ constexpr usize columnIndex(i32 x, i32 z) {
 /// would cost more than the work they hold.
 struct Scratch {
     std::vector<u8> light;
-    std::vector<u8> opaque;
-    /// Highest opaque block per (x, z), or kWorldMinY - 1 for a column of pure air.
+    /// Per cell: does light stop here. `blocksLight`, not `opaque` -- a slab shades
+    /// what is under it while still letting the face beside it be drawn.
+    std::vector<u8> blocking;
+    /// Highest blocking block per (x, z), or kWorldMinY - 1 for a column of pure air.
     std::array<i32, kColumnArea> top{};
     /// Bucket queues, one per level. Light only ever propagates to a strictly
     /// lower level, so walking 15 down to 1 settles every cell on first write and
@@ -49,7 +51,7 @@ struct Scratch {
 Scratch& scratch() {
     static thread_local Scratch instance;
     instance.light.assign(kColumnVolume, 0);
-    instance.opaque.assign(kColumnVolume, 0);
+    instance.blocking.assign(kColumnVolume, 0);
     for (auto& bucket : instance.buckets) {
         bucket.clear();
     }
@@ -80,10 +82,10 @@ u16 computeSkyLight(Chunk& chunk) {
         const i32 baseY = sectionIndexToWorldY(static_cast<i32>(index));
 
         if (section.isUniform()) {
-            if (!kBlocks[section.uniformBlock()].opaque) {
+            if (!blocksLight(section.uniformBlock())) {
                 continue; // Already zero.
             }
-            std::fill_n(s.opaque.begin() + static_cast<std::ptrdiff_t>(lightIndex(0, baseY, 0)),
+            std::fill_n(s.blocking.begin() + static_cast<std::ptrdiff_t>(lightIndex(0, baseY, 0)),
                         static_cast<std::ptrdiff_t>(kColumnArea) * kSectionSize, u8{1});
             continue;
         }
@@ -91,8 +93,8 @@ u16 computeSkyLight(Chunk& chunk) {
         for (i32 y = 0; y < kSectionSize; ++y) {
             for (i32 z = 0; z < kSectionSize; ++z) {
                 for (i32 x = 0; x < kSectionSize; ++x) {
-                    s.opaque[lightIndex(x, baseY + y, z)] =
-                        kBlocks[section.get(x, y, z)].opaque ? u8{1} : u8{0};
+                    s.blocking[lightIndex(x, baseY + y, z)] =
+                        blocksLight(section.get(x, y, z)) ? u8{1} : u8{0};
                 }
             }
         }
@@ -115,7 +117,7 @@ u16 computeSkyLight(Chunk& chunk) {
                     continue; // Already blocked higher up.
                 }
                 const usize index = lightIndex(x, y, z);
-                if (s.opaque[index] != 0) {
+                if (s.blocking[index] != 0) {
                     s.top[column] = y;
                     continue;
                 }
@@ -183,7 +185,7 @@ u16 computeSkyLight(Chunk& chunk) {
                     return;
                 }
                 const usize target = lightIndex(nx, ny, nz);
-                if (s.opaque[target] != 0 || s.light[target] >= amount) {
+                if (s.blocking[target] != 0 || s.light[target] >= amount) {
                     return;
                 }
                 s.light[target] = amount;

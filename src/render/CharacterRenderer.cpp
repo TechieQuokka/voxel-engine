@@ -3,6 +3,7 @@
 #include "core/Log.hpp"
 #include "core/Paths.hpp"
 #include "core/Profile.hpp"
+#include "world/BlockShape.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -200,9 +201,26 @@ const std::vector<ItemQuad>& CharacterRenderer::modelFor(ItemId item,
     // its top face reads as a tile, and a pickaxe held as a cube reads as a crate.
     std::vector<ItemQuad> model;
     if (itemIsBlock(item)) {
-        const BlockInfo& info = kBlocks[blockOfItem(item)];
+        const BlockId block = blockOfItem(item);
+        const BlockInfo& info = kBlocks[block];
+
+        // The union of the block's boxes, which is the box itself for a slab and the
+        // whole cube for everything else. A stair will want the union of two and this
+        // already gives it.
+        vec3 low{0.0f};
+        vec3 high{1.0f};
+        const std::span<const BlockBox> boxes = blockBoxes(block);
+        if (!boxes.empty()) {
+            low = vec3{boxes[0].lowX(), boxes[0].lowY(), boxes[0].lowZ()};
+            high = vec3{boxes[0].highX(), boxes[0].highY(), boxes[0].highZ()};
+            for (const BlockBox& box : boxes.subspan(1)) {
+                low = math::min(low, vec3{box.lowX(), box.lowY(), box.lowZ()});
+                high = math::max(high, vec3{box.highX(), box.highY(), box.highZ()});
+            }
+        }
+
         model = buildBlockModel(static_cast<f32>(info.top), static_cast<f32>(info.side),
-                                static_cast<f32>(info.bottom));
+                                static_cast<f32>(info.bottom), low, high);
     } else {
         const u16 layer = itemIcon(item);
 

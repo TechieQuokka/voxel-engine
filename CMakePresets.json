@@ -84,7 +84,7 @@
     {
       "name": "debug",
       "configurePreset": "debug",
-      "description": "393 cases, one ctest entry each. jobs is a fixed 8 because a test preset has no way to say 'all cores' -- 0 means serial here, unlike a build preset. Oversubscribing a smaller machine costs nothing at this case length; override with -j to be exact.",
+      "description": "441 cases, one ctest entry each. jobs is a fixed 8 because a test preset has no way to say 'all cores' -- 0 means serial here, unlike a build preset. Oversubscribing a smaller machine costs nothing at this case length; override with -j to be exact.",
       "output": { "outputOnFailure": true },
       "execution": { "jobs": 8 }
     },

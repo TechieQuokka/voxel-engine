@@ -1,9 +1,7 @@
 #pragma once
 
-#include "core/JobSystem.hpp"
-#include "core/MpmcQueue.hpp"
+#include "app/ChunkStreamer.hpp"
 #include "core/Types.hpp"
-#include "mesh/ChunkMesh.hpp"
 #include "platform/Input.hpp"
 #include "platform/Window.hpp"
 #include "render/Camera.hpp"
@@ -24,6 +22,7 @@
 #include "world/ItemEntities.hpp"
 #include "world/FallDamage.hpp"
 #include "world/Player.hpp"
+#include "world/BlockShape.hpp"
 #include "world/PlayerBox.hpp"
 #include "world/WalkMove.hpp"
 #include "world/Raycast.hpp"
@@ -33,14 +32,9 @@
 #include "world/WorldStore.hpp"
 #include "worldgen/Generator.hpp"
 
-#include <array>
-#include <atomic>
 #include <memory>
-#include <mutex>
 #include <optional>
-#include <semaphore>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -279,54 +273,14 @@ private:
     /// has crossed into a different column.
     void updateLoadedRegion();
 
-    /// Hands columns needing generation to the worker pool. Returns how many were
-    /// submitted, not how many finished -- nothing here waits.
-    usize submitGeneration();
-    /// Hands dirty sections to the worker pool, with their neighbourhood gathered
-    /// and the nine columns it points into pinned.
-    usize submitMeshing();
-
-    /// Which band a piece of work goes in, from its distance to the camera column.
-    JobPriority priorityFor(ChunkPos pos) const;
-
-    /// Runs the pipeline until nothing is outstanding. Used by --warm-up and by
-    /// captures; never by the frame loop, which must not block.
-    void drainStreaming();
-
-    void startUploadThread();
-    void shutdownStreaming();
-    void uploadLoop();
-
-    /// A meshing job's borrowed state. Built on the main thread, filled by a worker,
-    /// consumed by the upload thread, then returned to the free list.
-    ///
-    /// Pooled rather than allocated per job for two reasons: `Job` carries a `u64`,
-    /// so an index is what fits, and the pooled ChunkMesh keeps its vector capacity
-    /// between uses, which removes the per-section allocation from the mesh path
-    /// entirely once the pool is warm.
-    struct MeshTask {
-        SectionPos pos{};
-        SectionNeighbourhood hood;
-        /// The nine columns the neighbourhood points into, pinned for the task's
-        /// whole life so the World cannot unload one underneath it. Indexed
-        /// (dz + 1) * 3 + (dx + 1), so the centre is 4.
-        std::array<Chunk*, 9> pinned{};
-        ChunkMesh mesh;
-    };
-
-    static constexpr usize kCentrePinSlot = 4;
-
-    /// Job entry points. Static members rather than free functions so they can reach
-    /// private state; `Job::Fn` is a plain function pointer either way.
-    static void generateColumnJob(void* context, u64 payload);
-    static void meshSectionJob(void* context, u64 payload);
-    /// True when every column of `pos`'s 3x3 neighbourhood holds generated voxels.
-    ///
-    /// Meshing before that would cull the section's boundary faces against columns
-    /// that are still empty, and the result would have to be thrown away. Waiting
-    /// also removes the need to remesh on arrival entirely: a section is never
-    /// meshed against a neighbour that is about to change.
-    bool neighboursReady(ChunkPos pos) const;
+    /// The world a capture flag asks for. Defined in app/CaptureScenarios.cpp, which
+    /// is where the fixture data lives rather than in the constructor; see the note at
+    /// the top of that file. Does nothing unless `--furnace`, `--inventory` or
+    /// `--hold` was given, which is to say nothing in an ordinary session.
+    void seedCaptureScenario();
+    void seedFurnaceScenario();
+    void seedInventoryScenario();
+    void seedHeldItem();
 
     void buildVisibleSet();
     void renderFrame();
@@ -619,26 +573,13 @@ private:
     /// site tests for that rather than the flag.
     std::unique_ptr<WorldStore> m_store;
 
-    /// Furnaces read off disk by a worker, waiting for the main thread to adopt them.
-    ///
-    /// **The handoff exists because loading happens on a worker and `m_furnaces`
-    /// belongs to the main thread.** A column is loaded inside its generation job --
-    /// the one point where exactly one thread owns it and nothing else can see it --
-    /// so the voxels can be written straight in, but the furnaces cannot: they go
-    /// into a map the simulation walks every tick.
-    std::mutex m_loadedFurnaceMutex;
-    std::vector<SavedFurnace> m_loadedFurnaces;
-
     /// Moves anything the workers loaded into `m_furnaces`. Main thread, once a frame.
+    /// The handoff itself lives in the streamer, which is where the worker side of it
+    /// runs; see `ChunkStreamer::takeLoadedFurnaces`.
     void adoptLoadedFurnaces();
 
-    /// Columns that have just become Ready and have not been relit yet.
-    ///
-    /// **The same handoff as the furnaces above, for the same reason and one more.**
-    /// Block light is derived and therefore not saved, so a column arrives with its
-    /// torches and no light around them -- but relighting it writes into its
-    /// neighbours, which a worker owning one column has no right to touch. So the
-    /// worker records the position and the main thread does the flood.
+    /// Floods block light through every column the workers just handed over, and marks
+    /// what moved for remeshing. Main thread, once a frame.
     ///
     /// **Every column that arrives, not only the ones off disk.** A freshly generated
     /// column next to a saved one has to receive that column's torch light, and
@@ -646,16 +587,7 @@ private:
     /// from the neighbours as well, so doing this on arrival covers both directions;
     /// it is cheap because it asks each section's palette whether a torch is named in
     /// it rather than reading the voxels.
-    std::mutex m_relightMutex;
-    std::vector<ChunkPos> m_relightQueue;
-
-    /// Floods block light through everything the workers just handed over, and marks
-    /// what moved for remeshing. Main thread, once a frame.
     void relightArrivedColumns();
-
-    /// Records a column as needing block light. Called from a worker, after the
-    /// release store that makes the column Ready.
-    void queueRelight(ChunkPos column);
 
     /// Writes one column and the furnaces standing in it, if there is a store and
     /// the column was edited.
@@ -724,13 +656,15 @@ private:
     ///
     /// **Not saved**: both are derived from a fall that is over by the time the game
     /// closes, and restoring them would resume a descent the player is not in.
-    f32 m_fallFromY = 0.0f;
-    bool m_trackingFall = false;
+    /// Where the current fall began. See world/FallDamage.hpp -- it is a type rather
+    /// than two fields here because the transitions were spread across `updateWalk`
+    /// and one of them was missing.
+    FallTracker m_fall;
 
     /// Applies fall damage for a landing from `fromY` to `toY`, and respawns the
     /// player if it kills them. The rule itself is `world/FallDamage.hpp`; what is
     /// left here is the health and what death does.
-    void applyFallDamage(f32 fromY, f32 toY);
+    void applyFallDamage(f32 distance);
     void respawn();
 
     bool m_thirdPerson = false;
@@ -745,35 +679,13 @@ private:
     ChunkPos m_loadedCenter{};
     bool m_hasLoadedCenter = false;
 
-    /// In-flight meshing tasks. Sized once, before any thread starts, and never
-    /// resized -- indices into it travel through queues.
-    static constexpr usize kMeshTaskPoolSize = 1024;
-
-    std::unique_ptr<JobSystem> m_jobs;
-    std::vector<MeshTask> m_meshTasks;
-    /// Indices of unused tasks. Popping one is how the main thread reserves a slot,
-    /// and an empty queue is backpressure: it stops submitting this frame.
-    std::unique_ptr<MpmcQueue<u32>> m_freeMeshTasks;
-    /// Finished meshes waiting to be copied into the arena. At least as large as the
-    /// task pool, so a worker's push can never fail.
-    std::unique_ptr<MpmcQueue<u32>> m_uploadQueue;
-
-    std::counting_semaphore<> m_uploadSignal{0};
-    std::atomic<bool> m_uploadStopping{false};
-    /// The frame number the upload thread stamps retired ranges with.
-    std::atomic<u64> m_frameForUpload{0};
-    std::atomic<usize> m_arenaFullEvents{0};
-    /// Meshing jobs completed. Deliberately separate from the mesh store's section
-    /// count: a section entirely inside solid rock has every face hidden by its
-    /// neighbours, so it is meshed, produces zero quads, and is stored nowhere. The
-    /// gap between these two numbers is how much of the world costs nothing to draw.
-    std::atomic<usize> m_sectionsMeshed{0};
-    std::atomic<usize> m_sectionsEmpty{0};
-
-    /// Declared after everything it touches, so it is joined before any of it is
-    /// destroyed. shutdownStreaming() still signals it explicitly first, because a
-    /// thread parked on a semaphore cannot observe a destructor.
-    std::jthread m_uploadThread;
+    /// The generation, meshing and upload pipeline. See app/ChunkStreamer.hpp.
+    ///
+    /// **Declared after everything it borrows** -- the World, the Generator, the store
+    /// and the mesh arena -- so member destruction stops its threads before any of the
+    /// four goes away. `~Engine` also calls `shutdown()` explicitly, because the save
+    /// it runs must happen with the workers already stopped.
+    std::unique_ptr<ChunkStreamer> m_streamer;
 
     f64 m_lastFrameTime = 0.0;
     f64 m_fpsAccumulator = 0.0;

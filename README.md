@@ -131,21 +131,33 @@ waits on finding a crafting table.
 
 **Smelt sand and you get glass, and a wall with a window in it stops being a wall.**
 What you see of a pane is its frame: the middle is discarded rather than blended, so
-daylight comes through a window the same way it comes through a hole -- `opaque` is the
-only thing the sky-light fill reads, and glass is not opaque. It is drawn in a pass of
+daylight comes through a window the same way it comes through a hole -- what the
+sky-light fill reads is whether a block stops light, and glass does not. It is drawn in a pass of
 its own, because a shader that can discard costs the whole draw its early-Z and the
 terrain should not pay that for a few tiles.
 
-**The torch is a cube for now, and that is the one place this deliberately parts with
-vanilla.** The mesher draws cubes and nothing else, so a proper cross-shaped torch has
-to wait for the geometry work — until then it blocks daylight it should not. The light
-itself is vanilla's: level 14, and the same falloff.
+**A block no longer has to be a cube.** Three planks in a row make six slabs, and a slab
+is half a block: laid on a floor it rests on it, clicked onto a ceiling it hangs from
+it, and clicked on the upper half of a wall it goes in the upper half of the cell — all
+of which is vanilla's rule. **You walk up one without jumping**, which is what the 0.6
+step height has been waiting for since walking was written; every block until now was
+full height, so that constant had never once done its job.
+
+They are drawn in a fourth pass, over the same arena, from the same 64-bit word read as
+a **box** rather than a face — one word expanded to 36 vertices instead of six. The
+terrain path is untouched: a section holding no such block skips the pass on one
+boolean.
+
+**The torch is still a cube, and that is the one place this deliberately parts with
+vanilla.** The geometry now exists to fix it — a cross is a shape like any other — and
+it is the next small thing rather than a blocked one. The light itself is vanilla's:
+level 14, and the same falloff.
 
 Dig down. The caves, ores and darkness are the point, and they are not visible from the
 surface — and now you can take a light with you.
 
 ```bash
-ctest --preset debug                       # 411 test cases, one ctest entry each
+ctest --preset debug                       # 441 test cases, one ctest entry each
 cmake --preset asan && ctest --preset asan  # address + undefined
 ./build/release/src/app/minecraft --render-distance 16 --bench-seconds 20
 ./build/release/src/app/minecraft --capture /tmp/shot.ppm
@@ -223,6 +235,12 @@ tracks remain, independent of each other:
   with its window, a HUD, health, block updates, oceans, flowing water and
   **persistence of both the world and the player** are all **done**. Still open:
   aquifers and the rest of vegetation.
+- **Geometry (Phase 10)** — **started, and the slab is the proof.** A fourth draw pass
+  reads the arena word as a box rather than a face, block shapes carry collision boxes,
+  and the old `opaque` flag split into "hides the face behind it" and "stops light",
+  which a slab needs to answer differently. Stairs, doors, fences and panes are the
+  same mechanism with more boxes; the door additionally needs the first multi-block
+  state in the engine.
 - **Crafting** — Phases 16 to 19. **16 and 17 are built**: items stopped being block
   types, there is a container-window layer, a crafting table gates the 3x3 recipes, and
   a furnace smelts — so iron and diamond are reachable and the whole ore table means

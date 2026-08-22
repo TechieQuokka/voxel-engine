@@ -77,6 +77,19 @@ inline constexpr std::array kRecipes{
            "oak_planks", "", "",
            "",           "", ""),
 
+    // Three planks in a row make six slabs. Vanilla's recipe and vanilla's yield --
+    // six from three is what makes a slab floor cheaper than a plank one rather than
+    // merely thinner, which is the reason to build with them.
+    //
+    // **A row, so it needs the table.** Three cells across do not fit in a 2x2, which
+    // puts slabs on the far side of the same gate a pickaxe is behind. That is
+    // vanilla's shape and it is worth keeping: the first thing a player builds is
+    // made of whole blocks, and slabs arrive with the table that also makes tools.
+    shaped(itemIdOf("oak_slab"), 6,
+           "oak_planks", "oak_planks", "oak_planks",
+           "",           "",           "",
+           "",           "",           ""),
+
     // **Four planks make the table, and the table is what makes everything below
     // reachable.** Shaped rather than shapeless, and a 2x2 square, which is exactly
     // what fits in the player's own grid -- vanilla's bootstrap: the one recipe that

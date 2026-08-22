@@ -63,3 +63,74 @@ TEST_CASE("a very long fall saturates rather than overflowing") {
     CHECK(FallDamage::forDistance(std::numeric_limits<f32>::infinity())
           > Player::kMaxHealth);
 }
+
+// -- Tracking -------------------------------------------------------------------
+//
+// **The arithmetic above was always right; what was wrong was who called it.** The
+// transitions lived as two fields and four assignments inside `Engine::updateWalk`,
+// and the jump path was missing one -- so a fall that began with a jump was never
+// tracked and landed for free from any height.
+
+TEST_CASE("a fall that begins with a jump is tracked") {
+    // **The regression case.** Jumping cleared `onGround` before the substep loop
+    // could see it, so this transition never happened and the landing below was free.
+    FallTracker fall;
+    fall.leftGround(100.0f);
+    CHECK(fall.tracking());
+    CHECK(fall.landed(80.0f) == doctest::Approx(20.0f));
+    CHECK(FallDamage::forDistance(20.0f) == doctest::Approx(17.0f));
+}
+
+TEST_CASE("landing without a tracked fall costs nothing") {
+    FallTracker fall;
+    CHECK(fall.landed(50.0f) == 0.0f);
+    CHECK_FALSE(fall.tracking());
+}
+
+TEST_CASE("the origin is where the ground was left, not the peak") {
+    // A jump therefore costs its own arc, which is why the three-block grace exists.
+    FallTracker fall;
+    fall.leftGround(64.0f);
+    fall.rose(64.8f);   // apex of an ordinary jump
+    fall.rose(64.4f);   // rose() only ever raises, so coming back down is ignored
+    CHECK(fall.from() == doctest::Approx(64.8f));
+    // Landing where it started: the arc is paid for, and it is under the grace.
+    CHECK(fall.landed(64.0f) == doctest::Approx(0.8f));
+    CHECK(FallDamage::forDistance(0.8f) == 0.0f);
+}
+
+TEST_CASE("a second leftGround during one fall does not move the origin") {
+    // The substep loop can see "was on the ground" more than once in a frame; a fall
+    // has one origin and re-arming it mid-drop would forgive the distance already
+    // covered.
+    FallTracker fall;
+    fall.leftGround(100.0f);
+    fall.leftGround(95.0f);
+    CHECK(fall.from() == doctest::Approx(100.0f));
+    CHECK(fall.landed(90.0f) == doctest::Approx(10.0f));
+}
+
+TEST_CASE("water and unloaded ground cancel a fall outright") {
+    FallTracker fall;
+    fall.leftGround(120.0f);
+    fall.cancel();
+    CHECK_FALSE(fall.tracking());
+    // Landing after a cancel costs nothing, which is what makes jumping off a cliff
+    // into a lake a thing people do.
+    CHECK(fall.landed(60.0f) == 0.0f);
+}
+
+TEST_CASE("rising while nothing is tracked does not start a fall") {
+    FallTracker fall;
+    fall.rose(200.0f);
+    CHECK_FALSE(fall.tracking());
+    CHECK(fall.landed(0.0f) == 0.0f);
+}
+
+TEST_CASE("landing above where the fall started is not negative damage") {
+    // Terrain can arrive under a player, and a ground probe snaps the feet *onto* a
+    // surface -- so a landing height above the origin is reachable.
+    FallTracker fall;
+    fall.leftGround(70.0f);
+    CHECK(fall.landed(72.0f) == 0.0f);
+}

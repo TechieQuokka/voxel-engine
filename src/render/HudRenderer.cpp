@@ -2,7 +2,9 @@
 
 #include "core/Paths.hpp"
 #include "core/Profile.hpp"
+#include "world/BlockShape.hpp"
 #include "world/BlockTable.hpp"
+#include "world/ItemTable.hpp"
 #include "world/Inventory.hpp"
 #include "world/Screen.hpp"
 
@@ -172,6 +174,40 @@ constexpr vec4 kSlotIdle{0.0f, 0.0f, 0.0f, 0.38f};
 constexpr vec4 kSlotActive{1.0f, 1.0f, 1.0f, 0.55f};
 constexpr vec4 kWhite{1.0f, 1.0f, 1.0f, 1.0f};
 
+/// The part of a slot an item's icon fills.
+///
+/// The whole slot for anything that is a full cube or is not a block at all, which is
+/// every item but a slab today. For a non-cube block it is the block's own bounds
+/// mapped onto the slot, so a bottom slab occupies the lower half and a top slab the
+/// upper -- which also distinguishes the two halves from each other, and they are two
+/// different items in the pack.
+vec4 iconRect(const vec4& slot, ItemId item) {
+    const BlockId block = blockOfItem(item);
+    if (block == kAirBlock || isFullCube(block)) {
+        return slot;
+    }
+    const std::span<const BlockBox> boxes = blockBoxes(block);
+    if (boxes.empty()) {
+        return slot;
+    }
+
+    f32 lowX = boxes[0].lowX();
+    f32 lowY = boxes[0].lowY();
+    f32 highX = boxes[0].highX();
+    f32 highY = boxes[0].highY();
+    for (const BlockBox& box : boxes.subspan(1)) {
+        lowX = std::min(lowX, box.lowX());
+        lowY = std::min(lowY, box.lowY());
+        highX = std::max(highX, box.highX());
+        highY = std::max(highY, box.highY());
+    }
+
+    const f32 width = slot.z - slot.x;
+    const f32 height = slot.w - slot.y;
+    return vec4{slot.x + width * lowX, slot.y + height * lowY,
+                slot.x + width * highX, slot.y + height * highY};
+}
+
 } // namespace
 
 HudRenderer::HudRenderer()
@@ -283,7 +319,13 @@ void HudRenderer::pushSlot(const UiRect& rect, const ItemStack& stack, bool high
 
     // `itemIcon` rather than `kBlocks[...].top`, since Phase 16: a slot can hold a
     // stick, and a stick has no block to take a top face from.
-    push(slot, kWhite, Mode::Block, itemIcon(stack.item));
+    //
+    // **A block that is not a cube draws only the part of the slot its shape fills.**
+    // The icon is a flat tile of the block's texture, so a slab drawn full-size is
+    // indistinguishable from the planks it was cut from -- which is not a cosmetic
+    // complaint when both are in the hotbar at once and only one of them is what you
+    // meant to place. Half a tile says "half a block" without a second texture.
+    push(iconRect(slot, stack.item), kWhite, Mode::Block, itemIcon(stack.item));
 
     // A single item shows no number, exactly as in vanilla: the icon already says
     // "one", and a 1 in every slot is noise.

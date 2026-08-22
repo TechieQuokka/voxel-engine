@@ -81,9 +81,8 @@ public:
         if (section == nullptr) {
             return true;
         }
-        return kBlocks[section->get(blockToLocalCoord(pos.x), blockToLocalCoord(pos.y),
-                                    blockToLocalCoord(pos.z))]
-            .opaque;
+        return blocksLight(section->get(blockToLocalCoord(pos.x), blockToLocalCoord(pos.y),
+                                       blockToLocalCoord(pos.z)));
     }
 
     u8 lightAt(BlockPos pos) {
@@ -255,8 +254,8 @@ void updateBlockLight(World& world, BlockPos pos, BlockId before, BlockId after,
                       LightTouch& touched) {
     const u8 wasEmitting = luminanceOf(before);
     const u8 nowEmitting = luminanceOf(after);
-    const bool wasBlocking = kBlocks[before].opaque;
-    const bool nowBlocking = kBlocks[after].opaque;
+    const bool wasBlocking = blocksLight(before);
+    const bool nowBlocking = blocksLight(after);
 
     // Dirt to gravel, stone to cobblestone: neither what the cell gives nor what it
     // lets through has moved, so no light anywhere can have changed. This is the
@@ -298,7 +297,7 @@ void updateBlockLight(World& world, BlockPos pos, BlockId before, BlockId after,
 
 bool blockLightCanMove(const World& world, BlockPos pos, BlockId before, BlockId after) {
     if (luminanceOf(before) == luminanceOf(after)
-        && kBlocks[before].opaque == kBlocks[after].opaque) {
+        && blocksLight(before) == blocksLight(after)) {
         return false;
     }
     if (luminanceOf(after) != 0) {

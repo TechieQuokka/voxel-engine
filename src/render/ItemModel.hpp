@@ -62,8 +62,15 @@ inline constexpr f32 kItemThickness = 1.0f / 16.0f;
 /// to, which is what vanilla's own extrusion does.
 std::vector<ItemQuad> buildSpriteModel(std::span<const u8> pixels, u32 size, f32 layer);
 
-/// Builds the cube a held *block* is -- vanilla holds a block as a block, not as a
+/// Builds the box a held *block* is -- vanilla holds a block as a block, not as a
 /// picture of one. Centred on the origin and one block across, like the sprite model.
-std::vector<ItemQuad> buildBlockModel(f32 topLayer, f32 sideLayer, f32 bottomLayer);
+///
+/// `boxMin` and `boxMax` are the block's shape in 0..1, defaulting to the whole cube.
+/// **A slab held as a full block is the same lie the hotbar icon told**: the hand is
+/// the largest thing on screen in first person, and it has to agree with what goes down
+/// when the button is pressed.
+std::vector<ItemQuad> buildBlockModel(f32 topLayer, f32 sideLayer, f32 bottomLayer,
+                                      const vec3& boxMin = vec3{0.0f},
+                                      const vec3& boxMax = vec3{1.0f});
 
 } // namespace mc

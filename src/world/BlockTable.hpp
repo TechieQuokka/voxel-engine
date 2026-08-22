@@ -304,12 +304,39 @@ consteval u16 layerOf(std::string_view name) {
     throw "unknown texture layer name";
 }
 
-/// Per-block-type properties. The mesher only ever asks for `opaque` and a face's
-/// layer; everything else here exists for logging and for the texture generator.
+/// What geometry a block is.
+///
+/// `Cube` is every block that existed before non-cube geometry, and is the only shape
+/// the binary greedy mesher can emit: its whole method is bitwise culling over 32-bit
+/// occupancy columns, which has no way to say "half a cell". Anything else is drawn by
+/// the model pass instead and skipped by the mesher.
+///
+/// **A block's shape is data here rather than a `switch` in the mesher or in the
+/// collision code**, for the reason this whole file exists: a block added to `kBlocks`
+/// should not need a second edit somewhere else to collide or draw correctly.
+///
+/// The boxes each shape occupies live in `world/BlockShape.hpp`, which is where the
+/// collision arithmetic is; this enum is here because it is a property of a block.
+enum class BlockShape : u8 {
+    Cube,
+    SlabBottom,
+    SlabTop,
+};
+
+/// Per-block-type properties. The mesher only ever asks for `opaque`, `shape` and a
+/// face's layer; everything else here exists for logging and for the texture
+/// generator.
 struct BlockInfo {
     std::string_view name;
 
-    /// Fully hides the neighbouring face. Air and (later) glass and water are not.
+    /// Fully hides the neighbouring face. Air, glass and water are not.
+    ///
+    /// **This answers a rendering question and only a rendering question.** It used to
+    /// answer the lighting one as well, and the two part company as soon as a block is
+    /// not a full cube: a slab must not hide the face beside it, or it draws as a solid
+    /// wall from outside, and it must still shade what is under it. `shadesLight` at
+    /// the bottom of this struct is the other half; `blocksLight(id)` combines them and
+    /// is what `SkyLight` and `BlockLight` read.
     bool opaque = true;
 
     /// Which layer each face draws. Three fields rather than six because no block
@@ -468,9 +495,35 @@ struct BlockInfo {
     /// is in. Putting glass in the opaque pass would pay that on every block of
     /// terrain in the world to draw the handful of tiles that need it. Vanilla splits
     /// the same way and calls the layer `cutout`.
+    bool cutout = false;
+
+    /// Stops light despite not being opaque.
+    ///
+    /// **The half of the old `opaque` flag that is about lighting rather than about
+    /// drawing.** `blocksLight(id)` is `opaque || shadesLight`, and that is what
+    /// `SkyLight` and `BlockLight` read. Because it defaults to false, every entry in
+    /// the table below keeps exactly the answer it had when the two were one field --
+    /// which is the point: this split changed no behaviour on its own.
+    ///
+    /// It is only ever true for a block that is **not a full cube but still fills
+    /// enough of its cell to shade**: a slab, a stair, a door. Vanilla shades under all
+    /// three. A fence or a pane is the other case -- not a cube and not a shade -- and
+    /// leaves this false.
+    ///
+    bool shadesLight = false;
+
+    /// What geometry this block is. See BlockShape.
+    BlockShape shape = BlockShape::Cube;
+
+    /// How many of `drops` breaking this yields. One for everything but a double slab.
+    ///
+    /// **A double slab is two slabs and vanilla gives both back**, which is the whole
+    /// reason a player stacks them rather than losing half the material every time
+    /// they change their mind. `drops` names *what*; this names how many, and nothing
+    /// before the double slab needed the second half of that question.
     ///
     /// **Last field. Append, do not insert.**
-    bool cutout = false;
+    u32 dropCount = 1;
 };
 
 /// A block that draws the same layer on all six faces, which is most of them.
@@ -599,6 +652,43 @@ inline constexpr std::array kBlocks{
                                       layerOf("crafting_table_side"),
                                       layerOf("oak_planks"), 'w', false, 2.5f, {},
                                       false, false, ToolKind::Axe},
+
+    // **The first blocks that are not cubes**, and the whole of what the model pass
+    // exists for. Two entries rather than one because a slab's half is *state*, and
+    // this engine has no metadata beside a voxel -- the id space is where state goes.
+    // `BlockId` is a `u16` with sixty-odd of its 65,536 used, and a section's palette
+    // compresses whatever it holds, so the cost of spelling a state out is nothing.
+    // Pre-flattening Minecraft did the same thing with id plus a nibble.
+    //
+    // **`opaque` is false and `shadesLight` is true, which is the pair the split of
+    // the old single flag exists to express.** Not opaque: a slab must not hide the
+    // face of the block beside it, or a slab against a wall draws as a solid wall.
+    // Shading: vanilla stops daylight under a slab, and a floor of them that lit the
+    // room below would be a rule nobody could guess by looking.
+    //
+    // Vanilla hardness for a wooden slab is 2.0, the same as the planks it is cut
+    // from. It drops itself, which is the default.
+    BlockInfo{"oak_slab", false, layerOf("oak_planks"), layerOf("oak_planks"),
+                          layerOf("oak_planks"), 'u', false, 2.0f, {}, false, false,
+                          ToolKind::Axe, ToolTier::None, 0, false, 0, false,
+                          /*shadesLight=*/true, BlockShape::SlabBottom},
+    BlockInfo{"oak_slab_top", false, layerOf("oak_planks"), layerOf("oak_planks"),
+                              layerOf("oak_planks"), 'U', false, 2.0f, "oak_slab",
+                              false, false, ToolKind::Axe, ToolTier::None, 0, false, 0,
+                              false, /*shadesLight=*/true, BlockShape::SlabTop},
+
+    // **Two slabs in one cell, which is what vanilla makes when you put a slab on a
+    // slab.** A full cube in every respect -- opaque, shading, merged by the greedy
+    // mesher -- so it costs the model pass nothing and draws exactly as planks do.
+    // What makes it worth being its own block rather than simply being planks is the
+    // drop: breaking it gives the two slabs back.
+    //
+    // It is never placed directly and has no recipe; `placeTargetBlock` produces it
+    // when a slab is put into the empty half of a cell that already holds one.
+    BlockInfo{"oak_slab_double", true, layerOf("oak_planks"), layerOf("oak_planks"),
+                                 layerOf("oak_planks"), 'W', false, 2.0f, "oak_slab",
+                                 false, false, ToolKind::Axe, ToolTier::None, 0, false,
+                                 0, false, false, BlockShape::Cube, /*dropCount=*/2},
 
     // **The block that opens the ore table.** Iron, copper and gold come out of here
     // and nowhere else, and half of `kBlocks` above is gated behind the pickaxes they
@@ -752,6 +842,35 @@ constexpr bool isCutout(BlockId id) {
 /// registry and uses that one.
 constexpr bool isOpaque(BlockId id) {
     return id >= kBlocks.size() || kBlocks[id].opaque;
+}
+
+/// True for a block that stops sky light and block light. See BlockInfo::shadesLight.
+///
+/// **This is the lighting question; `isOpaque` is the drawing one.** They agree for
+/// every full cube, and part for a slab, a stair or a door -- each of which must let
+/// the face beside it be drawn while still shading what is under it.
+///
+/// **Both kinds of light, deliberately.** Vanilla propagates sky and block light
+/// through the same opacity, and a block that shaded daylight but let torchlight
+/// through would be a rule nobody could predict by looking at it.
+///
+/// Out of range is `true`, for `isOpaque`'s reason and the same one `BlockLight`
+/// already applies to a column that has not loaded.
+constexpr bool blocksLight(BlockId id) {
+    return id >= kBlocks.size() || kBlocks[id].opaque || kBlocks[id].shadesLight;
+}
+
+/// How many items breaking a block yields. See BlockInfo::dropCount.
+constexpr u32 dropCountOf(BlockId id) {
+    return id < kBlocks.size() ? kBlocks[id].dropCount : 1u;
+}
+
+/// What geometry a block is. See BlockInfo::shape.
+///
+/// Out of range is `Cube`, which is the answer that makes an unknown block behave like
+/// every block that came before shapes existed.
+constexpr BlockShape shapeOf(BlockId id) {
+    return id < kBlocks.size() ? kBlocks[id].shape : BlockShape::Cube;
 }
 
 /// True for liquids. See BlockInfo::fluid.

@@ -23,6 +23,13 @@
 
 uniform mat4 u_viewProjection;
 uniform vec3 u_blockOrigin;
+// The box inside the cell, as fractions of a block. A full cube is (0,0,0) and
+// (1,1,1); a bottom slab is (0,0,0) and (1,0.5,1). **The outline has to follow the
+// shape** -- a full-cube box drawn around a half block tells the player they are
+// aiming at something they are not, which is exactly how sixty slabs ended up
+// scattered across a hillside instead of stacked into a wall.
+uniform vec3 u_boxMin;
+uniform vec3 u_boxSize;
 uniform float u_inflate;
 /// Half-thickness, in NDC height units. NDC spans 2.0 top to bottom, so the drawn
 /// width in pixels is roughly u_thickness * framebufferHeight.
@@ -51,7 +58,8 @@ vec4 cornerClip(uint corner) {
     // origin, so the box stays centred on the block whatever the inflation is.
     vec3 offset = (unit - vec3(0.5)) * (2.0 * u_inflate);
 
-    return u_viewProjection * vec4(u_blockOrigin + unit + offset, 1.0);
+    return u_viewProjection
+         * vec4(u_blockOrigin + u_boxMin + unit * u_boxSize + offset, 1.0);
 }
 
 void main() {

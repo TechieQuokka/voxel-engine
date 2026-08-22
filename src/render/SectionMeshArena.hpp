@@ -66,10 +66,14 @@ public:
         usize byteOffset = 0;
         u32 quadCount = 0;
         u32 opaqueCount = 0;
+        /// Non-cube geometry, in **boxes**, not quads. Between the opaque and cutout
+        /// stretches; see mesh/ChunkMesh.hpp for the layout and mesh/ModelBox.hpp for
+        /// why a box is one word of the same arena.
+        u32 modelCount = 0;
         u32 cutoutCount = 0;
 
         u32 translucentCount() const noexcept {
-            return quadCount - opaqueCount - cutoutCount;
+            return quadCount - opaqueCount - modelCount - cutoutCount;
         }
     };
 
@@ -86,7 +90,7 @@ public:
     ///
     /// A zero `quadCount` is the caller's mistake; an empty mesh is a `release`.
     std::optional<usize> reserve(SectionPos pos, u32 quadCount, u32 opaqueCount,
-                                 u32 cutoutCount, u64 frame);
+                                 u32 modelCount, u32 cutoutCount, u64 frame);
 
     /// Drops a section's storage. Silently ignores a section that has none.
     void release(SectionPos pos, u64 frame);

@@ -114,12 +114,15 @@ SelectionRenderer::SelectionRenderer()
 }
 
 void SelectionRenderer::draw(rhi::Device& device, const Camera& camera,
-                             const vec3& blockOrigin, f32 aspect) {
+                             const vec3& blockOrigin, f32 aspect,
+                             const vec3& boxMin, const vec3& boxSize) {
     MC_PROFILE_SCOPE_N("SelectionRenderer::draw");
 
     m_shader.bind();
     m_shader.setUniform("u_viewProjection", camera.viewProjectionMatrix());
     m_shader.setUniform("u_blockOrigin", blockOrigin);
+    m_shader.setUniform("u_boxMin", boxMin);
+    m_shader.setUniform("u_boxSize", boxSize);
     m_shader.setUniform("u_inflate", kInflate);
     m_shader.setUniform("u_thickness", kOutlineThickness);
     m_shader.setUniform("u_aspect", aspect);
@@ -135,12 +138,15 @@ void SelectionRenderer::draw(rhi::Device& device, const Camera& camera,
 }
 
 void SelectionRenderer::drawCracks(rhi::Device& device, const Camera& camera,
-                                   const vec3& blockOrigin, u32 stage) {
+                                   const vec3& blockOrigin, u32 stage,
+                                   const vec3& boxMin, const vec3& boxSize) {
     MC_PROFILE_SCOPE_N("SelectionRenderer::drawCracks");
 
     m_crackShader.bind();
     m_crackShader.setUniform("u_viewProjection", camera.viewProjectionMatrix());
     m_crackShader.setUniform("u_blockOrigin", blockOrigin);
+    m_crackShader.setUniform("u_boxMin", boxMin);
+    m_crackShader.setUniform("u_boxSize", boxSize);
     m_crackShader.setUniform("u_inflate", kInflate);
     m_crackShader.setUniform("u_stage", static_cast<i32>(stage));
 

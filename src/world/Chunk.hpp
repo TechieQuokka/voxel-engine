@@ -103,8 +103,12 @@ public:
     void pin() noexcept { m_pins.fetch_add(1, std::memory_order_acquire); }
     void unpin() noexcept {
         const u32 previous = m_pins.fetch_sub(1, std::memory_order_release);
-        MC_ASSERT_MSG(previous > 0, "unpinned a column that was not pinned");
-        (void)previous;
+        // **VERIFY rather than ASSERT, unlike most preconditions here.** An ASSERT
+        // compiles out under NDEBUG, and what an unmatched unpin does in release is
+        // wrap this counter to four billion: the column then reads as pinned forever,
+        // is never unloaded and never relit, and says nothing about it. A failure that
+        // is silent in the build that matters is worth the branch.
+        MC_VERIFY_MSG(previous > 0, "unpinned a column that was not pinned");
     }
     bool pinned() const noexcept { return m_pins.load(std::memory_order_acquire) != 0; }
 

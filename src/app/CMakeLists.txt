@@ -1,6 +1,8 @@
 add_executable(minecraft
   main.cpp
   Engine.cpp
+  ChunkStreamer.cpp
+  CaptureScenarios.cpp
 )
 
 target_link_libraries(minecraft PRIVATE
